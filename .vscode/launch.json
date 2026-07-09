@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SuelosAR",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "cwd": "${workspaceFolder}",
+      "flutterMode": "debug"
+    }
+  ]
+}

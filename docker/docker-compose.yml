@@ -1,0 +1,50 @@
+name: suelosar-gis
+
+services:
+  map-builder:
+    image: suelosar-gis-builder:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TIPPECANOE_REF: ${TIPPECANOE_REF:-7fc82a1796e6d99c6a1fbd96318f6295a46df512}
+    environment:
+      INPUT_DIR: /data/input
+      OUTPUT_DIR: /data/output
+      OUTPUT_NAME: ${OUTPUT_NAME:-soil_polygons.pmtiles}
+      LAYER_NAME: ${LAYER_NAME:-soil_polygons}
+      MIN_ZOOM: ${MIN_ZOOM:-4}
+      MAX_ZOOM: ${MAX_ZOOM:-14}
+      LOW_MAX_ZOOM: ${LOW_MAX_ZOOM:-6}
+      MEDIUM_MAX_ZOOM: ${MEDIUM_MAX_ZOOM:-10}
+      INTERMEDIATE_MAX_ZOOM: ${INTERMEDIATE_MAX_ZOOM:-12}
+      SOURCE_SHAPEFILE: ${SOURCE_SHAPEFILE:-}
+      SOURCE_SRS: ${SOURCE_SRS:-}
+    volumes:
+      - type: bind
+        source: ./input
+        target: /data/input
+        read_only: true
+      - type: bind
+        source: ../assets/maps
+        target: /data/output
+
+  map-profiler:
+    image: suelosar-gis-builder:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TIPPECANOE_REF: ${TIPPECANOE_REF:-7fc82a1796e6d99c6a1fbd96318f6295a46df512}
+    entrypoint: ["/usr/local/bin/profile_map.py"]
+    command:
+      - /data/output/${BASELINE_MAP:-soil_polygons.pmtiles}
+      - /data/output/${CANDIDATE_MAP:-soil_polygons_candidate.pmtiles}
+    environment:
+      LAYER_NAME: ${LAYER_NAME:-soil_polygons}
+      PROFILE_RUNS: ${PROFILE_RUNS:-3}
+    volumes:
+      - type: bind
+        source: ../assets/maps
+        target: /data/output
+        read_only: true

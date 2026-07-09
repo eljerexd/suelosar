@@ -1,0 +1,130 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:suelosar/constants/asset_paths.dart';
+import 'package:suelosar/gis/gis_map_screen.dart';
+import 'package:suelosar/gis/gis_render_metrics.dart';
+import 'package:suelosar/gis/gis_repository.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('GIS renderer avoids unnecessary rebuilds', (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final metrics = GisRenderMetrics();
+    addTearDown(metrics.dispose);
+    final repository = PmTilesGisRepository.fromFile(
+      archiveFile: File('assets/maps/soil_polygons.pmtiles'),
+      layerName: AssetPaths.gisLayerName,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(repository: repository, renderMetrics: metrics),
+      ),
+    );
+    await _waitForTiles(tester, metrics);
+
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+    final controller = map.mapController!;
+    metrics.reset();
+    final stopwatch = Stopwatch()..start();
+
+    await _move(tester, metrics, controller, const LatLng(-36.5, -59), 7);
+    await _move(tester, metrics, controller, const LatLng(-36.5, -59), 8);
+    await _move(tester, metrics, controller, const LatLng(-36.5, -58.5), 8);
+    await _move(tester, metrics, controller, const LatLng(-36.5, -58.5), 10);
+    stopwatch.stop();
+
+    final snapshot = metrics.snapshot();
+    final benchmarkData = {
+      'wall_us': stopwatch.elapsedMicroseconds,
+      'map_builds': snapshot.mapBuildCount,
+      'tile_collection_builds': snapshot.tileCollectionBuildCount,
+      'polygon_layer_builds': snapshot.polygonLayerBuildCount,
+      'polygon_objects_created': snapshot.polygonObjectCreationCount,
+      'polygon_objects_reused': snapshot.polygonObjectReuseCount,
+      'projection_cache_hits': snapshot.projectedGeometryCacheHitCount,
+      'projected_polygons': snapshot.projectedPolygonCount,
+      'projected_vertices': snapshot.projectedVertexCount,
+      'paint_count': snapshot.paintCount,
+      'submitted_polygons': snapshot.submittedPolygonCount,
+      'paint_us': snapshot.totalPaintDuration.inMicroseconds,
+    };
+    debugPrint('GIS_RENDER_BENCHMARK ${jsonEncode(benchmarkData)}');
+
+    expect(snapshot.paintCount, greaterThan(0));
+    expect(snapshot.submittedPolygonCount, greaterThan(0));
+    expect(snapshot.projectedGeometryCacheHitCount, greaterThan(0));
+
+    metrics.reset();
+    await _move(tester, metrics, controller, const LatLng(-36.5, -59), 8);
+    await _move(tester, metrics, controller, const LatLng(-36.5, -58.5), 8);
+    final reuseSnapshot = metrics.snapshot();
+    final reuseData = {
+      'polygon_objects_created': reuseSnapshot.polygonObjectCreationCount,
+      'polygon_objects_reused': reuseSnapshot.polygonObjectReuseCount,
+      'polygon_layer_builds': reuseSnapshot.polygonLayerBuildCount,
+    };
+    debugPrint('GIS_RENDER_REUSE ${jsonEncode(reuseData)}');
+
+    expect(reuseSnapshot.polygonObjectReuseCount, greaterThan(0));
+
+    metrics.reset();
+    controller.move(const LatLng(-36.5, -58.49), 8);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump();
+    final unchangedSnapshot = metrics.snapshot();
+
+    expect(unchangedSnapshot.mapBuildCount, 0);
+    expect(unchangedSnapshot.tileCollectionBuildCount, 0);
+    expect(unchangedSnapshot.polygonLayerBuildCount, greaterThan(0));
+    expect(unchangedSnapshot.polygonObjectCreationCount, 0);
+    expect(unchangedSnapshot.projectedPolygonCount, 0);
+    expect(unchangedSnapshot.projectedGeometryCacheHitCount, greaterThan(0));
+  });
+}
+
+Future<void> _move(
+  WidgetTester tester,
+  GisRenderMetrics metrics,
+  MapController controller,
+  LatLng center,
+  double zoom,
+) async {
+  controller.move(center, zoom);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 200));
+  await _waitForTiles(tester, metrics);
+}
+
+Future<void> _waitForTiles(
+  WidgetTester tester,
+  GisRenderMetrics metrics,
+) async {
+  for (var attempt = 0; attempt < 200; attempt++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+    if (metrics.polygonLayerBuildCount > 0 &&
+        find.byType(LinearProgressIndicator).evaluate().isEmpty) {
+      return;
+    }
+  }
+  fail('Timed out waiting for GIS tiles.');
+}
