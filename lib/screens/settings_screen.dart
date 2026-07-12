@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import '../app/instant_pop_material_page_route.dart';
 import '../constants/app_icons.dart';
 import '../services/settings_service.dart';
 import '../widgets/floating_app_bar_card.dart';
@@ -20,12 +21,7 @@ class SettingsScreen extends StatelessWidget {
             onPressed: () => Navigator.maybePop(context),
           ),
           const SizedBox(width: 14),
-          Text(
-            'Configuración',
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
-          ),
+          const FloatingAppBarTitle('Configuración'),
           const SizedBox(width: 10),
         ],
       ),
@@ -109,12 +105,7 @@ class AboutSuelosArScreen extends StatelessWidget {
             onPressed: () => Navigator.maybePop(context),
           ),
           const SizedBox(width: 14),
-          Text(
-            'Acerca de',
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
-          ),
+          const FloatingAppBarTitle('Acerca de'),
           const SizedBox(width: 10),
         ],
       ),
@@ -159,7 +150,6 @@ class AboutSuelosArScreen extends StatelessWidget {
                       const _AboutInfoRow(
                         label: 'Desarrollador',
                         value: 'Jeremías Moisés Arata',
-
                       ),
                       const SizedBox(height: 8),
                       const _AboutInfoRow(
@@ -323,7 +313,6 @@ class _SettingsSection extends StatelessWidget {
                     ),
                   ),
                 ),
-                
               ],
             ),
             const SizedBox(height: 10),
@@ -487,9 +476,11 @@ class _AboutSuelosArSetting extends StatelessWidget {
     return _NavigationSetting(
       title: 'Acerca de SuelosAR',
       onTap: () {
-        Navigator.of(
-          context,
-        ).push(MaterialPageRoute(builder: (_) => const AboutSuelosArScreen()));
+        Navigator.of(context).push(
+          InstantPopMaterialPageRoute(
+            builder: (_) => const AboutSuelosArScreen(),
+          ),
+        );
       },
     );
   }

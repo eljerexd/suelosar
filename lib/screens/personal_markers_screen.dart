@@ -8,6 +8,7 @@ import '../models/personal_marker.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/destructive_action_confirmation.dart';
 import '../widgets/personal_marker_category_icon.dart';
+import '../widgets/scrollable_empty_state.dart';
 
 class PersonalMarkersScreen extends StatefulWidget {
   const PersonalMarkersScreen({super.key});
@@ -36,12 +37,7 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
             onPressed: () => Navigator.maybePop(context),
           ),
           const SizedBox(width: 14),
-          Text(
-            'Marcadores personales',
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
-          ),
+          const FloatingAppBarTitle('Marcadores personales'),
           const SizedBox(width: 10),
         ],
       ),
@@ -249,7 +245,7 @@ class _EmptyPersonalMarkers extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
+    return ScrollableEmptyState(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
@@ -284,7 +280,7 @@ class _NoMarkerSearchResults extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    return Center(
+    return ScrollableEmptyState(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(

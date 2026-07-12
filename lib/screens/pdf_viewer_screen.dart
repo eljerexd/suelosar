@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 
+import '../app/instant_pop_material_page_route.dart';
 import '../widgets/app_notification.dart';
 
 final Future<Set<String>> _bundledAssetPaths =
@@ -48,7 +49,7 @@ Future<bool> openLocalPdfViewer(
 
   if (!context.mounted) return false;
   await Navigator.of(context).push(
-    MaterialPageRoute<void>(
+    InstantPopMaterialPageRoute<void>(
       builder: (_) => PdfViewerScreen(title: title, assetPath: assetPath),
     ),
   );

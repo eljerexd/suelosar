@@ -1,0 +1,222 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:suelosar/models/saved_measurement.dart';
+import 'package:suelosar/gis/gis_layer.dart';
+import 'package:suelosar/gis/gis_map_screen.dart';
+import 'package:suelosar/gis/gis_repository.dart';
+import 'package:suelosar/screens/favorites_screen.dart';
+import 'package:suelosar/screens/home_screen.dart';
+import 'package:suelosar/screens/measurements_screen.dart';
+import 'package:suelosar/screens/personal_markers_screen.dart';
+import 'package:suelosar/screens/settings_screen.dart';
+import 'package:suelosar/screens/soil_maps_screen.dart';
+import 'package:suelosar/widgets/floating_app_bar_card.dart';
+
+void main() {
+  for (final entry in <String, Widget>{
+    'home': const HomeScreen(),
+    'settings': const SettingsScreen(),
+    'favorites': const FavoritesScreen(),
+    'soil maps': const SoilMapsScreen(),
+    'personal markers': const PersonalMarkersScreen(),
+  }.entries) {
+    testWidgets('${entry.key} fits a narrow phone with enlarged text', (
+      tester,
+    ) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      await _pumpNarrowScreen(tester, entry.value);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('measurements actions fit a narrow phone with enlarged text', (
+    tester,
+  ) async {
+    final measurement = SavedMeasurement(
+      id: 'responsive-area',
+      type: SavedMeasurementType.area,
+      name: 'Área extensa de prueba',
+      geometry: const <LatLng>[
+        LatLng(-36.5, -60),
+        LatLng(-36.5, -59.9),
+        LatLng(-36.4, -59.9),
+      ],
+      createdAt: DateTime.utc(2026, 7, 12),
+      areaSquareMeters: 12000,
+      perimeterMeters: 500,
+    );
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      SavedMeasurement.storageKey: <String>[jsonEncode(measurement.toJson())],
+    });
+
+    await _pumpNarrowScreen(tester, const MeasurementsScreen());
+    expect(tester.takeException(), isNull);
+    final overflow = find.byKey(
+      const ValueKey('measurement-overflow-responsive-area'),
+    );
+    await tester.ensureVisible(overflow);
+    await tester.pumpAndSettle();
+    await tester.tap(overflow);
+    await tester.pumpAndSettle();
+    final exportItem = tester.getRect(find.text('Exportar GeoJSON'));
+    expect(exportItem.left, greaterThanOrEqualTo(0));
+    expect(exportItem.right, lessThanOrEqualTo(320));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('personal marker dialog fits above the mobile keyboard', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(2)),
+          child: child!,
+        ),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.byTooltip('Herramientas'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Marcadores'));
+    await tester.pumpAndSettle();
+
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+    map.options.onTap!(
+      const TapPosition(Offset.zero, Offset.zero),
+      const LatLng(-36.5, -60),
+    );
+    await tester.pumpAndSettle();
+    tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('personal-marker-name')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('area measurement panel fits a narrow phone', (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.3)),
+          child: child!,
+        ),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.byTooltip('Herramientas'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Medir área'));
+    await tester.pumpAndSettle();
+
+    const points = <LatLng>[
+      LatLng(-36.5, -60),
+      LatLng(-36.5, -59.99),
+      LatLng(-36.49, -59.99),
+    ];
+    for (final point in points) {
+      final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+      map.options.onTap!(const TapPosition(Offset.zero, Offset.zero), point);
+      await tester.pump();
+    }
+
+    expect(find.byKey(const ValueKey('measurement-area')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('shared floating header stays below the top safe inset', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.padding = const FakeViewPadding(top: 44, bottom: 24);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
+    await tester.pump();
+
+    final headerTop = tester
+        .getTopLeft(find.byType(FloatingAppBarCard).first)
+        .dy;
+    expect(headerTop, greaterThanOrEqualTo(56));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('layers menu remains inside a narrow viewport', (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 568);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      const MaterialApp(home: GisMapScreen(repository: _EmptyGisRepository())),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.byTooltip('Capas'));
+    await tester.pumpAndSettle();
+
+    final menuRect = tester.getRect(find.text('Polígonos de suelo'));
+    expect(menuRect.left, greaterThanOrEqualTo(0));
+    expect(menuRect.right, lessThanOrEqualTo(320));
+    expect(tester.takeException(), isNull);
+  });
+}
+
+Future<void> _pumpNarrowScreen(WidgetTester tester, Widget screen) async {
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = const Size(320, 568);
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(
+    MaterialApp(
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(
+          context,
+        ).copyWith(textScaler: const TextScaler.linear(2)),
+        child: child!,
+      ),
+      home: screen,
+    ),
+  );
+  await tester.pump();
+  await tester.pump(const Duration(seconds: 1));
+}
+
+class _EmptyGisRepository implements GisRepository {
+  const _EmptyGisRepository();
+
+  @override
+  Future<GisArchiveInfo> initialize() async => const GisArchiveInfo(
+    minZoom: 7,
+    maxZoom: 14,
+    centerLatitude: -36.5,
+    centerLongitude: -60,
+  );
+
+  @override
+  Future<GisLayer> loadTile(GisTileCoordinates coordinates) async => GisLayer(
+    id: '${coordinates.zoom}-${coordinates.x}-${coordinates.y}',
+    name: 'empty',
+    features: const [],
+  );
+
+  @override
+  Future<void> close() async {}
+}

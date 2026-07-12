@@ -13,6 +13,7 @@ class MeasurementExportService {
   }) {
     return MeasurementExportData(
       type: measurement.type.toExportType(),
+      id: measurement.id,
       title: measurement.name.isEmpty ? null : measurement.name,
       notes: notes,
       crs: crs,
@@ -21,6 +22,7 @@ class MeasurementExportService {
       distanceMeters: measurement.distanceMeters,
       areaSquareMeters: measurement.areaSquareMeters,
       perimeterMeters: measurement.perimeterMeters,
+      color: measurement.colorId,
     );
   }
 
@@ -28,18 +30,22 @@ class MeasurementExportService {
     required SavedMeasurementType type,
     required List<LatLng> geometry,
     required DateTime createdAt,
+    String? id,
     String? title,
     String? notes,
     String crs = 'EPSG:4326',
+    String? color,
     double? distanceMeters,
     double? areaSquareMeters,
     double? perimeterMeters,
   }) {
     return MeasurementExportData(
       type: type.toExportType(),
+      id: id,
       title: title,
       notes: notes,
       crs: crs,
+      color: color,
       createdAt: createdAt,
       coordinates: _coordinatesFromLatLng(geometry),
       distanceMeters: distanceMeters,

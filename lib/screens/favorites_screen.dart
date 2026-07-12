@@ -9,6 +9,7 @@ import '../repositories/pdf_series_repository.dart';
 import 'pdf_viewer_screen.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/floating_app_bar_card.dart';
+import '../widgets/scrollable_empty_state.dart';
 
 class FavoritesScreen extends StatefulWidget {
   const FavoritesScreen({this.openPdfOnTap = false, super.key});
@@ -40,12 +41,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
             onPressed: () => Navigator.maybePop(context),
           ),
           const SizedBox(width: 14),
-          Text(
-            'Favoritos',
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
-          ),
+          const FloatingAppBarTitle('Favoritos'),
           const SizedBox(width: 10),
         ],
       ),
@@ -257,7 +253,7 @@ class _EmptyFavorites extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    return Center(
+    return ScrollableEmptyState(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
@@ -290,7 +286,7 @@ class _NoFavoriteSearchResults extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    return Center(
+    return ScrollableEmptyState(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(

@@ -31,9 +31,11 @@ class MeasurementExportData {
     required this.type,
     required this.coordinates,
     required this.createdAt,
+    this.id,
     this.title,
     this.notes,
     this.crs = 'EPSG:4326',
+    this.color,
     this.distanceMeters,
     this.areaSquareMeters,
     this.perimeterMeters,
@@ -42,9 +44,11 @@ class MeasurementExportData {
   final MeasurementExportType type;
   final List<MeasurementExportCoordinate> coordinates;
   final DateTime createdAt;
+  final String? id;
   final String? title;
   final String? notes;
   final String crs;
+  final String? color;
   final double? distanceMeters;
   final double? areaSquareMeters;
   final double? perimeterMeters;
@@ -53,10 +57,12 @@ class MeasurementExportData {
   bool get isDistance => type == MeasurementExportType.distance;
 
   Map<String, Object?> toJson() => <String, Object?>{
+    'id': id,
     'type': type.name,
     'title': title,
     'notes': notes,
     'crs': crs,
+    'color': color,
     'createdAt': createdAt.toIso8601String(),
     'distanceMeters': distanceMeters,
     'areaSquareMeters': areaSquareMeters,

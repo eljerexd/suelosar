@@ -98,6 +98,26 @@ class FloatingAppBarBackButton extends StatefulWidget {
       _FloatingAppBarBackButtonState();
 }
 
+class FloatingAppBarTitle extends StatelessWidget {
+  const FloatingAppBarTitle(this.text, {super.key});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Flexible(
+      child: Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(
+          context,
+        ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
 class _FloatingAppBarBackButtonState extends State<FloatingAppBarBackButton> {
   static const _duration = Duration(milliseconds: 180);
 

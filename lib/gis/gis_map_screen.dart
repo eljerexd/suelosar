@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -9,10 +10,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/rendering.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app/app_theme.dart';
+import '../app/instant_pop_material_page_route.dart';
 import '../constants/asset_paths.dart';
 import '../constants/app_icons.dart';
 import '../export/measurement_export.dart';
@@ -32,6 +33,7 @@ import '../widgets/destructive_action_confirmation.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/measurement_color_selector.dart';
 import '../widgets/personal_marker_category_icon.dart';
+import '../widgets/saved_measurement_overflow_menu.dart';
 import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_location_service.dart';
@@ -126,6 +128,8 @@ class _GisMapScreenState extends State<GisMapScreen>
   bool _isFollowingLocation = false;
   bool _isInvalidMeasurementWarningVisible = false;
   bool _isMeasurementDialogVisible = false;
+  bool _isSearchViewOpen = false;
+  bool _mapVisualsPaused = false;
   final List<PersonalMarker> _personalMarkers = <PersonalMarker>[];
   _MeasurementMode? _measurementMode;
   _MeasurementMode? _retainedMeasurementMode;
@@ -170,6 +174,9 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   @visibleForTesting
   int get searchIndexSize => _soilSeriesSearchIndex.length;
+
+  @visibleForTesting
+  bool get mapVisualsPaused => _mapVisualsPaused;
 
   @override
   void initState() {
@@ -296,6 +303,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                               onPressed: _clearMeasurement,
                             ),
                           SearchAnchor(
+                            viewBuilder: _buildSearchView,
+                            viewOnOpen: _handleSearchViewOpen,
+                            viewOnClose: _handleSearchViewClose,
                             viewHintText: 'Buscar localidad, unidad o serie...',
                             viewBackgroundColor: Theme.of(
                               context,
@@ -365,10 +375,17 @@ class _GisMapScreenState extends State<GisMapScreen>
     required bool portraitMobile,
   }) {
     final collapseTitle =
-        portraitMobile && (showsMeasurement || _isPersonalMarkerMode);
+        portraitMobile &&
+        (showsMeasurement ||
+            _isPersonalMarkerMode ||
+            MediaQuery.sizeOf(context).width < 340);
     final cardPadding = portraitMobile
         ? const EdgeInsets.symmetric(horizontal: 6)
         : const EdgeInsets.symmetric(horizontal: 10);
+    final includeActionSpacing =
+        !(portraitMobile &&
+            showsMeasurement &&
+            MediaQuery.sizeOf(context).width < 360);
     final titleCard = _MapTopBarCard(
       padding: cardPadding,
       child: AnimatedSize(
@@ -416,25 +433,32 @@ class _GisMapScreenState extends State<GisMapScreen>
             tooltip: 'Abrir marcadores personales',
             icon: const Icon(Icons.bookmarks),
             onPressed: _openPersonalMarkers,
+            includeOuterSpacing: includeActionSpacing,
           ),
           _MapChromeIconButton(
             tooltip: 'Abrir mediciones',
             icon: const Icon(Icons.history),
             onPressed: _openMeasurements,
+            includeOuterSpacing: includeActionSpacing,
           ),
           if (showsMeasurement && _activeSavedMeasurementId == null)
             _MapChromeIconButton(
               tooltip: 'Deshacer último punto',
               icon: const Icon(AppIcons.undo),
               onPressed: _undoMeasurementPoint,
+              includeOuterSpacing: includeActionSpacing,
             ),
           if (showsMeasurement)
             _MapChromeIconButton(
               tooltip: 'Limpiar medición',
               icon: const Icon(AppIcons.delete),
               onPressed: _clearMeasurement,
+              includeOuterSpacing: includeActionSpacing,
             ),
-          _buildCompactSearchAction(context),
+          _buildCompactSearchAction(
+            context,
+            includeOuterSpacing: includeActionSpacing,
+          ),
         ],
       ),
     );
@@ -448,8 +472,14 @@ class _GisMapScreenState extends State<GisMapScreen>
     );
   }
 
-  Widget _buildCompactSearchAction(BuildContext context) {
+  Widget _buildCompactSearchAction(
+    BuildContext context, {
+    bool includeOuterSpacing = true,
+  }) {
     return SearchAnchor(
+      viewBuilder: _buildSearchView,
+      viewOnOpen: _handleSearchViewOpen,
+      viewOnClose: _handleSearchViewClose,
       viewHintText: 'Buscar localidad, unidad o serie...',
       viewBackgroundColor: Theme.of(context).colorScheme.surfaceContainerLow,
       viewSurfaceTintColor: Colors.transparent,
@@ -469,9 +499,37 @@ class _GisMapScreenState extends State<GisMapScreen>
         tooltip: 'Buscar',
         icon: const Icon(AppIcons.search),
         onPressed: controller.openView,
+        includeOuterSpacing: includeOuterSpacing,
       ),
       suggestionsBuilder: _buildSearchSuggestions,
     );
+  }
+
+  Widget _buildSearchView(Iterable<Widget> suggestions) {
+    return _SearchViewLayoutObserver(
+      onCoverageChanged: _handleSearchCoverageChanged,
+      suggestions: suggestions,
+    );
+  }
+
+  void _handleSearchViewOpen() {
+    if (!mounted || _isSearchViewOpen) return;
+    _isSearchViewOpen = true;
+  }
+
+  void _handleSearchViewClose() {
+    if (!mounted || (!_isSearchViewOpen && !_mapVisualsPaused)) return;
+    _isSearchViewOpen = false;
+    if (_mapVisualsPaused) {
+      setState(() => _mapVisualsPaused = false);
+    }
+  }
+
+  void _handleSearchCoverageChanged(bool obscuresMap) {
+    if (!mounted || !_isSearchViewOpen || _mapVisualsPaused == obscuresMap) {
+      return;
+    }
+    setState(() => _mapVisualsPaused = obscuresMap);
   }
 
   Future<void> _initializeArchive() async {
@@ -561,29 +619,30 @@ class _GisMapScreenState extends State<GisMapScreen>
             onTap: _handleMapTap,
           ),
           children: [
-            if (_showReferenceBasemap)
+            if (!_mapVisualsPaused && _showReferenceBasemap)
               const Positioned.fill(child: OfflineReferenceMapLayer()),
-            if (_showSoilPolygons)
+            if (!_mapVisualsPaused && _showSoilPolygons)
               Positioned.fill(
                 child: _GisVisibleTileLayers(
                   snapshotListenable: _visibleTileSnapshot,
                   renderMetrics: _renderMetrics,
                 ),
               ),
-            if (_showReferenceBasemap)
+            if (!_mapVisualsPaused && _showReferenceBasemap)
               const Positioned.fill(
                 child: OfflineReferenceMapLayer(foreground: true),
               ),
-            if (_currentLocation case final location?)
-              AnimatedBuilder(
-                animation: SettingsService.instance,
-                builder: (context, _) => _CurrentLocationLayer(
-                  location: location,
-                  showAccuracyCircle:
-                      SettingsService.instance.showGpsAccuracyCircle,
+            if (!_mapVisualsPaused)
+              if (_currentLocation case final location?)
+                AnimatedBuilder(
+                  animation: SettingsService.instance,
+                  builder: (context, _) => _CurrentLocationLayer(
+                    location: location,
+                    showAccuracyCircle:
+                        SettingsService.instance.showGpsAccuracyCircle,
+                  ),
                 ),
-              ),
-            if (_savedMeasurements.isNotEmpty)
+            if (!_mapVisualsPaused && _savedMeasurements.isNotEmpty)
               _SavedMeasurementsLayer(
                 measurements: _savedMeasurements
                     .where((measurement) => measurement.isVisible)
@@ -593,32 +652,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 onHideMeasurement: _hideSavedMeasurement,
                 onSelectMeasurement: _previewSavedMeasurement,
               ),
-            if (renderedMeasurementMode != null && _hasMeasurementPoints)
-              _MeasurementLayer(
-                mode: renderedMeasurementMode,
-                isEditing: measurementMode != null,
-                distancePoints: _distanceMeasurementPoints,
-                areaPoints: _areaMeasurementPoints,
-                selectedColor: _measurementColor,
-                draggedAreaVertexIndex: _draggedAreaVertexIndex,
-                onStartAreaVertexDrag: _startAreaVertexDrag,
-                onMoveAreaVertex: _moveAreaVertex,
-                onEndAreaVertexDrag: _endAreaVertexDrag,
-                onDeleteAreaVertex: _deleteAreaVertex,
-                onColorChanged: _setMeasurementColor,
-                onSave: _saveCurrentMeasurement,
-                isSavedMeasurement: _activeSavedMeasurementId != null,
-                onHideSavedMeasurement: _hideCurrentSavedMeasurement,
-                onDeleteSavedMeasurement: _deleteCurrentSavedMeasurement,
-                hasUnsavedChanges: _measurementHasUnsavedChanges,
-                canSave: _isCurrentMeasurementComplete,
-                onUndo: _undoMeasurementPoint,
-                onClear: _clearMeasurement,
-                onExit: _exitMeasurement,
-                onAnalyze: _showParcelAnalysis,
-                onExport: _exportCurrentMeasurementPdf,
-              ),
-            if (_activeSavedMeasurementId != null)
+            if (!_mapVisualsPaused && _activeSavedMeasurementId != null)
               Positioned.fill(
                 child: _SavedMeasurementLabels(
                   measurements: _orderedSavedMeasurementsForLabels(
@@ -633,7 +667,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                   onHoverMeasurement: (_) {},
                 ),
               ),
-            if (_personalMarkers.isNotEmpty)
+            if (!_mapVisualsPaused && _personalMarkers.isNotEmpty)
               MarkerLayer(
                 markers: _personalMarkers
                     .map((marker) {
@@ -677,50 +711,83 @@ class _GisMapScreenState extends State<GisMapScreen>
                     .whereType<Marker>()
                     .toList(growable: false),
               ),
+            if (!_mapVisualsPaused &&
+                renderedMeasurementMode != null &&
+                _hasMeasurementPoints)
+              _MeasurementLayer(
+                mode: renderedMeasurementMode,
+                isEditing: measurementMode != null,
+                distancePoints: _distanceMeasurementPoints,
+                areaPoints: _areaMeasurementPoints,
+                selectedColor: _measurementColor,
+                draggedAreaVertexIndex: _draggedAreaVertexIndex,
+                onStartAreaVertexDrag: _startAreaVertexDrag,
+                onMoveAreaVertex: _moveAreaVertex,
+                onEndAreaVertexDrag: _endAreaVertexDrag,
+                onDeleteAreaVertex: _deleteAreaVertex,
+                onColorChanged: _setMeasurementColor,
+                onSave: _saveCurrentMeasurement,
+                isSavedMeasurement: _activeSavedMeasurementId != null,
+                onHideSavedMeasurement: _hideCurrentSavedMeasurement,
+                onDeleteSavedMeasurement: _deleteCurrentSavedMeasurement,
+                hasUnsavedChanges: _measurementHasUnsavedChanges,
+                canSave: _isCurrentMeasurementComplete,
+                onUndo: _undoMeasurementPoint,
+                onClear: _clearMeasurement,
+                onExit: _exitMeasurement,
+                onAnalyze: _showParcelAnalysis,
+                onExport: _exportCurrentMeasurementPdf,
+              ),
           ],
         ),
-        Positioned.fill(
-          child: ValueListenableBuilder<_MapOverlayState>(
-            valueListenable: _overlayState,
-            builder: (context, overlayState, child) {
-              return Stack(
-                children: [
-                  if (overlayState.isLoading)
-                    const Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: LinearProgressIndicator(minHeight: 3),
-                    ),
-                  if (overlayState.error case final error?)
-                    Positioned(
-                      left: 16,
-                      right: 16,
-                      bottom: 16,
-                      child: Material(
-                        color: colorScheme.errorContainer,
-                        borderRadius: BorderRadius.circular(8),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Text(
-                            error,
-                            style: TextStyle(
-                              color: colorScheme.onErrorContainer,
+        if (!_mapVisualsPaused)
+          Positioned.fill(
+            child: ValueListenableBuilder<_MapOverlayState>(
+              valueListenable: _overlayState,
+              builder: (context, overlayState, child) {
+                return Stack(
+                  children: [
+                    if (overlayState.isLoading)
+                      const Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: LinearProgressIndicator(minHeight: 3),
+                      ),
+                    if (overlayState.error case final error?)
+                      Positioned(
+                        left: 16,
+                        right: 16,
+                        bottom: 16,
+                        child: Material(
+                          color: colorScheme.errorContainer,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Text(
+                              error,
+                              style: TextStyle(
+                                color: colorScheme.onErrorContainer,
+                              ),
+                              textAlign: TextAlign.center,
                             ),
-                            textAlign: TextAlign.center,
                           ),
                         ),
                       ),
-                    ),
-                ],
-              );
-            },
+                  ],
+                );
+              },
+            ),
           ),
-        ),
-        _buildRightControlRail(topInset: topControlOffset),
-        _MapToolHintOverlay(type: _activeToolHint, top: topControlOffset),
-        if (!showsMeasurementEditor) _buildBottomRightControls(),
-        if (selectedSavedMeasurement != null && !showsMeasurementEditor)
+        if (!_mapVisualsPaused)
+          _buildRightControlRail(topInset: topControlOffset),
+        if (!_mapVisualsPaused)
+          _MapToolHintOverlay(type: _activeToolHint, top: topControlOffset),
+        if (!_mapVisualsPaused && !showsMeasurementEditor)
+          _buildBottomRightControls(),
+        if (!_mapVisualsPaused &&
+            selectedSavedMeasurement != null &&
+            !showsMeasurementEditor)
           _SavedMeasurementActionBar(
             onAnalyze:
                 selectedSavedMeasurement.type == SavedMeasurementType.area
@@ -728,21 +795,28 @@ class _GisMapScreenState extends State<GisMapScreen>
                 : null,
             onExport: () =>
                 _exportSavedMeasurementPdf(selectedSavedMeasurement),
+            onExportGeoJson: () =>
+                _exportSavedMeasurementGeoJson(selectedSavedMeasurement),
+            onExportCsv: () =>
+                _exportSavedMeasurementCsv(selectedSavedMeasurement),
             onDelete: () => _deleteSavedMeasurement(selectedSavedMeasurement),
             onEdit: () => unawaited(
               _requestSelectSavedMeasurement(selectedSavedMeasurement),
             ),
           ),
-        _SelectionPreviewOverlay(
-          featureListenable: _selectionPreview,
-          bottomOffset: compactLayout ? 132 : 72,
-          rightInset: compactLayout ? 76 : 16,
-          onDismiss: () => _selectionPreview.value = null,
-        ),
-        _MapViewportOverlay(
-          viewStateListenable: _mapViewportState,
-          showScale: renderedMeasurementMode == null || !_hasMeasurementPoints,
-        ),
+        if (!_mapVisualsPaused)
+          _SelectionPreviewOverlay(
+            featureListenable: _selectionPreview,
+            bottomOffset: compactLayout ? 132 : 72,
+            rightInset: compactLayout ? 76 : 16,
+            onDismiss: () => _selectionPreview.value = null,
+          ),
+        if (!_mapVisualsPaused)
+          _MapViewportOverlay(
+            viewStateListenable: _mapViewportState,
+            showScale:
+                renderedMeasurementMode == null || !_hasMeasurementPoints,
+          ),
       ],
     );
   }
@@ -1211,12 +1285,45 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Future<void> _exportSavedMeasurementPdf(SavedMeasurement measurement) async {
+    final exportData = _exportDataForSavedMeasurement(measurement);
+    await _shareMeasurementExportFile(
+      createFile: () => MeasurementPdfExporter().export(exportData),
+      mimeType: 'application/pdf',
+      text: 'Informe de mediciÃ³n de SuelosAR',
+    );
+  }
+
+  Future<void> _exportSavedMeasurementGeoJson(
+    SavedMeasurement measurement,
+  ) async {
+    final exportData = _exportDataForSavedMeasurement(measurement);
+    await _shareMeasurementExportFile(
+      createFile: () => const MeasurementGeoJsonExporter().export(exportData),
+      mimeType: 'application/geo+json',
+      text: 'MediciÃ³n de SuelosAR en GeoJSON',
+    );
+  }
+
+  Future<void> _exportSavedMeasurementCsv(SavedMeasurement measurement) async {
+    final exportData = _exportDataForSavedMeasurement(measurement);
+    await _shareMeasurementExportFile(
+      createFile: () => const MeasurementCsvExporter().export(exportData),
+      mimeType: 'text/csv',
+      text: 'MediciÃ³n de SuelosAR en CSV',
+    );
+  }
+
+  MeasurementExportData _exportDataForSavedMeasurement(
+    SavedMeasurement measurement,
+  ) {
     final isArea = measurement.type == SavedMeasurementType.area;
-    final exportData = const MeasurementExportService().fromCurrentMeasurement(
+    return const MeasurementExportService().fromCurrentMeasurement(
       type: measurement.type,
       geometry: measurement.geometry,
       createdAt: measurement.createdAt,
+      id: measurement.id,
       title: measurement.name.isEmpty ? null : measurement.name,
+      color: measurement.colorId,
       distanceMeters: !isArea
           ? measurement.distanceMeters ??
                 _MeasurementLayer._calculatePathDistance(measurement.geometry)
@@ -1230,20 +1337,30 @@ class _GisMapScreenState extends State<GisMapScreen>
                 _MeasurementLayer._calculatePerimeter(measurement.geometry)
           : null,
     );
-    await _shareMeasurementExportData(exportData);
   }
 
   Future<void> _shareMeasurementExportData(
     MeasurementExportData exportData,
   ) async {
+    await _shareMeasurementExportFile(
+      createFile: () => MeasurementPdfExporter().export(exportData),
+      mimeType: 'application/pdf',
+      text: 'Informe de mediciÃ³n de SuelosAR',
+    );
+  }
+
+  Future<void> _shareMeasurementExportFile({
+    required Future<File> Function() createFile,
+    required String mimeType,
+    required String text,
+  }) async {
     try {
-      final pdfFile = await MeasurementPdfExporter().export(exportData);
+      final file = await createFile();
       if (!mounted) return;
-      await SharePlus.instance.share(
-        ShareParams(
-          text: 'SuelosAR measurement report',
-          files: [XFile(pdfFile.path, mimeType: 'application/pdf')],
-        ),
+      await const MeasurementExportShareService().share(
+        file: file,
+        mimeType: mimeType,
+        text: text,
       );
     } catch (_) {
       if (!mounted) return;
@@ -1379,6 +1496,10 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _moveAreaVertex(int index, Offset globalPosition) {
     _suppressNextMapTap = false;
+    final camera = _mapController.camera;
+    if (!_isFiniteCamera(camera) || !_isFiniteOffset(globalPosition)) {
+      return;
+    }
     final mapContext = _mapKey.currentContext;
     if (mapContext == null) {
       return;
@@ -1387,9 +1508,9 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (renderBox == null) {
       return;
     }
-    final point = _mapController.camera.screenOffsetToLatLng(
-      renderBox.globalToLocal(globalPosition),
-    );
+    final localPosition = renderBox.globalToLocal(globalPosition);
+    if (!_isFiniteOffset(localPosition)) return;
+    final point = camera.screenOffsetToLatLng(localPosition);
     if (!_isFiniteLatLng(point)) {
       return;
     }
@@ -2358,9 +2479,9 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Future<void> _openFavorites() async {
-    final featureId = await Navigator.of(
-      context,
-    ).push<String>(MaterialPageRoute(builder: (_) => const FavoritesScreen()));
+    final featureId = await Navigator.of(context).push<String>(
+      InstantPopMaterialPageRoute(builder: (_) => const FavoritesScreen()),
+    );
     if (!mounted || featureId == null) {
       return;
     }
@@ -2390,7 +2511,9 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   Future<void> _openPersonalMarkers() async {
     final markerId = await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => const PersonalMarkersScreen()),
+      InstantPopMaterialPageRoute(
+        builder: (_) => const PersonalMarkersScreen(),
+      ),
     );
     if (!mounted) return;
 
@@ -2418,7 +2541,7 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   Future<void> _openMeasurements() async {
     final measurement = await Navigator.of(context).push<SavedMeasurement>(
-      MaterialPageRoute(builder: (_) => const MeasurementsScreen()),
+      InstantPopMaterialPageRoute(builder: (_) => const MeasurementsScreen()),
     );
     if (!mounted) return;
 
@@ -3044,6 +3167,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     final shouldSave = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
+        scrollable: true,
         title: Text(marker == null ? 'Nuevo marcador' : 'Editar marcador'),
         content: Form(
           key: formKey,
@@ -3072,6 +3196,7 @@ class _GisMapScreenState extends State<GisMapScreen>
               DropdownButtonFormField<PersonalMarkerCategory>(
                 key: const ValueKey('personal-marker-category'),
                 initialValue: category,
+                isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Categoria'),
                 items: [
                   for (final option in PersonalMarkerCategory.values)
@@ -3933,6 +4058,52 @@ class _ParcelCompositionContent extends StatelessWidget {
           numeric: true,
         ),
       ],
+    );
+  }
+}
+
+class _SearchViewLayoutObserver extends StatelessWidget {
+  const _SearchViewLayoutObserver({
+    required this.onCoverageChanged,
+    required this.suggestions,
+  });
+
+  static const double _headerAndDividerHeight = 65;
+  static const double _obscuredThreshold = 0.9;
+
+  final ValueChanged<bool> onCoverageChanged;
+  final Iterable<Widget> suggestions;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final viewport = MediaQuery.sizeOf(context);
+        final keyboardHeight = MediaQuery.viewInsetsOf(context).bottom;
+        final contentSize = constraints.biggest;
+        final overlayHeight = math.min(
+          viewport.height,
+          contentSize.height + _headerAndDividerHeight + keyboardHeight,
+        );
+        final viewportArea = viewport.width * viewport.height;
+        final overlayArea = contentSize.width * overlayHeight;
+        final obscuresMap =
+            viewportArea > 0 &&
+            overlayArea.isFinite &&
+            overlayArea / viewportArea >= _obscuredThreshold;
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => onCoverageChanged(obscuresMap),
+        );
+
+        return MediaQuery.removePadding(
+          context: context,
+          removeTop: true,
+          child: ListView(
+            padding: EdgeInsets.only(bottom: keyboardHeight),
+            children: suggestions.toList(growable: false),
+          ),
+        );
+      },
     );
   }
 }
@@ -4843,6 +5014,7 @@ class _MeasurementLayer extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final measurementColor = selectedColor.color;
     final measurementOnColor = selectedColor.onColor;
+    final panelBottom = 16.0 + MediaQuery.paddingOf(context).bottom;
     final markers = <Marker>[
       for (var index = 0; index < distancePoints.length; index++)
         _buildEditableVertexMarker(
@@ -4919,7 +5091,7 @@ class _MeasurementLayer extends StatelessWidget {
           Positioned(
             left: 16,
             right: 16,
-            bottom: 16,
+            bottom: panelBottom,
             child: Center(
               child: _MeasurementPanel(
                 selectedColor: selectedColor,
@@ -4996,125 +5168,101 @@ class _MeasurementLayer extends StatelessWidget {
         ),
     ];
 
+    final panelBottom = 16.0 + MediaQuery.paddingOf(context).bottom;
     final measurementPanel = hasPolygon
-        ? LayoutBuilder(
-            builder: (context, constraints) {
-              final bottom = _areaPanelBottomOffset(context, constraints);
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  Positioned(
-                    left: 16,
-                    right: 16,
-                    bottom: bottom,
-                    child: Center(
-                      child: _MeasurementPanel(
-                        selectedColor: selectedColor,
-                        onColorChanged: onColorChanged,
-                        showColorSelector: isEditing,
-                        actions: isEditing
-                            ? [
-                                _MeasurementSaveButton(
-                                  highlighted: hasUnsavedChanges,
-                                  onPressed: canSave ? onSave : null,
-                                ),
-                                if (isSavedMeasurement) ...[
-                                  IconButton(
-                                    tooltip: 'Ocultar',
-                                    visualDensity: VisualDensity.compact,
-                                    icon: const Icon(
-                                      AppIcons.visibilityOff,
-                                      size: 18,
-                                    ),
-                                    onPressed: onHideSavedMeasurement,
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Eliminar medición',
-                                    visualDensity: VisualDensity.compact,
-                                    icon: const Icon(AppIcons.delete, size: 18),
-                                    onPressed: onDeleteSavedMeasurement,
-                                  ),
-                                ] else ...[
-                                  IconButton(
-                                    tooltip: 'Deshacer',
-                                    visualDensity: VisualDensity.compact,
-                                    icon: const Icon(AppIcons.undo, size: 18),
-                                    onPressed: onUndo,
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Limpiar',
-                                    visualDensity: VisualDensity.compact,
-                                    icon: const Icon(AppIcons.delete, size: 18),
-                                    onPressed: onClear,
-                                  ),
-                                ],
-                                IconButton(
-                                  tooltip: 'Salir',
-                                  visualDensity: VisualDensity.compact,
-                                  icon: const Icon(AppIcons.close, size: 18),
-                                  onPressed: onExit,
-                                ),
-                              ]
-                            : const [],
-                        children: [
-                          Text(
-                            'Área: ${_formatArea(_calculateArea(areaPoints))}',
-                            key: const ValueKey('measurement-area'),
-                            style: Theme.of(context).textTheme.titleSmall
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                  fontFeatures: const [
-                                    FontFeature.tabularFigures(),
-                                  ],
-                                ),
+        ? Positioned(
+            left: 16,
+            right: 16,
+            bottom: panelBottom,
+            child: Center(
+              child: _MeasurementPanel(
+                selectedColor: selectedColor,
+                onColorChanged: onColorChanged,
+                showColorSelector: isEditing,
+                actions: isEditing
+                    ? [
+                        _MeasurementSaveButton(
+                          highlighted: hasUnsavedChanges,
+                          onPressed: canSave ? onSave : null,
+                        ),
+                        if (isSavedMeasurement) ...[
+                          IconButton(
+                            tooltip: 'Ocultar',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(AppIcons.visibilityOff, size: 18),
+                            onPressed: onHideSavedMeasurement,
                           ),
-                          const SizedBox(height: 3),
-                          Text(
-                            'Perímetro: ${_formatDistance(_calculatePerimeter(areaPoints))}',
-                            key: const ValueKey('measurement-perimeter'),
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
-                                  fontFeatures: const [
-                                    FontFeature.tabularFigures(),
-                                  ],
-                                ),
+                          IconButton(
+                            tooltip: 'Eliminar medición',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(AppIcons.delete, size: 18),
+                            onPressed: onDeleteSavedMeasurement,
                           ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            alignment: WrapAlignment.center,
-                            spacing: 8,
-                            runSpacing: 6,
-                            children: [
-                              FilledButton.tonalIcon(
-                                key: const ValueKey('analyze-parcel'),
-                                icon: const Icon(AppIcons.analytics, size: 18),
-                                label: const Text('Analizar lote'),
-                                onPressed: () {
-                                  onAnalyze(
-                                    ParcelAnalysis(
-                                      totalAreaSquareMeters: _calculateArea(
-                                        areaPoints,
-                                      ),
-                                      perimeterMeters: _calculatePerimeter(
-                                        areaPoints,
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                              _MeasurementExportButton(onPressed: onExport),
-                            ],
+                        ] else ...[
+                          IconButton(
+                            tooltip: 'Deshacer',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(AppIcons.undo, size: 18),
+                            onPressed: onUndo,
+                          ),
+                          IconButton(
+                            tooltip: 'Limpiar',
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(AppIcons.delete, size: 18),
+                            onPressed: onClear,
                           ),
                         ],
-                      ),
+                        IconButton(
+                          tooltip: 'Salir',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(AppIcons.close, size: 18),
+                          onPressed: onExit,
+                        ),
+                      ]
+                    : const [],
+                children: [
+                  Text(
+                    'Área: ${_formatArea(_calculateArea(areaPoints))}',
+                    key: const ValueKey('measurement-area'),
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'Perímetro: ${_formatDistance(_calculatePerimeter(areaPoints))}',
+                    key: const ValueKey('measurement-perimeter'),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      FilledButton.tonalIcon(
+                        key: const ValueKey('analyze-parcel'),
+                        icon: const Icon(AppIcons.analytics, size: 18),
+                        label: const Text('Analizar lote'),
+                        onPressed: () {
+                          onAnalyze(
+                            ParcelAnalysis(
+                              totalAreaSquareMeters: _calculateArea(areaPoints),
+                              perimeterMeters: _calculatePerimeter(areaPoints),
+                            ),
+                          );
+                        },
+                      ),
+                      _MeasurementExportButton(onPressed: onExport),
+                    ],
+                  ),
                 ],
-              );
-            },
+              ),
+            ),
           )
         : const SizedBox.shrink();
 
@@ -5149,47 +5297,6 @@ class _MeasurementLayer extends StatelessWidget {
         measurementPanel,
       ],
     );
-  }
-
-  double _areaPanelBottomOffset(
-    BuildContext context,
-    BoxConstraints constraints,
-  ) {
-    const baseBottom = 16.0;
-    const vertexClearance = 48.0;
-    final viewport = Size(constraints.maxWidth, constraints.maxHeight);
-    if (viewport.isEmpty || areaPoints.isEmpty) {
-      return baseBottom;
-    }
-
-    final panelWidth = math.min(viewport.width - 32, 420.0);
-    final panelHeight = isEditing ? 164.0 : 132.0;
-    final panelLeft = (viewport.width - panelWidth) / 2;
-    var bottom = baseBottom;
-
-    for (final point in areaPoints) {
-      final vertex = MapCamera.of(context).latLngToScreenOffset(point);
-      if (!_isFiniteOffset(vertex)) {
-        continue;
-      }
-      final panelRect = Rect.fromLTWH(
-        panelLeft,
-        viewport.height - bottom - panelHeight,
-        panelWidth,
-        panelHeight,
-      ).inflate(vertexClearance);
-      if (!panelRect.contains(vertex)) {
-        continue;
-      }
-
-      bottom = math.max(bottom, viewport.height - vertex.dy + vertexClearance);
-    }
-
-    final maxBottom = math.max(
-      baseBottom,
-      viewport.height - panelHeight - vertexClearance,
-    );
-    return bottom.clamp(baseBottom, maxBottom);
   }
 
   Marker _buildEditableVertexMarker(
@@ -5816,12 +5923,16 @@ class _SavedMeasurementActionBar extends StatelessWidget {
   const _SavedMeasurementActionBar({
     required this.onAnalyze,
     required this.onExport,
+    required this.onExportGeoJson,
+    required this.onExportCsv,
     required this.onDelete,
     required this.onEdit,
   });
 
   final VoidCallback? onAnalyze;
   final VoidCallback onExport;
+  final VoidCallback onExportGeoJson;
+  final VoidCallback onExportCsv;
   final VoidCallback onDelete;
   final VoidCallback onEdit;
 
@@ -5857,9 +5968,11 @@ class _SavedMeasurementActionBar extends StatelessWidget {
                       label: const Text('Analizar lote'),
                     ),
                   if (onAnalyze != null) const SizedBox(width: 4),
-                  _SavedMeasurementOverflowMenu(
+                  SavedMeasurementOverflowMenu(
                     onEdit: onEdit,
                     onExportPdf: onExport,
+                    onExportGeoJson: onExportGeoJson,
+                    onExportCsv: onExportCsv,
                     onDelete: onDelete,
                   ),
                 ],
@@ -5868,76 +5981,6 @@ class _SavedMeasurementActionBar extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-enum _SavedMeasurementMenuAction { edit, exportPdf, delete }
-
-class _SavedMeasurementOverflowMenu extends StatelessWidget {
-  const _SavedMeasurementOverflowMenu({
-    required this.onEdit,
-    required this.onExportPdf,
-    required this.onDelete,
-  });
-
-  final VoidCallback onEdit;
-  final VoidCallback onExportPdf;
-  final VoidCallback onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    return PopupMenuButton<_SavedMeasurementMenuAction>(
-      tooltip: 'Más acciones',
-      icon: const Icon(AppIcons.moreVertical),
-      onSelected: (action) {
-        switch (action) {
-          case _SavedMeasurementMenuAction.edit:
-            onEdit();
-          case _SavedMeasurementMenuAction.exportPdf:
-            onExportPdf();
-          case _SavedMeasurementMenuAction.delete:
-            onDelete();
-        }
-      },
-      itemBuilder: (context) => const [
-        PopupMenuItem<_SavedMeasurementMenuAction>(
-          value: _SavedMeasurementMenuAction.edit,
-          child: _SavedMeasurementMenuItem(
-            icon: AppIcons.edit,
-            label: 'Editar',
-          ),
-        ),
-        PopupMenuItem<_SavedMeasurementMenuAction>(
-          value: _SavedMeasurementMenuAction.exportPdf,
-          child: _SavedMeasurementMenuItem(
-            icon: AppIcons.pdf,
-            label: 'Exportar PDF',
-          ),
-        ),
-        PopupMenuItem<_SavedMeasurementMenuAction>(
-          value: _SavedMeasurementMenuAction.delete,
-          child: _SavedMeasurementMenuItem(
-            icon: AppIcons.delete,
-            label: 'Eliminar',
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _SavedMeasurementMenuItem extends StatelessWidget {
-  const _SavedMeasurementMenuItem({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [Icon(icon, size: 18), const SizedBox(width: 12), Text(label)],
     );
   }
 }
@@ -7247,15 +7290,23 @@ class _LayersMenuButtonState extends State<_LayersMenuButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final compactMenu = viewportWidth < 344;
+    final compactMenuWidth = viewportWidth - 24;
+    final menuContentWidth = compactMenu ? compactMenuWidth : 300.0;
     return MenuAnchor(
       controller: _controller,
-      alignmentOffset: const Offset(-256, 8),
+      alignmentOffset: Offset(compactMenu ? -(compactMenuWidth - 44) : -256, 8),
       style: MenuStyle(
         padding: const WidgetStatePropertyAll(
           EdgeInsets.symmetric(vertical: 10),
         ),
-        minimumSize: const WidgetStatePropertyAll(Size(300, 0)),
-        maximumSize: const WidgetStatePropertyAll(Size(320, double.infinity)),
+        minimumSize: WidgetStatePropertyAll(
+          Size(compactMenu ? compactMenuWidth : 300, 0),
+        ),
+        maximumSize: WidgetStatePropertyAll(
+          Size(compactMenu ? compactMenuWidth : 320, double.infinity),
+        ),
         elevation: const WidgetStatePropertyAll(6),
         shadowColor: WidgetStatePropertyAll(
           colorScheme.shadow.withValues(alpha: 0.18),
@@ -7274,20 +7325,27 @@ class _LayersMenuButtonState extends State<_LayersMenuButton> {
         ),
       ),
       menuChildren: [
-        _LayerVisibilityMenuItem(
-          title: 'Polígonos de suelo',
-          subtitle: 'Unidades cartográficas',
-          icon: AppIcons.map,
-          isVisible: widget.showSoilPolygons,
-          onChanged: () => widget.onToggle(_LayerVisibilityOption.soilPolygons),
+        SizedBox(
+          width: menuContentWidth,
+          child: _LayerVisibilityMenuItem(
+            title: 'Polígonos de suelo',
+            subtitle: 'Unidades cartográficas',
+            icon: AppIcons.map,
+            isVisible: widget.showSoilPolygons,
+            onChanged: () =>
+                widget.onToggle(_LayerVisibilityOption.soilPolygons),
+          ),
         ),
-        _LayerVisibilityMenuItem(
-          title: 'Mapa de referencia',
-          subtitle: 'Rutas, ríos y localidades',
-          icon: AppIcons.layers,
-          isVisible: widget.showReferenceBasemap,
-          onChanged: () =>
-              widget.onToggle(_LayerVisibilityOption.referenceBasemap),
+        SizedBox(
+          width: menuContentWidth,
+          child: _LayerVisibilityMenuItem(
+            title: 'Mapa de referencia',
+            subtitle: 'Rutas, ríos y localidades',
+            icon: AppIcons.layers,
+            isVisible: widget.showReferenceBasemap,
+            onChanged: () =>
+                widget.onToggle(_LayerVisibilityOption.referenceBasemap),
+          ),
         ),
       ],
       builder: (context, controller, child) {
@@ -7355,6 +7413,8 @@ class _LayerVisibilityMenuItem extends StatelessWidget {
                     children: [
                       Text(
                         title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),

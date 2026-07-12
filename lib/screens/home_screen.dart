@@ -219,8 +219,8 @@ class _ModuleCardState extends State<_ModuleCard> {
               clipBehavior: Clip.antiAlias,
               child: InkWell(
                 onTap: widget.onTap,
-                child: SizedBox(
-                  height: cardHeight,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: cardHeight),
                   child: Padding(
                     padding: widget.primary
                         ? const EdgeInsets.symmetric(

@@ -30,14 +30,16 @@ abstract final class AppNotification {
             defaultTargetPlatform == TargetPlatform.linux);
     final completer = Completer<void>();
     _activeCompleter = completer;
-    final entry = OverlayEntry(
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
       builder: (overlayContext) => _NotificationOverlay(
         message: message,
         type: type,
         isDesktop: isDesktop,
         bottom: bottomOffset + mediaQuery.padding.bottom,
         duration: _durationFor(type),
-        onComplete: dismiss,
+        onComplete: () => _finishEntry(entry, remove: true),
+        onDispose: () => _finishEntry(entry, remove: false),
       ),
     );
     _activeEntry = entry;
@@ -46,11 +48,18 @@ abstract final class AppNotification {
   }
 
   static void dismiss() {
-    if (_activeEntry?.mounted ?? false) _activeEntry?.remove();
+    final entry = _activeEntry;
+    if (entry == null) return;
+    _finishEntry(entry, remove: true);
+  }
+
+  static void _finishEntry(OverlayEntry entry, {required bool remove}) {
+    if (!identical(_activeEntry, entry)) return;
     _activeEntry = null;
     final completer = _activeCompleter;
     _activeCompleter = null;
     if (completer != null && !completer.isCompleted) completer.complete();
+    if (remove && entry.mounted) entry.remove();
   }
 
   static Duration _durationFor(AppNotificationType type) => switch (type) {
@@ -69,6 +78,7 @@ class _NotificationOverlay extends StatefulWidget {
     required this.bottom,
     required this.duration,
     required this.onComplete,
+    required this.onDispose,
   });
 
   final String message;
@@ -77,6 +87,7 @@ class _NotificationOverlay extends StatefulWidget {
   final double bottom;
   final Duration duration;
   final VoidCallback onComplete;
+  final VoidCallback onDispose;
 
   @override
   State<_NotificationOverlay> createState() => _NotificationOverlayState();
@@ -103,6 +114,7 @@ class _NotificationOverlayState extends State<_NotificationOverlay>
 
   @override
   void dispose() {
+    widget.onDispose();
     _controller.dispose();
     super.dispose();
   }

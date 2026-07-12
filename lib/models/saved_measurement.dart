@@ -79,14 +79,10 @@ class SavedMeasurement {
       id: json['id']?.toString() ?? '',
       type: SavedMeasurementType.fromId(json['type']),
       name: json['name']?.toString() ?? '',
-      geometry: [
-        for (final rawPoint in rawGeometry)
-          if (rawPoint is Map)
-            LatLng(
-              (rawPoint['latitude'] as num).toDouble(),
-              (rawPoint['longitude'] as num).toDouble(),
-            ),
-      ],
+      geometry: rawGeometry
+          .map(_latLngFromJson)
+          .whereType<LatLng>()
+          .toList(growable: false),
       createdAt: DateTime.parse(json['createdAt'] as String),
       distanceMeters: (json['distanceMeters'] as num?)?.toDouble(),
       areaSquareMeters: (json['areaSquareMeters'] as num?)?.toDouble(),
@@ -99,4 +95,21 @@ class SavedMeasurement {
       },
     );
   }
+}
+
+LatLng? _latLngFromJson(Object? rawPoint) {
+  if (rawPoint is! Map) return null;
+  final rawLatitude = rawPoint['latitude'];
+  final rawLongitude = rawPoint['longitude'];
+  if (rawLatitude is! num || rawLongitude is! num) return null;
+
+  final latitude = rawLatitude.toDouble();
+  final longitude = rawLongitude.toDouble();
+  if (!latitude.isFinite ||
+      latitude.isNaN ||
+      !longitude.isFinite ||
+      longitude.isNaN) {
+    return null;
+  }
+  return LatLng(latitude, longitude);
 }

@@ -1,11 +1,16 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/app_icons.dart';
+import '../export/measurement_export.dart';
 import '../models/saved_measurement.dart';
+import '../widgets/app_notification.dart';
 import '../widgets/destructive_action_confirmation.dart';
+import '../widgets/saved_measurement_overflow_menu.dart';
+import '../widgets/scrollable_empty_state.dart';
 
 class MeasurementsScreen extends StatefulWidget {
   const MeasurementsScreen({super.key});
@@ -27,26 +32,49 @@ class _MeasurementsScreenState extends State<MeasurementsScreen>
   @override
   Widget build(BuildContext context) {
     final measurementsLoaded = _measurements != null;
+    final compactActions = MediaQuery.sizeOf(context).width < 500;
     return DefaultTabController(
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Mediciones'),
-          actions: [
-            TextButton(
-              onPressed: measurementsLoaded
-                  ? () => _setAllVisibility(true)
-                  : null,
-              child: const Text('Mostrar todas'),
-            ),
-            TextButton(
-              onPressed: measurementsLoaded
-                  ? () => _setAllVisibility(false)
-                  : null,
-              child: const Text('Ocultar todas'),
-            ),
-            const SizedBox(width: 8),
-          ],
+          title: const Text(
+            'Mediciones',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          actions: compactActions
+              ? [
+                  IconButton(
+                    tooltip: 'Mostrar todas',
+                    onPressed: measurementsLoaded
+                        ? () => _setAllVisibility(true)
+                        : null,
+                    icon: const Icon(AppIcons.visibility),
+                  ),
+                  IconButton(
+                    tooltip: 'Ocultar todas',
+                    onPressed: measurementsLoaded
+                        ? () => _setAllVisibility(false)
+                        : null,
+                    icon: const Icon(AppIcons.visibilityOff),
+                  ),
+                  const SizedBox(width: 8),
+                ]
+              : [
+                  TextButton(
+                    onPressed: measurementsLoaded
+                        ? () => _setAllVisibility(true)
+                        : null,
+                    child: const Text('Mostrar todas'),
+                  ),
+                  TextButton(
+                    onPressed: measurementsLoaded
+                        ? () => _setAllVisibility(false)
+                        : null,
+                    child: const Text('Ocultar todas'),
+                  ),
+                  const SizedBox(width: 8),
+                ],
           bottom: const TabBar(
             tabs: [
               Tab(text: 'Áreas'),
@@ -103,7 +131,8 @@ class _MeasurementsScreenState extends State<MeasurementsScreen>
               ),
             ],
           ),
-          trailing: Wrap(
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
               IconButton(
                 key: ValueKey('visibility-measurement-${measurement.id}'),
@@ -121,11 +150,21 @@ class _MeasurementsScreenState extends State<MeasurementsScreen>
                 icon: const Icon(AppIcons.edit),
                 onPressed: () => _renameMeasurement(measurement),
               ),
-              IconButton(
-                key: ValueKey('delete-measurement-${measurement.id}'),
-                tooltip: 'Eliminar',
-                icon: const Icon(AppIcons.delete),
-                onPressed: () => _deleteMeasurement(measurement),
+              SavedMeasurementOverflowMenu(
+                key: ValueKey('measurement-overflow-${measurement.id}'),
+                onExportPdf: () => _exportMeasurement(
+                  measurement,
+                  _MeasurementExportFormat.pdf,
+                ),
+                onExportGeoJson: () => _exportMeasurement(
+                  measurement,
+                  _MeasurementExportFormat.geoJson,
+                ),
+                onExportCsv: () => _exportMeasurement(
+                  measurement,
+                  _MeasurementExportFormat.csv,
+                ),
+                onDelete: () => _deleteMeasurement(measurement),
               ),
             ],
           ),
@@ -201,6 +240,51 @@ class _MeasurementsScreenState extends State<MeasurementsScreen>
     await _persistMeasurements();
   }
 
+  Future<void> _exportMeasurement(
+    SavedMeasurement measurement,
+    _MeasurementExportFormat format,
+  ) async {
+    final exportData = const MeasurementExportService().fromSavedMeasurement(
+      measurement,
+    );
+    try {
+      switch (format) {
+        case _MeasurementExportFormat.pdf:
+          final file = await MeasurementPdfExporter().export(exportData);
+          await const MeasurementExportShareService().share(
+            file: file,
+            mimeType: 'application/pdf',
+            text: 'Informe de medición de SuelosAR',
+          );
+        case _MeasurementExportFormat.geoJson:
+          final file = await const MeasurementGeoJsonExporter().export(
+            exportData,
+          );
+          await const MeasurementExportShareService().share(
+            file: file,
+            mimeType: 'application/geo+json',
+            text: 'Medición de SuelosAR en GeoJSON',
+          );
+        case _MeasurementExportFormat.csv:
+          final file = await const MeasurementCsvExporter().export(exportData);
+          await const MeasurementExportShareService().share(
+            file: file,
+            mimeType: 'text/csv',
+            text: 'Medición de SuelosAR en CSV',
+          );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      unawaited(
+        AppNotification.show(
+          context,
+          message: 'No se pudo exportar la medición.',
+          type: AppNotificationType.error,
+        ),
+      );
+    }
+  }
+
   Future<void> _toggleVisibility(SavedMeasurement measurement) async {
     final index = _measurements!.indexWhere(
       (item) => item.id == measurement.id,
@@ -261,6 +345,8 @@ class _MeasurementsScreenState extends State<MeasurementsScreen>
   }
 }
 
+enum _MeasurementExportFormat { pdf, geoJson, csv }
+
 class _EmptyMeasurements extends StatelessWidget {
   const _EmptyMeasurements({required this.type});
 
@@ -269,7 +355,7 @@ class _EmptyMeasurements extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isArea = type == SavedMeasurementType.area;
-    return Center(
+    return ScrollableEmptyState(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(

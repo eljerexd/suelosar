@@ -1459,8 +1459,10 @@ void main() {
     expect(find.text('Distancia 1'), findsOneWidget);
     expect(find.text('2.1 km'), findsOneWidget);
     await tester.tap(
-      find.byKey(const ValueKey('delete-measurement-managed-distance')),
+      find.byKey(const ValueKey('measurement-overflow-managed-distance')),
     );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Eliminar').last);
     await tester.pumpAndSettle();
     expect(find.text('¿Eliminar medición?'), findsOneWidget);
     await tester.tap(

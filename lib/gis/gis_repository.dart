@@ -169,6 +169,15 @@ class PmTilesGisRepository implements GisRepository {
 
   @override
   Future<void> close() async {
+    final initialization = _initialization;
+    if (initialization != null) {
+      try {
+        await initialization;
+      } catch (_) {
+        // Initialization already reports its own failure to the caller.
+      }
+    }
+
     final pending = _pendingTiles.values.toList(growable: false);
     if (pending.isNotEmpty) {
       await Future.wait(pending).catchError((_) => <GisLayer>[]);
