@@ -28,6 +28,7 @@ import '../screens/measurements_screen.dart';
 import '../screens/pdf_viewer_screen.dart';
 import '../screens/personal_markers_screen.dart';
 import '../services/settings_service.dart';
+import '../utils/app_motion.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/destructive_action_confirmation.dart';
 import '../widgets/floating_app_bar_card.dart';
@@ -37,6 +38,7 @@ import '../widgets/saved_measurement_overflow_menu.dart';
 import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_location_service.dart';
+import 'gis_map_occlusion_observer.dart';
 import 'offline_reference_map_layer.dart';
 import 'gis_render_metrics.dart';
 import 'gis_repository.dart';
@@ -64,6 +66,7 @@ class GisMapScreen extends StatefulWidget {
 
 class _GisMapScreenState extends State<GisMapScreen>
     with TickerProviderStateMixin {
+  static const double _mapOcclusionThreshold = 0.9;
   static const LatLng _buenosAiresCenter = LatLng(-36.5, -60);
   static const double _minimumMapZoom = 7;
   static const double _initialZoom = _minimumMapZoom;
@@ -130,6 +133,10 @@ class _GisMapScreenState extends State<GisMapScreen>
   bool _isMeasurementDialogVisible = false;
   bool _isSearchViewOpen = false;
   bool _mapVisualsPaused = false;
+  final Object _searchOcclusionToken = Object();
+  final Object _routeOcclusionToken = Object();
+  final Map<Object, double> _mapOcclusions = <Object, double>{};
+  Route<dynamic>? _registeredMapRoute;
   final List<PersonalMarker> _personalMarkers = <PersonalMarker>[];
   _MeasurementMode? _measurementMode;
   _MeasurementMode? _retainedMeasurementMode;
@@ -209,7 +216,27 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route == null || identical(route, _registeredMapRoute)) return;
+    final previousRoute = _registeredMapRoute;
+    if (previousRoute != null) {
+      GisMapOcclusionObserver.instance.unregister(previousRoute);
+    }
+    _registeredMapRoute = route;
+    GisMapOcclusionObserver.instance.register(
+      route,
+      (coverage) => _updateMapOcclusion(_routeOcclusionToken, coverage),
+    );
+  }
+
+  @override
   void dispose() {
+    final registeredRoute = _registeredMapRoute;
+    if (registeredRoute != null) {
+      GisMapOcclusionObserver.instance.unregister(registeredRoute);
+    }
     _tileLoadDebounce?.cancel();
     unawaited(_locationSubscription?.cancel());
     _searchCameraAnimation?.dispose();
@@ -289,19 +316,24 @@ class _GisMapScreenState extends State<GisMapScreen>
                             icon: const Icon(Icons.history),
                             onPressed: _openMeasurements,
                           ),
-                          if (showsMeasurement &&
-                              _activeSavedMeasurementId == null)
-                            _MapChromeIconButton(
+                          _AnimatedMapHeaderItem(
+                            visible:
+                                showsMeasurement &&
+                                _activeSavedMeasurementId == null,
+                            child: _MapChromeIconButton(
                               tooltip: 'Deshacer último punto',
                               icon: const Icon(AppIcons.undo),
                               onPressed: _undoMeasurementPoint,
                             ),
-                          if (showsMeasurement)
-                            _MapChromeIconButton(
+                          ),
+                          _AnimatedMapHeaderItem(
+                            visible: showsMeasurement,
+                            child: _MapChromeIconButton(
                               tooltip: 'Limpiar medición',
                               icon: const Icon(AppIcons.delete),
                               onPressed: _clearMeasurement,
                             ),
+                          ),
                           SearchAnchor(
                             viewBuilder: _buildSearchView,
                             viewOnOpen: _handleSearchViewOpen,
@@ -386,89 +418,95 @@ class _GisMapScreenState extends State<GisMapScreen>
         !(portraitMobile &&
             showsMeasurement &&
             MediaQuery.sizeOf(context).width < 360);
-    final titleCard = _MapTopBarCard(
-      padding: cardPadding,
-      child: AnimatedSize(
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOutCubic,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            FloatingAppBarBackButton(
-              onPressed: () => Navigator.maybePop(context),
-            ),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              transitionBuilder: (child, animation) =>
-                  FadeTransition(opacity: animation, child: child),
-              child: collapseTitle
-                  ? const SizedBox.shrink(key: ValueKey('collapsed-map-title'))
-                  : Row(
-                      key: const ValueKey('expanded-map-title'),
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(width: 12),
-                        Text(
-                          portraitMobile ? 'Mapa' : 'Mapa de suelos',
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
+    return _SynchronizedMapHeaderTransition(
+      titleVisible: !collapseTitle,
+      undoVisible: showsMeasurement && _activeSavedMeasurementId == null,
+      clearVisible: showsMeasurement,
+      builder: (context, titleFactor, undoFactor, clearFactor) {
+        final titleCard = _MapTopBarCard(
+          padding: cardPadding,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              FloatingAppBarBackButton(
+                onPressed: () => Navigator.maybePop(context),
+              ),
+              _MapHeaderTransitionItem(
+                key: const ValueKey('map-header-title-transition'),
+                factor: titleFactor,
+                child: Row(
+                  key: const ValueKey('expanded-map-title'),
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(width: 12),
+                    Text(
+                      portraitMobile ? 'Mapa' : 'Mapa de suelos',
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-            ),
-          ],
-        ),
-      ),
-    );
-    final actionCard = _MapTopBarCard(
-      padding: cardPadding,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _MapChromeIconButton(
-            tooltip: 'Abrir marcadores personales',
-            icon: const Icon(Icons.bookmarks),
-            onPressed: _openPersonalMarkers,
-            includeOuterSpacing: includeActionSpacing,
+                    const SizedBox(width: 8),
+                  ],
+                ),
+              ),
+            ],
           ),
-          _MapChromeIconButton(
-            tooltip: 'Abrir mediciones',
-            icon: const Icon(Icons.history),
-            onPressed: _openMeasurements,
-            includeOuterSpacing: includeActionSpacing,
+        );
+        final actionCard = _MapTopBarCard(
+          padding: cardPadding,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _MapChromeIconButton(
+                tooltip: 'Abrir marcadores personales',
+                icon: const Icon(Icons.bookmarks),
+                onPressed: _openPersonalMarkers,
+                includeOuterSpacing: includeActionSpacing,
+              ),
+              _MapChromeIconButton(
+                tooltip: 'Abrir mediciones',
+                icon: const Icon(Icons.history),
+                onPressed: _openMeasurements,
+                includeOuterSpacing: includeActionSpacing,
+              ),
+              _MapHeaderTransitionItem(
+                key: const ValueKey('map-header-undo-transition'),
+                factor: undoFactor,
+                child: _MapChromeIconButton(
+                  key: const ValueKey('compact-map-header-undo-button'),
+                  tooltip: 'Deshacer último punto',
+                  icon: const Icon(AppIcons.undo),
+                  onPressed: _undoMeasurementPoint,
+                  includeOuterSpacing: includeActionSpacing,
+                ),
+              ),
+              _MapHeaderTransitionItem(
+                key: const ValueKey('map-header-clear-transition'),
+                factor: clearFactor,
+                child: _MapChromeIconButton(
+                  key: const ValueKey('compact-map-header-clear-button'),
+                  tooltip: 'Limpiar medición',
+                  icon: const Icon(AppIcons.delete),
+                  onPressed: _clearMeasurement,
+                  includeOuterSpacing: includeActionSpacing,
+                ),
+              ),
+              _buildCompactSearchAction(
+                context,
+                includeOuterSpacing: includeActionSpacing,
+              ),
+            ],
           ),
-          if (showsMeasurement && _activeSavedMeasurementId == null)
-            _MapChromeIconButton(
-              tooltip: 'Deshacer último punto',
-              icon: const Icon(AppIcons.undo),
-              onPressed: _undoMeasurementPoint,
-              includeOuterSpacing: includeActionSpacing,
-            ),
-          if (showsMeasurement)
-            _MapChromeIconButton(
-              tooltip: 'Limpiar medición',
-              icon: const Icon(AppIcons.delete),
-              onPressed: _clearMeasurement,
-              includeOuterSpacing: includeActionSpacing,
-            ),
-          _buildCompactSearchAction(
-            context,
-            includeOuterSpacing: includeActionSpacing,
+        );
+        return SafeArea(
+          minimum: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [titleCard, const Spacer(), actionCard],
           ),
-        ],
-      ),
-    );
-
-    return SafeArea(
-      minimum: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [titleCard, const Spacer(), actionCard],
-      ),
+        );
+      },
     );
   }
 
@@ -518,18 +556,28 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _handleSearchViewClose() {
-    if (!mounted || (!_isSearchViewOpen && !_mapVisualsPaused)) return;
+    if (!mounted || !_isSearchViewOpen) return;
     _isSearchViewOpen = false;
-    if (_mapVisualsPaused) {
-      setState(() => _mapVisualsPaused = false);
-    }
+    _updateMapOcclusion(_searchOcclusionToken, 0);
   }
 
-  void _handleSearchCoverageChanged(bool obscuresMap) {
-    if (!mounted || !_isSearchViewOpen || _mapVisualsPaused == obscuresMap) {
-      return;
+  void _handleSearchCoverageChanged(double coverage) {
+    if (!mounted || !_isSearchViewOpen) return;
+    _updateMapOcclusion(_searchOcclusionToken, coverage);
+  }
+
+  void _updateMapOcclusion(Object source, double coverage) {
+    if (!mounted) return;
+    if (coverage <= 0 || !coverage.isFinite) {
+      _mapOcclusions.remove(source);
+    } else {
+      _mapOcclusions[source] = coverage.clamp(0, 1);
     }
-    setState(() => _mapVisualsPaused = obscuresMap);
+    final shouldPause = _mapOcclusions.values.any(
+      (value) => value >= _mapOcclusionThreshold,
+    );
+    if (shouldPause == _mapVisualsPaused) return;
+    setState(() => _mapVisualsPaused = shouldPause);
   }
 
   Future<void> _initializeArchive() async {
@@ -890,11 +938,24 @@ class _GisMapScreenState extends State<GisMapScreen>
                       )
                     : const Icon(AppIcons.myLocation),
               ),
-              const SizedBox(height: 10),
-              ValueListenableBuilder<_MapViewportState>(
-                valueListenable: _mapViewportState,
-                builder: (context, viewState, child) =>
-                    _ZoomLevelIndicator(zoom: viewState.zoom),
+              AnimatedBuilder(
+                animation: SettingsService.instance,
+                builder: (context, _) {
+                  if (!SettingsService.instance.showZoomLevel) {
+                    return const SizedBox.shrink();
+                  }
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 10),
+                      ValueListenableBuilder<_MapViewportState>(
+                        valueListenable: _mapViewportState,
+                        builder: (context, viewState, child) =>
+                            _ZoomLevelIndicator(zoom: viewState.zoom),
+                      ),
+                    ],
+                  );
+                },
               ),
             ],
           ),
@@ -4069,9 +4130,7 @@ class _SearchViewLayoutObserver extends StatelessWidget {
   });
 
   static const double _headerAndDividerHeight = 65;
-  static const double _obscuredThreshold = 0.9;
-
-  final ValueChanged<bool> onCoverageChanged;
+  final ValueChanged<double> onCoverageChanged;
   final Iterable<Widget> suggestions;
 
   @override
@@ -4087,12 +4146,11 @@ class _SearchViewLayoutObserver extends StatelessWidget {
         );
         final viewportArea = viewport.width * viewport.height;
         final overlayArea = contentSize.width * overlayHeight;
-        final obscuresMap =
-            viewportArea > 0 &&
-            overlayArea.isFinite &&
-            overlayArea / viewportArea >= _obscuredThreshold;
+        final coverage = viewportArea > 0 && overlayArea.isFinite
+            ? (overlayArea / viewportArea).clamp(0.0, 1.0)
+            : 0.0;
         WidgetsBinding.instance.addPostFrameCallback(
-          (_) => onCoverageChanged(obscuresMap),
+          (_) => onCoverageChanged(coverage),
         );
 
         return MediaQuery.removePadding(
@@ -6290,7 +6348,8 @@ class _MapViewportOverlay extends StatelessWidget {
 class _MapScaleIndicator extends StatelessWidget {
   const _MapScaleIndicator({required this.viewState});
 
-  static const double _maxBarWidth = 120;
+  static const double _preferredBarWidth = 112;
+  static const double _minimumAgriculturalScaleMeters = 10;
   static const double _earthCircumferenceMeters = 40075016.686;
   static const double _webMercatorTileSize = 256;
   static const double _maxWebMercatorLatitude = 85.05112878;
@@ -6306,11 +6365,7 @@ class _MapScaleIndicator extends StatelessWidget {
       fontWeight: FontWeight.w600,
     );
     final metersPerPixel = _metersPerPixel(viewState);
-    final distanceMeters = _niceScaleDistance(metersPerPixel * _maxBarWidth);
-    final barWidth = (distanceMeters / metersPerPixel).clamp(
-      24.0,
-      _maxBarWidth,
-    );
+    final scale = _selectAgriculturalScale(metersPerPixel);
 
     return DecoratedBox(
       decoration: _mapHudDecoration(colorScheme),
@@ -6320,10 +6375,10 @@ class _MapScaleIndicator extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(_formatScaleLabel(distanceMeters), style: textStyle),
+            Text(_formatScaleLabel(scale.distanceMeters), style: textStyle),
             const SizedBox(height: 6),
             SizedBox(
-              width: barWidth,
+              width: scale.widthPixels,
               height: 8,
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -6363,20 +6418,65 @@ class _MapScaleIndicator extends StatelessWidget {
         (_webMercatorTileSize * zoomScale);
   }
 
-  static double _niceScaleDistance(double maxDistanceMeters) {
-    if (!maxDistanceMeters.isFinite || maxDistanceMeters <= 0) {
-      return 1;
+  static ({double distanceMeters, double widthPixels}) _selectAgriculturalScale(
+    double metersPerPixel,
+  ) {
+    if (!metersPerPixel.isFinite || metersPerPixel <= 0) {
+      return (
+        distanceMeters: _minimumAgriculturalScaleMeters,
+        widthPixels: _preferredBarWidth,
+      );
+    }
+
+    final targetDistanceMeters = metersPerPixel * _preferredBarWidth;
+    final lowerDistance = _agriculturalScaleAtOrBelow(targetDistanceMeters);
+    final upperDistance = _nextAgriculturalScale(targetDistanceMeters);
+    final lowerWidth = lowerDistance / metersPerPixel;
+    final upperWidth = upperDistance / metersPerPixel;
+    final distanceMeters =
+        (upperWidth - _preferredBarWidth).abs() <=
+            (lowerWidth - _preferredBarWidth).abs()
+        ? upperDistance
+        : lowerDistance;
+    final widthPixels = distanceMeters / metersPerPixel;
+
+    return (distanceMeters: distanceMeters, widthPixels: widthPixels);
+  }
+
+  static double _agriculturalScaleAtOrBelow(double distanceMeters) {
+    if (distanceMeters <= _minimumAgriculturalScaleMeters) {
+      return _minimumAgriculturalScaleMeters;
     }
 
     final exponent = math
-        .pow(10, (math.log(maxDistanceMeters) / math.ln10).floor())
+        .pow(10, (math.log(distanceMeters) / math.ln10).floor())
         .toDouble();
-    final normalized = maxDistanceMeters / exponent;
+    final normalized = distanceMeters / exponent;
     final multiplier = normalized >= 5
         ? 5
         : normalized >= 2
         ? 2
         : 1;
+
+    return math.max(_minimumAgriculturalScaleMeters, multiplier * exponent);
+  }
+
+  static double _nextAgriculturalScale(double minimumDistanceMeters) {
+    if (minimumDistanceMeters <= _minimumAgriculturalScaleMeters) {
+      return _minimumAgriculturalScaleMeters;
+    }
+
+    final exponent = math
+        .pow(10, (math.log(minimumDistanceMeters) / math.ln10).floor())
+        .toDouble();
+    final normalized = minimumDistanceMeters / exponent;
+    final multiplier = normalized <= 1
+        ? 1
+        : normalized <= 2
+        ? 2
+        : normalized <= 5
+        ? 5
+        : 10;
 
     return multiplier * exponent;
   }
@@ -6414,7 +6514,7 @@ class _ZoomLevelIndicator extends StatelessWidget {
       decoration: _mapHudDecoration(colorScheme),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Text('Z${zoom.toStringAsFixed(1)}', style: textStyle),
+        child: Text('Zoom ${zoom.round()}', style: textStyle),
       ),
     );
   }
@@ -7249,6 +7349,233 @@ class _MapChromeIconButton extends StatelessWidget {
         icon: icon,
         iconSize: 21,
         padding: EdgeInsets.zero,
+      ),
+    );
+  }
+}
+
+typedef _SynchronizedMapHeaderBuilder =
+    Widget Function(
+      BuildContext context,
+      double titleFactor,
+      double undoFactor,
+      double clearFactor,
+    );
+
+class _SynchronizedMapHeaderTransition extends StatefulWidget {
+  const _SynchronizedMapHeaderTransition({
+    required this.titleVisible,
+    required this.undoVisible,
+    required this.clearVisible,
+    required this.builder,
+  });
+
+  final bool titleVisible;
+  final bool undoVisible;
+  final bool clearVisible;
+  final _SynchronizedMapHeaderBuilder builder;
+
+  @override
+  State<_SynchronizedMapHeaderTransition> createState() =>
+      _SynchronizedMapHeaderTransitionState();
+}
+
+class _SynchronizedMapHeaderTransitionState
+    extends State<_SynchronizedMapHeaderTransition>
+    with SingleTickerProviderStateMixin {
+  static const _kHeaderTransitionDuration = Duration(milliseconds: 220);
+
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: _kHeaderTransitionDuration,
+    reverseDuration: _kHeaderTransitionDuration,
+    value: 1,
+  );
+
+  late double _titleStart = widget.titleVisible ? 1 : 0;
+  late double _undoStart = widget.undoVisible ? 1 : 0;
+  late double _clearStart = widget.clearVisible ? 1 : 0;
+  late double _titleTarget = _titleStart;
+  late double _undoTarget = _undoStart;
+  late double _clearTarget = _clearStart;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    final duration = AppMotion.duration(context, _kHeaderTransitionDuration);
+
+    _controller.duration = duration;
+    _controller.reverseDuration = duration;
+
+    if (duration == Duration.zero) {
+      _controller.value = 1;
+    }
+  }
+
+  @override
+  void didUpdateWidget(_SynchronizedMapHeaderTransition oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.titleVisible == widget.titleVisible &&
+        oldWidget.undoVisible == widget.undoVisible &&
+        oldWidget.clearVisible == widget.clearVisible) {
+      return;
+    }
+    _titleStart = _factor(_titleStart, _titleTarget);
+    _undoStart = _factor(_undoStart, _undoTarget);
+    _clearStart = _factor(_clearStart, _clearTarget);
+    _titleTarget = widget.titleVisible ? 1 : 0;
+    _undoTarget = widget.undoVisible ? 1 : 0;
+    _clearTarget = widget.clearVisible ? 1 : 0;
+    if (_controller.duration == Duration.zero) {
+      _controller.value = 1;
+    } else {
+      _controller.forward(from: 0);
+    }
+  }
+
+  double _factor(double start, double target) {
+    if (start == target) return target;
+    final progress = Curves.easeOutCubic.transform(_controller.value);
+    return ui.lerpDouble(start, target, progress)!;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) => widget.builder(
+        context,
+        _factor(_titleStart, _titleTarget),
+        _factor(_undoStart, _undoTarget),
+        _factor(_clearStart, _clearTarget),
+      ),
+    );
+  }
+}
+
+class _MapHeaderTransitionItem extends StatelessWidget {
+  const _MapHeaderTransitionItem({
+    super.key,
+    required this.factor,
+    required this.child,
+  });
+
+  final double factor;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Offstage(
+      offstage: factor == 0,
+      child: ClipRect(
+        child: Align(
+          alignment: Alignment.centerLeft,
+          widthFactor: factor,
+          heightFactor: 1,
+          child: Opacity(
+            opacity: factor,
+            child: IgnorePointer(
+              ignoring: factor < 1,
+              child: ExcludeSemantics(excluding: factor < 1, child: child),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AnimatedMapHeaderItem extends StatefulWidget {
+  const _AnimatedMapHeaderItem({required this.visible, required this.child});
+
+  final bool visible;
+  final Widget child;
+
+  @override
+  State<_AnimatedMapHeaderItem> createState() => _AnimatedMapHeaderItemState();
+}
+
+class _AnimatedMapHeaderItemState extends State<_AnimatedMapHeaderItem>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    value: widget.visible ? 1 : 0,
+  );
+  late final Animation<double> _animation = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOutCubic,
+    reverseCurve: Curves.easeInCubic,
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final duration = AppMotion.duration(
+      context,
+      const Duration(milliseconds: 160),
+    );
+    _controller.duration = duration;
+    _controller.reverseDuration = duration;
+    _animateToVisibility();
+  }
+
+  @override
+  void didUpdateWidget(_AnimatedMapHeaderItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.visible != widget.visible) {
+      _animateToVisibility();
+    }
+  }
+
+  void _animateToVisibility() {
+    if (_controller.duration == Duration.zero) {
+      _controller.value = widget.visible ? 1 : 0;
+    } else if (widget.visible) {
+      _controller.forward();
+    } else {
+      _controller.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: AnimatedBuilder(
+        animation: _animation,
+        child: widget.child,
+        builder: (context, child) {
+          if (!widget.visible && _animation.value == 0) {
+            return const SizedBox.shrink();
+          }
+          return Align(
+            alignment: Alignment.centerLeft,
+            widthFactor: _animation.value,
+            heightFactor: 1,
+            child: Opacity(
+              opacity: _animation.value,
+              child: IgnorePointer(
+                ignoring: !widget.visible,
+                child: ExcludeSemantics(
+                  excluding: !widget.visible,
+                  child: child,
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }

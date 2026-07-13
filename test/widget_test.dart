@@ -41,6 +41,7 @@ void main() {
       'settings.follow_location_automatically': true,
       'settings.confirm_before_deleting': true,
       'settings.show_gps_accuracy_circle': false,
+      'settings.show_zoom_level': false,
       'settings.default_measurement_color': 'orange',
     });
     final settings = SettingsService.instance;
@@ -49,12 +50,14 @@ void main() {
     expect(settings.followLocationAutomatically, isTrue);
     expect(settings.confirmBeforeDeleting, isTrue);
     expect(settings.showGpsAccuracyCircle, isFalse);
+    expect(settings.showZoomLevel, isFalse);
     expect(settings.defaultMeasurementColor, MeasurementColorOption.orange);
 
     await settings.setReduceAnimations(false);
     await settings.setFollowLocationAutomatically(false);
     await settings.setConfirmBeforeDeleting(false);
     await settings.setShowGpsAccuracyCircle(true);
+    await settings.setShowZoomLevel(true);
     await settings.setDefaultMeasurementColor(MeasurementColorOption.blue);
     final preferences = await SharedPreferences.getInstance();
     expect(preferences.getBool('settings.reduce_animations'), isFalse);
@@ -64,6 +67,7 @@ void main() {
     );
     expect(preferences.getBool('settings.confirm_before_deleting'), isFalse);
     expect(preferences.getBool('settings.show_gps_accuracy_circle'), isTrue);
+    expect(preferences.getBool('settings.show_zoom_level'), isTrue);
     expect(preferences.getString('settings.default_measurement_color'), 'blue');
     await settings.setConfirmBeforeDeleting(true);
   });
@@ -710,6 +714,40 @@ void main() {
     expect(find.byTooltip('Restablecer norte'), findsNothing);
   });
 
+  testWidgets(
+    'GIS zoom indicator uses friendly text and persisted visibility',
+    (WidgetTester tester) async {
+      const feature = GisFeature(
+        id: 'zoom-indicator-feature',
+        geometry: GisGeometry(type: 'Polygon', coordinates: []),
+        properties: <String, Object?>{},
+        locality: '',
+        soilMapId: 0,
+      );
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'settings.show_zoom_level': true,
+      });
+      await SettingsService.instance.initialize();
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: GisMapScreen(repository: _SingleFeatureGisRepository(feature)),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.textContaining(RegExp(r'^Zoom \d+$')), findsOneWidget);
+      expect(find.textContaining(RegExp(r'^Z\d')), findsNothing);
+
+      await SettingsService.instance.setShowZoomLevel(false);
+      await tester.pump();
+      expect(find.textContaining('Zoom '), findsNothing);
+
+      final preferences = await SharedPreferences.getInstance();
+      expect(preferences.getBool('settings.show_zoom_level'), isFalse);
+      await SettingsService.instance.setShowZoomLevel(true);
+    },
+  );
+
   testWidgets('GIS map search returns the selected feature internally', (
     WidgetTester tester,
   ) async {
@@ -851,7 +889,7 @@ void main() {
       isNot(distanceBeforeDrag),
     );
     await distanceVertexGesture.up();
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 220));
     expect(find.byType(BottomSheet), findsNothing);
 
     await tester.tap(find.byTooltip('Limpiar medición'));

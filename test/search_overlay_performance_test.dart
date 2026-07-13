@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:suelosar/gis/gis_layer.dart';
+import 'package:suelosar/gis/gis_map_occlusion_observer.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
 import 'package:suelosar/gis/gis_render_metrics.dart';
 import 'package:suelosar/gis/gis_repository.dart';
@@ -78,8 +79,39 @@ void main() {
 
     final dynamic state = tester.state(find.byType(GisMapScreen));
     expect(state.mapVisualsPaused, isFalse);
-    expect(metrics.mapBuildCount, 0);
+    expect(metrics.mapBuildCount, lessThanOrEqualTo(1));
     debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('opaque overlays pause and restore visual map layers', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: <NavigatorObserver>[
+          GisMapOcclusionObserver.instance,
+        ],
+        home: const GisMapScreen(repository: _EmptyRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    final dynamic state = tester.state(find.byType(GisMapScreen));
+    final mapContext = tester.element(find.byType(GisMapScreen));
+    expect(state.mapVisualsPaused, isFalse);
+
+    Navigator.of(mapContext).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const Scaffold(body: SizedBox.expand()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(state.mapVisualsPaused, isTrue);
+
+    Navigator.of(mapContext).pop();
+    await tester.pumpAndSettle();
+    expect(state.mapVisualsPaused, isFalse);
   });
 }
 

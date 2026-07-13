@@ -100,17 +100,21 @@ class HomeScreen extends StatelessWidget {
                                     ).pushNamed(AppRoutes.personalMarkers),
                                   ),
                                 ),
-                                SizedBox(
-                                  width: cardWidth,
-                                  child: _ModuleCard(
-                                    key: const ValueKey('module-settings'),
-                                    icon: AppIcons.settings,
-                                    title: 'Configuración',
-                                    subtitle: 'Preferencias de la aplicación.',
-                                    subdued: true,
-                                    onTap: () => Navigator.of(
-                                      context,
-                                    ).pushNamed(AppRoutes.settings),
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 10),
+                                  child: SizedBox(
+                                    width: cardWidth,
+                                    child: _ModuleCard(
+                                      key: const ValueKey('module-settings'),
+                                      icon: AppIcons.settings,
+                                      title: 'Configuración',
+                                      subtitle:
+                                          'Preferencias de la aplicación.',
+                                      subdued: true,
+                                      onTap: () => Navigator.of(
+                                        context,
+                                      ).pushNamed(AppRoutes.settings),
+                                    ),
                                   ),
                                 ),
                               ],
@@ -186,7 +190,7 @@ class _ModuleCardState extends State<_ModuleCard> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final cardHeight = widget.primary ? 134.0 : 136.0;
+    final cardHeight = widget.primary ? 134.0 : 120.0;
     final motionDuration = AppMotion.duration(
       context,
       const Duration(milliseconds: 180),
@@ -215,6 +219,11 @@ class _ModuleCardState extends State<_ModuleCard> {
                   : colorScheme.surfaceContainerLow,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(24),
+                side: widget.primary
+                    ? BorderSide(
+                        color: colorScheme.primary.withValues(alpha: 0.16),
+                      )
+                    : BorderSide.none,
               ),
               clipBehavior: Clip.antiAlias,
               child: InkWell(

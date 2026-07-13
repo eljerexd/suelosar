@@ -18,6 +18,7 @@ abstract final class AppIcons {
   static const IconData locality = LucideIcons.building_2;
   static const IconData location = LucideIcons.map_pin;
   static const IconData map = LucideIcons.map;
+  static const IconData mail = LucideIcons.mail;
   static const IconData myLocation = LucideIcons.locate_fixed;
   static const IconData pdf = LucideIcons.file_text;
   static const IconData search = LucideIcons.search;

@@ -14,6 +14,7 @@ class SettingsService extends ChangeNotifier {
       'settings.confirm_before_deleting';
   static const String _showGpsAccuracyCircleKey =
       'settings.show_gps_accuracy_circle';
+  static const String _showZoomLevelKey = 'settings.show_zoom_level';
   static const String _defaultMeasurementColorKey =
       'settings.default_measurement_color';
   static const String _legacyMeasurementColorKey = 'gis.measurement_color';
@@ -22,12 +23,14 @@ class SettingsService extends ChangeNotifier {
   bool _followLocationAutomatically = false;
   bool _confirmBeforeDeleting = true;
   bool _showGpsAccuracyCircle = true;
+  bool _showZoomLevel = true;
   MeasurementColorOption _defaultMeasurementColor = MeasurementColorOption.blue;
 
   bool get reduceAnimations => _reduceAnimations;
   bool get followLocationAutomatically => _followLocationAutomatically;
   bool get confirmBeforeDeleting => _confirmBeforeDeleting;
   bool get showGpsAccuracyCircle => _showGpsAccuracyCircle;
+  bool get showZoomLevel => _showZoomLevel;
   MeasurementColorOption get defaultMeasurementColor =>
       _defaultMeasurementColor;
 
@@ -40,6 +43,7 @@ class SettingsService extends ChangeNotifier {
         preferences.getBool(_confirmBeforeDeletingKey) ?? true;
     _showGpsAccuracyCircle =
         preferences.getBool(_showGpsAccuracyCircleKey) ?? true;
+    _showZoomLevel = preferences.getBool(_showZoomLevelKey) ?? true;
     final storedColor =
         preferences.getString(_defaultMeasurementColorKey) ??
         preferences.getString(_legacyMeasurementColorKey);
@@ -88,6 +92,15 @@ class SettingsService extends ChangeNotifier {
 
     final preferences = await SharedPreferences.getInstance();
     await preferences.setBool(_showGpsAccuracyCircleKey, value);
+  }
+
+  Future<void> setShowZoomLevel(bool value) async {
+    if (_showZoomLevel == value) return;
+    _showZoomLevel = value;
+    notifyListeners();
+
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_showZoomLevelKey, value);
   }
 
   Future<void> setDefaultMeasurementColor(MeasurementColorOption value) async {

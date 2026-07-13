@@ -161,6 +161,21 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('about problem report card fits a narrow phone', (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await _pumpNarrowScreen(tester, const AboutSuelosArScreen());
+
+    final reportButton = find.text('Enviar reporte');
+    await tester.scrollUntilVisible(
+      reportButton,
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Reportar un problema'), findsOneWidget);
+    expect(reportButton, findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('layers menu remains inside a narrow viewport', (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     tester.view.devicePixelRatio = 1;
@@ -177,6 +192,125 @@ void main() {
     expect(menuRect.left, greaterThanOrEqualTo(0));
     expect(menuRect.right, lessThanOrEqualTo(320));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('compact GIS header actions animate in sync with its title', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(350, 700);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      const MaterialApp(home: GisMapScreen(repository: _EmptyGisRepository())),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    final clearActionElement = tester.element(
+      find.byKey(
+        const ValueKey('compact-map-header-clear-button'),
+        skipOffstage: false,
+      ),
+    );
+    double actionCardWidth() =>
+        tester.getSize(find.byType(FloatingAppBarCard).last).width;
+    final initialActionWidth = actionCardWidth();
+
+    Future<void> selectMapTool(String tooltip) async {
+      tester
+          .widget<InkWell>(
+            find
+                .descendant(
+                  of: find.byTooltip('Herramientas'),
+                  matching: find.byType(InkWell),
+                )
+                .first,
+          )
+          .onTap!();
+      await tester.pumpAndSettle();
+      tester
+          .widget<InkWell>(
+            find
+                .descendant(
+                  of: find.byTooltip(tooltip),
+                  matching: find.byType(InkWell),
+                )
+                .first,
+          )
+          .onTap!();
+      await tester.pump();
+    }
+
+    double transitionOpacity(String key) => tester
+        .widget<Opacity>(
+          find.descendant(
+            of: find.byKey(ValueKey(key)),
+            matching: find.byType(Opacity),
+          ),
+        )
+        .opacity;
+
+    await selectMapTool('Medir distancia');
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+    map.options.onTap!(
+      const TapPosition(Offset.zero, Offset.zero),
+      const LatLng(-36.5, -60),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 110));
+    final enteringTitle = transitionOpacity('map-header-title-transition');
+    final enteringAction = transitionOpacity('map-header-clear-transition');
+    final enteringActionWidth = actionCardWidth();
+    expect(enteringTitle, inExclusiveRange(0, 1));
+    expect(enteringAction, inExclusiveRange(0, 1));
+    expect(enteringTitle + enteringAction, closeTo(1, 0.04));
+    expect(
+      tester.element(
+        find.byKey(
+          const ValueKey('compact-map-header-clear-button'),
+          skipOffstage: false,
+        ),
+      ),
+      same(clearActionElement),
+    );
+    await tester.pumpAndSettle();
+    final expandedActionWidth = actionCardWidth();
+    expect(enteringActionWidth, greaterThan(initialActionWidth));
+    expect(enteringActionWidth, lessThan(expandedActionWidth));
+
+    tester
+        .widget<IconButton>(
+          find
+              .descendant(
+                of: find.byKey(const ValueKey('map-header-clear-transition')),
+                matching: find.byType(IconButton),
+              )
+              .first,
+        )
+        .onPressed!();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 110));
+    final exitingTitle = transitionOpacity('map-header-title-transition');
+    final exitingAction = transitionOpacity('map-header-clear-transition');
+    final exitingActionWidth = actionCardWidth();
+    expect(exitingTitle, inExclusiveRange(0, 1));
+    expect(exitingAction, inExclusiveRange(0, 1));
+    expect(exitingTitle + exitingAction, closeTo(1, 0.04));
+    expect(enteringTitle + exitingTitle, closeTo(1, 0.04));
+    expect(enteringAction + exitingAction, closeTo(1, 0.04));
+    expect(exitingActionWidth, greaterThan(initialActionWidth));
+    expect(exitingActionWidth, lessThan(expandedActionWidth));
+    await tester.pumpAndSettle();
+    expect(transitionOpacity('map-header-title-transition'), 1);
+    expect(actionCardWidth(), closeTo(initialActionWidth, 0.01));
+    expect(
+      tester.element(
+        find.byKey(
+          const ValueKey('compact-map-header-clear-button'),
+          skipOffstage: false,
+        ),
+      ),
+      same(clearActionElement),
+    );
   });
 }
 

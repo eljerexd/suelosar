@@ -17,3 +17,21 @@ For help getting started with Flutter development, view the
 samples, guidance on mobile development, and a full API reference.
 
 flutter run -d windows
+
+Hoy SuelosAR ya tiene:
+
+✅ Cartas de suelo offline.
+✅ Visualización GIS.
+✅ Búsqueda.
+✅ Marcadores personales.
+✅ Favoritos.
+✅ Mediciones.
+✅ Análisis de lote.
+✅ Exportación PDF.
+✅ Exportación GeoJSON.
+✅ Exportación CSV.
+✅ Responsive.
+✅ Accesibilidad.
+✅ Optimizaciones.
+✅ 63 tests.
+✅ Auditorías funcionales, UX y performance.

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../gis/gis_map_screen.dart';
+import '../gis/gis_map_occlusion_observer.dart';
 import '../screens/favorites_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/measurements_screen.dart';
@@ -47,6 +48,7 @@ class _SuelosARAppState extends State<SuelosARApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'SuelosAR',
+      navigatorObservers: <NavigatorObserver>[GisMapOcclusionObserver.instance],
       theme: AppTheme.light(reduceAnimations: _reduceAnimations),
       builder: (context, child) {
         final mediaQuery = MediaQuery.of(context);

@@ -1,9 +1,13 @@
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app/instant_pop_material_page_route.dart';
 import '../constants/app_icons.dart';
 import '../services/settings_service.dart';
+import '../widgets/app_notification.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/measurement_color_selector.dart';
 
@@ -43,6 +47,7 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     _FollowLocationSetting(),
                     _ShowGpsAccuracyCircleSetting(),
+                    _ShowZoomLevelSetting(),
                   ],
                 ),
                 SizedBox(height: 18),
@@ -171,10 +176,12 @@ class AboutSuelosArScreen extends StatelessWidget {
                       _AboutFeature('Análisis de lote'),
                       _AboutFeature('Marcadores personales'),
                       _AboutFeature('Favoritos'),
-                      _AboutFeature('Exportación PDF'),
+                      _AboutFeature('Exportación PDF, JSON y CSV'),
                     ],
                   ),
                 ),
+                const SizedBox(height: 18),
+                const _ProblemReportCard(),
               ],
             ),
           ),
@@ -238,11 +245,14 @@ class _AboutInfoRow extends StatelessWidget {
             ),
           ),
         ),
-        Text(
-          value,
-          style: Theme.of(
-            context,
-          ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+          ),
         ),
       ],
     );
@@ -267,6 +277,38 @@ class _AboutFeature extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           Expanded(child: Text(text)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProblemReportCard extends StatelessWidget {
+  const _ProblemReportCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return _AboutCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _AboutSectionTitle('Reportar un problema'),
+          const SizedBox(height: 10),
+          Text(
+            '¿Encontraste un error o tenés una sugerencia?\n'
+            'Podés enviarme un correo y lo revisaré para una futura '
+            'actualización.',
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 18),
+          FilledButton.tonalIcon(
+            onPressed: () => _openProblemReportEmail(context),
+            icon: const Icon(AppIcons.mail),
+            label: const Text('Enviar reporte'),
+          ),
         ],
       ),
     );
@@ -403,6 +445,25 @@ class _ShowGpsAccuracyCircleSetting extends StatelessWidget {
         trailing: Switch(
           value: settings.showGpsAccuracyCircle,
           onChanged: settings.setShowGpsAccuracyCircle,
+        ),
+      ),
+    );
+  }
+}
+
+class _ShowZoomLevelSetting extends StatelessWidget {
+  const _ShowZoomLevelSetting();
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = SettingsService.instance;
+    return AnimatedBuilder(
+      animation: settings,
+      builder: (context, _) => _SettingsRow(
+        title: 'Mostrar nivel de zoom',
+        trailing: Switch(
+          value: settings.showZoomLevel,
+          onChanged: settings.setShowZoomLevel,
         ),
       ),
     );
@@ -586,4 +647,104 @@ String _formatVersion(PackageInfo? packageInfo) {
   }
 
   return packageInfo.version;
+}
+
+Future<void> _openProblemReportEmail(BuildContext context) async {
+  final packageInfo = await _loadPackageInfo();
+  final device = await _loadReportDeviceName();
+  final now = DateTime.now();
+  final body =
+      '''SuelosAR - Reporte de problema
+
+Versión: ${packageInfo == null ? '' : _reportVersion(packageInfo)}
+Sistema operativo: ${_reportOperatingSystem()}
+Dispositivo: $device
+Modo de ejecución: ${_reportBuildMode()}
+
+Fecha: ${_formatReportDate(now)}
+
+Descripción del problema:
+
+Pasos para reproducir:
+
+Resultado esperado:
+
+Resultado obtenido:
+
+Información adicional:
+''';
+  final uri = Uri(
+    scheme: 'mailto',
+    path: 'jere.arata@gmail.com',
+    queryParameters: <String, String>{
+      'subject': 'SuelosAR - Reporte de problema',
+      'body': body,
+    },
+  );
+
+  try {
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (launched) return;
+  } catch (_) {}
+  if (!context.mounted) return;
+  AppNotification.show(
+    context,
+    message: 'No se pudo abrir la aplicación de correo.',
+    type: AppNotificationType.error,
+  );
+}
+
+Future<String> _loadReportDeviceName() async {
+  try {
+    final deviceInfo = DeviceInfoPlugin();
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.android => _androidDeviceName(
+        await deviceInfo.androidInfo,
+      ),
+      TargetPlatform.windows => (await deviceInfo.windowsInfo).computerName,
+      TargetPlatform.macOS => (await deviceInfo.macOsInfo).modelName,
+      TargetPlatform.iOS => (await deviceInfo.iosInfo).modelName,
+      TargetPlatform.linux || TargetPlatform.fuchsia => '',
+    };
+  } catch (_) {
+    return '';
+  }
+}
+
+String _androidDeviceName(AndroidDeviceInfo info) {
+  final manufacturer = info.manufacturer.trim();
+  final model = info.model.trim();
+  if (manufacturer.isEmpty) return model;
+  if (model.isEmpty) return manufacturer;
+  if (model.toLowerCase().startsWith(manufacturer.toLowerCase())) return model;
+  return '$manufacturer $model';
+}
+
+String _reportOperatingSystem() => switch (defaultTargetPlatform) {
+  TargetPlatform.android => 'Android',
+  TargetPlatform.windows => 'Windows',
+  TargetPlatform.linux => 'Linux',
+  TargetPlatform.macOS => 'macOS',
+  TargetPlatform.iOS => 'iOS',
+  TargetPlatform.fuchsia => '',
+};
+
+String _reportBuildMode() {
+  if (kDebugMode) return 'Debug';
+  if (kReleaseMode) return 'Release';
+  if (kProfileMode) return 'Profile';
+  return '';
+}
+
+String _reportVersion(PackageInfo packageInfo) {
+  final buildNumber = packageInfo.buildNumber.trim();
+  return buildNumber.isEmpty
+      ? packageInfo.version
+      : '${packageInfo.version}+$buildNumber';
+}
+
+String _formatReportDate(DateTime value) {
+  String twoDigits(int number) => number.toString().padLeft(2, '0');
+  return '${twoDigits(value.day)}/${twoDigits(value.month)}/${value.year} '
+      '${twoDigits(value.hour)}:${twoDigits(value.minute)}';
 }

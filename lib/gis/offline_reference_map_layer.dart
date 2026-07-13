@@ -232,6 +232,7 @@ class _AgronomicReferencePainter extends CustomPainter {
         textAlign: TextAlign.center,
         textDirection: TextDirection.ltr,
         maxLines: 1,
+        ellipsis: '…',
       )..layout(maxWidth: city.labelWidth);
 
       final labelOffset = Offset(
@@ -260,6 +261,7 @@ class _AgronomicReferencePainter extends CustomPainter {
         textAlign: TextAlign.center,
         textDirection: TextDirection.ltr,
         maxLines: 1,
+        ellipsis: '…',
       )..layout(maxWidth: city.labelWidth);
       haloPainter.paint(canvas, labelOffset);
       textPainter.paint(canvas, labelOffset);
