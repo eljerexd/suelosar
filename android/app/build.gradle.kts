@@ -4,6 +4,11 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val disableGeolocatorDiagnostic = providers
+    .gradleProperty("disableGeolocatorDiagnostic")
+    .map(String::toBoolean)
+    .getOrElse(false)
+
 android {
     namespace = "com.example.suelosar"
     compileSdk = flutter.compileSdkVersion
@@ -23,6 +28,15 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        buildConfigField(
+            "boolean",
+            "DISABLE_GEOLOCATOR_DIAGNOSTIC",
+            disableGeolocatorDiagnostic.toString(),
+        )
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {

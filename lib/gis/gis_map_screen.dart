@@ -77,6 +77,12 @@ class _GisMapScreenState extends State<GisMapScreen>
     centerLongitude: -60,
   );
   static const int _maxRenderedTileCacheEntries = 96;
+  static const bool _disableGisTilePipelineForDiagnostic = bool.fromEnvironment(
+    'DISABLE_GIS_TILE_PIPELINE',
+  );
+  static const bool _disableGeolocatorForDiagnostic = bool.fromEnvironment(
+    'DISABLE_GEOLOCATOR',
+  );
 
   final MapController _mapController = MapController();
   final GlobalKey _mapKey = GlobalKey();
@@ -200,12 +206,21 @@ class _GisMapScreenState extends State<GisMapScreen>
     _pdfSeriesRepository = widget.pdfSeriesRepository ?? PdfSeriesRepository();
     _locationService =
         widget.locationService ?? const DeviceGisLocationService();
-    unawaited(_initializeArchive());
+    if (_disableGisTilePipelineForDiagnostic) {
+      _updateOverlay(isLoading: false);
+      debugPrint('GIS diagnostic: tile pipeline disabled.');
+    } else {
+      unawaited(_initializeArchive());
+    }
+    if (_disableGeolocatorForDiagnostic) {
+      debugPrint('GIS diagnostic: Geolocator disabled.');
+    }
     unawaited(_loadFavorites());
     unawaited(_loadMeasurementColor());
     unawaited(_loadSavedMeasurements());
     unawaited(_loadPersonalMarkers());
-    if (SettingsService.instance.followLocationAutomatically) {
+    if (!_disableGeolocatorForDiagnostic &&
+        SettingsService.instance.followLocationAutomatically) {
       _isFollowingLocation = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -581,6 +596,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Future<void> _initializeArchive() async {
+    if (_disableGisTilePipelineForDiagnostic) return;
     try {
       final archiveInfo = await _repository.initialize();
       if (!mounted) {
@@ -649,8 +665,14 @@ class _GisMapScreenState extends State<GisMapScreen>
             onMapReady: () {
               _isMapReady = true;
               _updateMapViewportState(_mapController.camera);
-              unawaited(_loadVisibleTiles(_mapController.camera, archiveInfo));
-              if (_isFollowingLocation && _currentLocation != null) {
+              if (!_disableGisTilePipelineForDiagnostic) {
+                unawaited(
+                  _loadVisibleTiles(_mapController.camera, archiveInfo),
+                );
+              }
+              if (!_disableGeolocatorForDiagnostic &&
+                  _isFollowingLocation &&
+                  _currentLocation != null) {
                 _moveMapToLocation(_currentLocation!);
               }
             },
@@ -659,17 +681,21 @@ class _GisMapScreenState extends State<GisMapScreen>
                 _isFollowingLocation = false;
               }
               _updateMapViewportState(camera);
-              _scheduleTileLoad(camera, archiveInfo);
+              if (!_disableGisTilePipelineForDiagnostic) {
+                _scheduleTileLoad(camera, archiveInfo);
+              }
             },
             onMapEvent: (event) {
               _updateMapViewportState(event.camera);
             },
-            onTap: _handleMapTap,
+            onTap: _disableGisTilePipelineForDiagnostic ? null : _handleMapTap,
           ),
           children: [
             if (!_mapVisualsPaused && _showReferenceBasemap)
               const Positioned.fill(child: OfflineReferenceMapLayer()),
-            if (!_mapVisualsPaused && _showSoilPolygons)
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                _showSoilPolygons)
               Positioned.fill(
                 child: _GisVisibleTileLayers(
                   snapshotListenable: _visibleTileSnapshot,
@@ -680,7 +706,7 @@ class _GisMapScreenState extends State<GisMapScreen>
               const Positioned.fill(
                 child: OfflineReferenceMapLayer(foreground: true),
               ),
-            if (!_mapVisualsPaused)
+            if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused)
               if (_currentLocation case final location?)
                 AnimatedBuilder(
                   animation: SettingsService.instance,
@@ -690,7 +716,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                         SettingsService.instance.showGpsAccuracyCircle,
                   ),
                 ),
-            if (!_mapVisualsPaused && _savedMeasurements.isNotEmpty)
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                _savedMeasurements.isNotEmpty)
               _SavedMeasurementsLayer(
                 measurements: _savedMeasurements
                     .where((measurement) => measurement.isVisible)
@@ -700,7 +728,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                 onHideMeasurement: _hideSavedMeasurement,
                 onSelectMeasurement: _previewSavedMeasurement,
               ),
-            if (!_mapVisualsPaused && _activeSavedMeasurementId != null)
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                _activeSavedMeasurementId != null)
               Positioned.fill(
                 child: _SavedMeasurementLabels(
                   measurements: _orderedSavedMeasurementsForLabels(
@@ -715,7 +745,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                   onHoverMeasurement: (_) {},
                 ),
               ),
-            if (!_mapVisualsPaused && _personalMarkers.isNotEmpty)
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                _personalMarkers.isNotEmpty)
               MarkerLayer(
                 markers: _personalMarkers
                     .map((marker) {
@@ -759,7 +791,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                     .whereType<Marker>()
                     .toList(growable: false),
               ),
-            if (!_mapVisualsPaused &&
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
                 renderedMeasurementMode != null &&
                 _hasMeasurementPoints)
               _MeasurementLayer(
@@ -929,7 +962,9 @@ class _GisMapScreenState extends State<GisMapScreen>
               _MapChromeIconButton(
                 includeOuterSpacing: false,
                 tooltip: 'Mi ubicación',
-                onPressed: _isLocating ? null : _centerMapOnCurrentLocation,
+                onPressed: _isLocating || _disableGeolocatorForDiagnostic
+                    ? null
+                    : _centerMapOnCurrentLocation,
                 icon: _isLocating
                     ? const SizedBox(
                         width: 18,
@@ -1806,6 +1841,9 @@ class _GisMapScreenState extends State<GisMapScreen>
     List<LatLng> parcelPoints,
     int revision,
   ) async {
+    if (_disableGisTilePipelineForDiagnostic) {
+      return base;
+    }
     if (parcelPoints.length < 3) {
       return ParcelAnalysis(
         totalAreaSquareMeters: base.totalAreaSquareMeters,
@@ -1996,6 +2034,10 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Future<void> _centerMapOnCurrentLocation() async {
+    if (_disableGeolocatorForDiagnostic) {
+      debugPrint('GIS diagnostic: Geolocator disabled.');
+      return;
+    }
     _isFollowingLocation = SettingsService.instance.followLocationAutomatically;
     setState(() {
       _isLocating = true;
@@ -2049,6 +2091,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _startLocationUpdates() {
+    if (_disableGeolocatorForDiagnostic) return;
     if (_locationSubscription != null ||
         _locationService is! GisLocationUpdates) {
       return;
@@ -2146,6 +2189,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _scheduleTileLoad(MapCamera camera, GisArchiveInfo archiveInfo) {
+    if (_disableGisTilePipelineForDiagnostic) return;
     if (!_isFiniteCamera(camera)) {
       return;
     }
@@ -2160,6 +2204,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     MapCamera camera,
     GisArchiveInfo archiveInfo,
   ) async {
+    if (_disableGisTilePipelineForDiagnostic) return;
     if (!_isFiniteCamera(camera)) {
       return;
     }
