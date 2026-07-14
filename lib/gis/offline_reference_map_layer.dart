@@ -121,7 +121,6 @@ class _AgronomicReferencePainter extends CustomPainter {
           _paintAtOpacity(_departmentBoundaryPaint, departmentOpacity),
         );
       }
-    } else {
       _drawLines(canvas, basemap.majorRivers, _riverCasingPaint);
       _drawLines(canvas, basemap.majorRivers, _riverPaint);
       _drawLines(canvas, basemap.nationalRoads, _nationalRoadCasingPaint);
@@ -140,7 +139,7 @@ class _AgronomicReferencePainter extends CustomPainter {
           _paintAtOpacity(_provincialRoadPaint, regionalRoadOpacity),
         );
       }
-
+    } else {
       final labelOpacity = _labelOpacity(camera.zoom);
       _drawCityLabels(canvas, size, labelOpacity);
     }
@@ -214,13 +213,6 @@ class _AgronomicReferencePainter extends CustomPainter {
       if (!_isFiniteOffset(offset)) {
         continue;
       }
-      if (offset.dx < -city.labelWidth ||
-          offset.dx > size.width + city.labelWidth ||
-          offset.dy < -18 ||
-          offset.dy > size.height + 18) {
-        continue;
-      }
-
       final style = TextStyle(
         color: const Color(0xFF29312C).withValues(alpha: cityOpacity),
         fontSize: city.isPrimary ? 16 : 14.5,
@@ -231,15 +223,16 @@ class _AgronomicReferencePainter extends CustomPainter {
         text: TextSpan(text: city.name, style: style),
         textAlign: TextAlign.center,
         textDirection: TextDirection.ltr,
-        maxLines: 1,
-        ellipsis: '…',
-      )..layout(maxWidth: city.labelWidth);
+      )..layout();
 
       final labelOffset = Offset(
         offset.dx + 5,
         offset.dy - textPainter.height / 2,
       );
       final labelBounds = labelOffset & textPainter.size;
+      if (!labelBounds.overlaps(Offset.zero & size)) {
+        continue;
+      }
       if (occupiedLabels.any(
         (bounds) => bounds.inflate(3).overlaps(labelBounds),
       )) {
@@ -260,9 +253,7 @@ class _AgronomicReferencePainter extends CustomPainter {
         text: TextSpan(text: city.name, style: haloStyle),
         textAlign: TextAlign.center,
         textDirection: TextDirection.ltr,
-        maxLines: 1,
-        ellipsis: '…',
-      )..layout(maxWidth: city.labelWidth);
+      )..layout();
       haloPainter.paint(canvas, labelOffset);
       textPainter.paint(canvas, labelOffset);
     }
@@ -385,7 +376,6 @@ class _ReferenceCity {
   final LatLng position;
   final bool isPrimary;
   int get priority => isPrimary ? 1 : 0;
-  double get labelWidth => (name.length * 8.2).clamp(52.0, 160.0);
 
   static _ReferenceCity? fromJson(Map<String, dynamic> json) {
     final position = _safeLatLng(

@@ -1,0 +1,62 @@
+diff --git a/lib/src/gestures/map_interactive_viewer.dart b/lib/src/gestures/map_interactive_viewer.dart
+index 34a9c4b..cf3b8e5 100644
+--- a/lib/src/gestures/map_interactive_viewer.dart
++++ b/lib/src/gestures/map_interactive_viewer.dart
+@@ -791,7 +791,7 @@ class MapInteractiveViewerState extends State<MapInteractiveViewer>
+         InteractiveFlag.hasFlingAnimation(_interactionOptions.flags);
+ 
+     final magnitude = details.velocity.pixelsPerSecond.distance;
+-    if (magnitude < _kMinFlingVelocity || !hasFling) {
++    if (!magnitude.isFinite || magnitude < _kMinFlingVelocity || !hasFling) {
+       if (hasFling) widget.controller.flingNotStarted(eventSource);
+       return;
+     }
+@@ -802,22 +802,46 @@ class MapInteractiveViewerState extends State<MapInteractiveViewer>
+     // gestures where the user changes direction during the drag.
+     final flingOffset = _focalStartLocal - _lastFocalLocal;
+     final finalSegment = _prevFocalLocal - _lastFocalLocal;
++    if (!flingOffset.dx.isFinite || !flingOffset.dy.isFinite) {
++      widget.controller.flingNotStarted(eventSource);
++      return;
++    }
+     final finalSegmentDistance = finalSegment.distance;
+ 
+     // Use final segment direction if available, otherwise fall back to overall
+     // direction for edge cases where the final segment has no movement.
+     final Offset direction;
+-    if (finalSegmentDistance > 0) {
++    if (finalSegment.dx.isFinite &&
++        finalSegment.dy.isFinite &&
++        finalSegmentDistance.isFinite &&
++        finalSegmentDistance > 0) {
+       direction = finalSegment / finalSegmentDistance;
+     } else {
+       final flingDistance = flingOffset.distance;
++      if (!flingDistance.isFinite || flingDistance <= 0) {
++        widget.controller.flingNotStarted(eventSource);
++        return;
++      }
+       direction = flingOffset / flingDistance;
+     }
++    if (!direction.dx.isFinite || !direction.dy.isFinite) {
++      widget.controller.flingNotStarted(eventSource);
++      return;
++    }
+     final distance = (Offset.zero & _camera.nonRotatedSize).shortestSide;
++    if (!distance.isFinite || distance <= 0) {
++      widget.controller.flingNotStarted(eventSource);
++      return;
++    }
++    final flingEnd = flingOffset + direction * distance;
++    if (!flingEnd.dx.isFinite || !flingEnd.dy.isFinite) {
++      widget.controller.flingNotStarted(eventSource);
++      return;
++    }
+ 
+     _flingAnimation = Tween<Offset>(
+       begin: flingOffset,
+-      end: flingOffset + direction * distance,
++      end: flingEnd,
+     ).animate(_flingController);
+ 
+     _flingController
