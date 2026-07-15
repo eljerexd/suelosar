@@ -6,9 +6,11 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -34,6 +36,7 @@ import '../widgets/destructive_action_confirmation.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/measurement_color_selector.dart';
 import '../widgets/personal_marker_category_icon.dart';
+import '../widgets/responsive_desktop_shell.dart';
 import '../widgets/saved_measurement_overflow_menu.dart';
 import 'gis_feature.dart';
 import 'gis_layer.dart';
@@ -139,6 +142,11 @@ class _GisMapScreenState extends State<GisMapScreen>
   bool _isMeasurementDialogVisible = false;
   bool _isSearchViewOpen = false;
   bool _mapVisualsPaused = false;
+  bool _desktopToolsPanelCollapsed = false;
+  _DesktopPanelSection? _desktopPanelSection;
+  PersonalMarker? _desktopSelectedMarker;
+  final List<_SoilSeriesSearchEntry> _desktopRecentSearches =
+      <_SoilSeriesSearchEntry>[];
   final Object _searchOcclusionToken = Object();
   final Object _routeOcclusionToken = Object();
   final Map<Object, double> _mapOcclusions = <Object, double>{};
@@ -276,14 +284,17 @@ class _GisMapScreenState extends State<GisMapScreen>
     final measurementMode = _measurementMode;
     final showsMeasurement = measurementMode != null && _hasMeasurementPoints;
     final mediaQuery = MediaQuery.of(context);
-    final compactLayout = mediaQuery.size.width < 600;
+    final desktopLayout = isSuelosArDesktopPlatform(context);
+    final compactLayout = !desktopLayout && mediaQuery.size.width < 600;
     final portraitMobile =
         compactLayout && mediaQuery.orientation == Orientation.portrait;
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: PreferredSize(
         preferredSize: Size.fromHeight(compactLayout ? 148 : 88),
-        child: compactLayout
+        child: desktopLayout
+            ? _buildDesktopMapHeader(context)
+            : compactLayout
             ? _buildCompactMapHeader(
                 context,
                 showsMeasurement,
@@ -317,102 +328,482 @@ class _GisMapScreenState extends State<GisMapScreen>
                     ),
                   ),
                   actions: [
-                    _MapTopBarCard(
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _MapChromeIconButton(
-                            tooltip: 'Abrir marcadores personales',
-                            icon: const Icon(Icons.bookmarks),
-                            onPressed: _openPersonalMarkers,
-                          ),
-                          _MapChromeIconButton(
-                            tooltip: 'Abrir mediciones',
-                            icon: const Icon(Icons.history),
-                            onPressed: _openMeasurements,
-                          ),
-                          _AnimatedMapHeaderItem(
-                            visible:
-                                showsMeasurement &&
-                                _activeSavedMeasurementId == null,
-                            child: _MapChromeIconButton(
-                              tooltip: 'Deshacer último punto',
-                              icon: const Icon(AppIcons.undo),
-                              onPressed: _undoMeasurementPoint,
+                    if (!desktopLayout)
+                      _MapTopBarCard(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _MapChromeIconButton(
+                              tooltip: 'Abrir marcadores personales',
+                              icon: const Icon(Icons.bookmarks),
+                              onPressed: _openPersonalMarkers,
                             ),
-                          ),
-                          _AnimatedMapHeaderItem(
-                            visible: showsMeasurement,
-                            child: _MapChromeIconButton(
-                              tooltip: 'Limpiar medición',
-                              icon: const Icon(AppIcons.delete),
-                              onPressed: _clearMeasurement,
+                            _MapChromeIconButton(
+                              tooltip: 'Abrir mediciones',
+                              icon: const Icon(Icons.history),
+                              onPressed: _openMeasurements,
                             ),
-                          ),
-                          SearchAnchor(
-                            viewBuilder: _buildSearchView,
-                            viewOnOpen: _handleSearchViewOpen,
-                            viewOnClose: _handleSearchViewClose,
-                            viewHintText: 'Buscar localidad, unidad o serie...',
-                            viewBackgroundColor: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerLow,
-                            viewSurfaceTintColor: Colors.transparent,
-                            viewElevation: 8,
-                            viewShape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(24),
+                            _AnimatedMapHeaderItem(
+                              visible:
+                                  showsMeasurement &&
+                                  _activeSavedMeasurementId == null,
+                              child: _MapChromeIconButton(
+                                tooltip: 'Deshacer último punto',
+                                icon: const Icon(AppIcons.undo),
+                                onPressed: _undoMeasurementPoint,
+                              ),
                             ),
-                            viewSide: BorderSide(
-                              color: Theme.of(context)
+                            _AnimatedMapHeaderItem(
+                              visible: showsMeasurement,
+                              child: _MapChromeIconButton(
+                                tooltip: 'Limpiar medición',
+                                icon: const Icon(AppIcons.delete),
+                                onPressed: _clearMeasurement,
+                              ),
+                            ),
+                            SearchAnchor(
+                              viewBuilder: _buildSearchView,
+                              viewOnOpen: _handleSearchViewOpen,
+                              viewOnClose: _handleSearchViewClose,
+                              viewHintText:
+                                  'Buscar localidad, unidad o serie...',
+                              viewBackgroundColor: Theme.of(
+                                context,
+                              ).colorScheme.surfaceContainerLow,
+                              viewSurfaceTintColor: Colors.transparent,
+                              viewElevation: 8,
+                              viewShape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(24),
+                              ),
+                              viewSide: BorderSide(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outlineVariant
+                                    .withValues(alpha: 0.55),
+                              ),
+                              viewBarPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                              ),
+                              headerHeight: 64,
+                              headerTextStyle: Theme.of(context)
+                                  .textTheme
+                                  .bodyLarge
+                                  ?.copyWith(fontWeight: FontWeight.w500),
+                              headerHintStyle: Theme.of(context)
+                                  .textTheme
+                                  .bodyLarge
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                              dividerColor: Theme.of(context)
                                   .colorScheme
                                   .outlineVariant
-                                  .withValues(alpha: 0.55),
+                                  .withValues(alpha: 0.45),
+                              viewConstraints: const BoxConstraints(
+                                minWidth: 420,
+                                maxWidth: 680,
+                                maxHeight: 620,
+                              ),
+                              viewPadding: const EdgeInsets.fromLTRB(
+                                8,
+                                8,
+                                8,
+                                16,
+                              ),
+                              builder: (context, controller) {
+                                return _MapChromeIconButton(
+                                  tooltip: 'Buscar',
+                                  icon: const Icon(AppIcons.search),
+                                  onPressed: () {
+                                    controller.openView();
+                                  },
+                                );
+                              },
+                              suggestionsBuilder: _buildSearchSuggestions,
                             ),
-                            viewBarPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                            ),
-                            headerHeight: 64,
-                            headerTextStyle: Theme.of(context)
-                                .textTheme
-                                .bodyLarge
-                                ?.copyWith(fontWeight: FontWeight.w500),
-                            headerHintStyle: Theme.of(context)
-                                .textTheme
-                                .bodyLarge
-                                ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
-                                ),
-                            dividerColor: Theme.of(context)
-                                .colorScheme
-                                .outlineVariant
-                                .withValues(alpha: 0.45),
-                            viewConstraints: const BoxConstraints(
-                              minWidth: 420,
-                              maxWidth: 680,
-                              maxHeight: 620,
-                            ),
-                            viewPadding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
-                            builder: (context, controller) {
-                              return _MapChromeIconButton(
-                                tooltip: 'Buscar',
-                                icon: const Icon(AppIcons.search),
-                                onPressed: () {
-                                  controller.openView();
-                                },
-                              );
-                            },
-                            suggestionsBuilder: _buildSearchSuggestions,
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),
       ),
-      body: _buildMap(_archiveInfo),
+      body: desktopLayout
+          ? _buildDesktopMapShell(_archiveInfo)
+          : _buildMap(_archiveInfo),
+    );
+  }
+
+  Widget _buildDesktopMapHeader(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      minimum: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: SizedBox(
+        height: 66,
+        width: double.infinity,
+        child: _MapTopBarCard(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          elevation: 5,
+          shadowAlpha: 0.22,
+          side: BorderSide(
+            color: colorScheme.outlineVariant.withValues(alpha: 0.42),
+          ),
+          child: Row(
+            children: [
+              FloatingAppBarBackButton(
+                onPressed: () => Navigator.maybePop(context),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                width: 36,
+                height: 36,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(AppIcons.map, size: 20, color: colorScheme.primary),
+              ),
+              const SizedBox(width: 10),
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Mapa de suelos',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Text(
+                    'Provincia de Buenos Aires',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              const Spacer(),
+              ValueListenableBuilder<_MapViewportState>(
+                valueListenable: _mapViewportState,
+                builder: (context, viewState, child) {
+                  return _DesktopHeaderMapStatus(zoom: viewState.zoom);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDesktopMapShell(GisArchiveInfo archiveInfo) {
+    final shell = SuelosArDesktopPageScaffold(
+      panelTopInset: 76,
+      sidePanelVerticalInset: 28,
+      sidePanel: SuelosArFloatingSidePanel(
+        padding: _desktopToolsPanelCollapsed ? const EdgeInsets.all(8) : null,
+        child: _DesktopMapToolsPanel(
+          collapsed: _desktopToolsPanelCollapsed,
+          selectedSection: _desktopPanelSection,
+          onCollapsedChanged: (collapsed) {
+            setState(() => _desktopToolsPanelCollapsed = collapsed);
+          },
+          onSelectSection: _selectDesktopPanelSection,
+          activeMode: _desktopActiveMode,
+          onMeasureDistance: () =>
+              _selectMeasurementOption(_MeasurementMenuOption.distance),
+          onMeasureArea: () =>
+              _selectMeasurementOption(_MeasurementMenuOption.area),
+          onAddMarker: _togglePersonalMarkerMode,
+          onLocate: _isLocating || _disableGeolocatorForDiagnostic
+              ? null
+              : _centerMapOnCurrentLocation,
+        ),
+      ),
+      informationPanel: _buildDesktopInformationPanel(),
+      informationAlignment: Alignment.centerRight,
+      child: _buildMap(archiveInfo, desktopShell: true),
+    );
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.escape):
+            _cancelDesktopTemporaryMode,
+      },
+      child: Focus(autofocus: true, child: shell),
+    );
+  }
+
+  Widget _buildDesktopInformationPanel() {
+    final selectedMeasurement = _savedMeasurements
+        .where(
+          (measurement) =>
+              measurement.id == _highlightedSavedMeasurementId &&
+              measurement.isVisible,
+        )
+        .firstOrNull;
+
+    return ValueListenableBuilder<GisFeature?>(
+      valueListenable: _selectionPreview,
+      builder: (context, feature, child) {
+        final activeMode = _desktopActiveMode;
+        if (activeMode != null) {
+          final vertexCount = switch (activeMode) {
+            _DesktopActiveMode.distance => _distanceMeasurementPoints.length,
+            _DesktopActiveMode.area => _areaMeasurementPoints.length,
+            _DesktopActiveMode.marker => null,
+          };
+          final liveValue = switch (activeMode) {
+            _DesktopActiveMode.distance
+                when _distanceMeasurementPoints.length >= 2 =>
+              _MeasurementLayer._formatDistance(
+                _MeasurementLayer._calculatePathDistance(
+                  _distanceMeasurementPoints,
+                ),
+              ),
+            _DesktopActiveMode.area when _areaMeasurementPoints.length >= 3 =>
+              _MeasurementLayer._formatArea(
+                _MeasurementLayer._calculateArea(_areaMeasurementPoints),
+              ),
+            _ => null,
+          };
+          return _DesktopPanelTransition(
+            panelKey: activeMode,
+            child: SuelosArFloatingInformationPanel(
+              child: _DesktopActiveModePanel(
+                mode: activeMode,
+                vertexCount: vertexCount,
+                liveValue: liveValue,
+                onDismiss: _cancelDesktopTemporaryMode,
+              ),
+            ),
+          );
+        }
+        final section = _desktopPanelSection;
+        if (section != null) {
+          return _DesktopPanelTransition(
+            panelKey: section,
+            child: SuelosArFloatingInformationPanel(
+              child: switch (section) {
+                _DesktopPanelSection.layers => _DesktopLayersPanel(
+                  showSoilPolygons: _showSoilPolygons,
+                  showReferenceBasemap: _showReferenceBasemap,
+                  onToggleSoilPolygons: () => _toggleLayerVisibility(
+                    _LayerVisibilityOption.soilPolygons,
+                  ),
+                  onToggleReferenceBasemap: () => _toggleLayerVisibility(
+                    _LayerVisibilityOption.referenceBasemap,
+                  ),
+                  onDismiss: () => setState(() => _desktopPanelSection = null),
+                ),
+                _DesktopPanelSection.search => _DesktopSearchPanel(
+                  entries: _soilSeriesSearchIndex.values.toList(
+                    growable: false,
+                  ),
+                  selectedFeatureId: _searchSelectedFeature?.id,
+                  recentEntries: _desktopRecentSearches,
+                  onSelect: _selectDesktopSearchResult,
+                  onDismiss: () => setState(() => _desktopPanelSection = null),
+                ),
+                _DesktopPanelSection.measurements =>
+                  _DesktopCollectionPanel<SavedMeasurement>(
+                    title: 'Mediciones',
+                    subtitle:
+                        '${_savedMeasurements.length} guardadas · '
+                        '${_savedMeasurements.where((item) => item.type == SavedMeasurementType.area).length} áreas · '
+                        '${_savedMeasurements.where((item) => item.type == SavedMeasurementType.distance).length} distancias',
+                    icon: Icons.history,
+                    items: _savedMeasurements,
+                    emptyMessage: 'No hay mediciones guardadas.',
+                    itemTitle: (measurement) => measurement.name,
+                    itemSubtitle: (measurement) =>
+                        measurement.type == SavedMeasurementType.area
+                        ? _MeasurementLayer._formatArea(
+                            measurement.areaSquareMeters ?? 0,
+                          )
+                        : _MeasurementLayer._formatDistance(
+                            measurement.distanceMeters ?? 0,
+                          ),
+                    onSelect: _focusSavedMeasurement,
+                    itemEnabled: (measurement) => measurement.isVisible,
+                    itemSelected: (measurement) =>
+                        measurement.id == _highlightedSavedMeasurementId,
+                    trailingBuilder: (measurement) => Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: measurement.isVisible
+                              ? 'Ocultar'
+                              : 'Mostrar',
+                          onPressed: () => unawaited(
+                            _toggleSavedMeasurementVisibility(measurement),
+                          ),
+                          icon: Icon(
+                            measurement.isVisible
+                                ? AppIcons.visibility
+                                : AppIcons.visibilityOff,
+                            size: 19,
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Editar',
+                          onPressed: measurement.isVisible
+                              ? () => unawaited(
+                                  _requestSelectSavedMeasurement(measurement),
+                                )
+                              : null,
+                          icon: const Icon(AppIcons.edit, size: 19),
+                        ),
+                      ],
+                    ),
+                    onDismiss: () =>
+                        setState(() => _desktopPanelSection = null),
+                  ),
+                _DesktopPanelSection.markers =>
+                  _DesktopCollectionPanel<PersonalMarker>(
+                    title: 'Marcadores',
+                    subtitle: '${_personalMarkers.length} guardados',
+                    icon: Icons.bookmarks,
+                    items: _personalMarkers,
+                    emptyMessage: 'No hay marcadores personales.',
+                    itemTitle: (marker) => marker.name,
+                    itemSubtitle: (marker) => marker.category.label,
+                    itemMetaLabel: (marker) => 'Categoría',
+                    onSelect: _focusPersonalMarker,
+                    itemSelected: (marker) =>
+                        marker.id == _desktopSelectedMarker?.id,
+                    headerAction: IconButton(
+                      tooltip: 'Agregar marcador',
+                      onPressed: _startDesktopMarkerPlacement,
+                      icon: const Icon(AppIcons.addLocation),
+                    ),
+                    trailingBuilder: (marker) =>
+                        PopupMenuButton<_DesktopMarkerAction>(
+                          tooltip: 'Más acciones',
+                          onSelected: (action) {
+                            switch (action) {
+                              case _DesktopMarkerAction.edit:
+                                unawaited(_editPersonalMarker(marker));
+                              case _DesktopMarkerAction.delete:
+                                unawaited(_confirmDeletePersonalMarker(marker));
+                            }
+                          },
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(
+                              value: _DesktopMarkerAction.edit,
+                              child: Text('Editar'),
+                            ),
+                            PopupMenuItem(
+                              value: _DesktopMarkerAction.delete,
+                              child: Text('Eliminar'),
+                            ),
+                          ],
+                        ),
+                    onDismiss: () =>
+                        setState(() => _desktopPanelSection = null),
+                  ),
+                _DesktopPanelSection.favorites =>
+                  _DesktopCollectionPanel<FavoriteSoilFeature>(
+                    title: 'Favoritos',
+                    subtitle: '${_favoriteFeatures.length} suelos guardados',
+                    icon: AppIcons.star,
+                    items: _favoriteFeatures.values.toList(growable: false),
+                    emptyMessage: 'No hay suelos favoritos.',
+                    itemTitle: (favorite) => favorite.dominantSoilSeries,
+                    itemSubtitle: (favorite) => favorite.unitName,
+                    onSelect: _focusFavorite,
+                    itemSelected: (favorite) =>
+                        favorite.id == _searchSelectedFeature?.id,
+                    onDismiss: () =>
+                        setState(() => _desktopPanelSection = null),
+                  ),
+              },
+            ),
+          );
+        }
+        if (feature == null &&
+            selectedMeasurement == null &&
+            _desktopSelectedMarker == null) {
+          return const _DesktopPanelTransition(
+            panelKey: 'empty',
+            child: SizedBox.shrink(),
+          );
+        }
+
+        return _DesktopPanelTransition(
+          panelKey:
+              feature?.id ??
+              selectedMeasurement?.id ??
+              _desktopSelectedMarker!.id,
+          child: SuelosArFloatingInformationPanel(
+            child: _DesktopMapInformationPanel(
+              feature: feature,
+              measurement: feature == null ? selectedMeasurement : null,
+              marker: feature == null && selectedMeasurement == null
+                  ? _desktopSelectedMarker
+                  : null,
+              onOpenFeatureDetails: feature == null
+                  ? null
+                  : () => unawaited(_showFeatureAttributes(feature)),
+              featureIsFavorite:
+                  feature != null && _favoriteFeatures.containsKey(feature.id),
+              onToggleFeatureFavorite: feature == null
+                  ? null
+                  : () {
+                      final series = GisSoilSeries.fromProperties(
+                        feature.properties,
+                      );
+                      setState(() => _toggleFavorite(feature, series));
+                    },
+              onAnalyzeMeasurement:
+                  selectedMeasurement?.type == SavedMeasurementType.area
+                  ? () => _analyzeSavedMeasurement(selectedMeasurement!)
+                  : null,
+              onEditMeasurement: selectedMeasurement == null
+                  ? null
+                  : () => unawaited(
+                      _requestSelectSavedMeasurement(selectedMeasurement),
+                    ),
+              onHideMeasurement: selectedMeasurement == null
+                  ? null
+                  : () => unawaited(_hideSavedMeasurement(selectedMeasurement)),
+              onOpenMarkerDetails: _desktopSelectedMarker == null
+                  ? null
+                  : () => unawaited(
+                      _showPersonalMarkerDetails(_desktopSelectedMarker!),
+                    ),
+              onEditMarker: _desktopSelectedMarker == null
+                  ? null
+                  : () =>
+                        unawaited(_editPersonalMarker(_desktopSelectedMarker!)),
+              onDeleteMarker: _desktopSelectedMarker == null
+                  ? null
+                  : () => unawaited(
+                      _confirmDeletePersonalMarker(_desktopSelectedMarker!),
+                    ),
+              markerDate: _desktopSelectedMarker == null
+                  ? null
+                  : _formatPersonalMarkerDate(
+                      _desktopSelectedMarker!.createdAt,
+                    ),
+              onExportMeasurementPdf: selectedMeasurement == null
+                  ? null
+                  : () => _exportSavedMeasurementPdf(selectedMeasurement),
+              onExportMeasurementGeoJson: selectedMeasurement == null
+                  ? null
+                  : () => _exportSavedMeasurementGeoJson(selectedMeasurement),
+              onExportMeasurementCsv: selectedMeasurement == null
+                  ? null
+                  : () => _exportSavedMeasurementCsv(selectedMeasurement),
+              onDeleteMeasurement: selectedMeasurement == null
+                  ? null
+                  : () => _deleteSavedMeasurement(selectedMeasurement),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -622,7 +1013,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
   }
 
-  Widget _buildMap(GisArchiveInfo archiveInfo) {
+  Widget _buildMap(GisArchiveInfo archiveInfo, {bool desktopShell = false}) {
     _renderMetrics.mapBuildCount++;
     final colorScheme = Theme.of(context).colorScheme;
     final measurementMode = _measurementMode;
@@ -765,7 +1156,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                         child: GestureDetector(
                           key: ValueKey('marker-hit-target-${marker.id}'),
                           behavior: HitTestBehavior.opaque,
-                          onTap: () => _showPersonalMarkerDetails(marker),
+                          onTap: () => _handlePersonalMarkerTap(marker),
                           child: Center(
                             child: Material(
                               color: colorScheme.surface,
@@ -861,14 +1252,18 @@ class _GisMapScreenState extends State<GisMapScreen>
             ),
           ),
         if (!_mapVisualsPaused)
-          _buildRightControlRail(topInset: topControlOffset),
+          _buildRightControlRail(
+            topInset: topControlOffset,
+            showLayers: !desktopShell,
+          ),
         if (!_mapVisualsPaused)
           _MapToolHintOverlay(type: _activeToolHint, top: topControlOffset),
-        if (!_mapVisualsPaused && !showsMeasurementEditor)
+        if (!_mapVisualsPaused && !showsMeasurementEditor && !desktopShell)
           _buildBottomRightControls(),
         if (!_mapVisualsPaused &&
             selectedSavedMeasurement != null &&
-            !showsMeasurementEditor)
+            !showsMeasurementEditor &&
+            !desktopShell)
           _SavedMeasurementActionBar(
             onAnalyze:
                 selectedSavedMeasurement.type == SavedMeasurementType.area
@@ -885,7 +1280,7 @@ class _GisMapScreenState extends State<GisMapScreen>
               _requestSelectSavedMeasurement(selectedSavedMeasurement),
             ),
           ),
-        if (!_mapVisualsPaused)
+        if (!_mapVisualsPaused && !desktopShell)
           _SelectionPreviewOverlay(
             featureListenable: _selectionPreview,
             bottomOffset: compactLayout ? 132 : 72,
@@ -902,7 +1297,10 @@ class _GisMapScreenState extends State<GisMapScreen>
     );
   }
 
-  Widget _buildRightControlRail({required double topInset}) {
+  Widget _buildRightControlRail({
+    required double topInset,
+    bool showLayers = true,
+  }) {
     return Positioned.fill(
       child: SafeArea(
         minimum: EdgeInsets.fromLTRB(0, topInset, 16, 16),
@@ -915,14 +1313,15 @@ class _GisMapScreenState extends State<GisMapScreen>
                 viewStateListenable: _mapViewportState,
                 onResetNorth: _animateMapToNorth,
               ),
-              _MapChromeSurface(
-                includeOuterSpacing: false,
-                child: _LayersMenuButton(
-                  showSoilPolygons: _showSoilPolygons,
-                  showReferenceBasemap: _showReferenceBasemap,
-                  onToggle: _toggleLayerVisibility,
+              if (showLayers)
+                _MapChromeSurface(
+                  includeOuterSpacing: false,
+                  child: _LayersMenuButton(
+                    showSoilPolygons: _showSoilPolygons,
+                    showReferenceBasemap: _showReferenceBasemap,
+                    onToggle: _toggleLayerVisibility,
+                  ),
                 ),
-              ),
             ],
           ),
         ),
@@ -945,14 +1344,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                     _selectMeasurementOption(_MeasurementMenuOption.distance),
                 onMeasureArea: () =>
                     _selectMeasurementOption(_MeasurementMenuOption.area),
-                onMarkers: () {
-                  setState(() {
-                    _isPersonalMarkerMode = !_isPersonalMarkerMode;
-                    _activeToolHint = _isPersonalMarkerMode
-                        ? _MapToolHintType.marker
-                        : null;
-                  });
-                },
+                onMarkers: _togglePersonalMarkerMode,
                 onFavorites: _openFavorites,
                 onExitMeasurement: _measurementMode == null
                     ? null
@@ -1023,6 +1415,79 @@ class _GisMapScreenState extends State<GisMapScreen>
     });
   }
 
+  void _togglePersonalMarkerMode() {
+    setState(() {
+      _isPersonalMarkerMode = !_isPersonalMarkerMode;
+      _activeToolHint = _isPersonalMarkerMode ? _MapToolHintType.marker : null;
+      if (_usesDesktopMapShell && _isPersonalMarkerMode) {
+        _desktopPanelSection = null;
+      }
+    });
+  }
+
+  _DesktopActiveMode? get _desktopActiveMode {
+    if (_isPersonalMarkerMode) return _DesktopActiveMode.marker;
+    return switch (_measurementMode) {
+      _MeasurementMode.distance => _DesktopActiveMode.distance,
+      _MeasurementMode.area => _DesktopActiveMode.area,
+      null => null,
+    };
+  }
+
+  void _cancelDesktopTemporaryMode() {
+    if (_desktopActiveMode == null) return;
+    setState(() {
+      _invalidateParcelAnalysis();
+      _isPersonalMarkerMode = false;
+      _measurementMode = null;
+      _retainedMeasurementMode = null;
+      _activeSavedMeasurementId = null;
+      _savedMeasurementGeometrySignature = null;
+      _savedMeasurementColorId = null;
+      _distanceMeasurementPoints.clear();
+      _areaMeasurementPoints.clear();
+      _draggedAreaVertexIndex = null;
+      _suppressNextMapTap = false;
+      _activeToolHint = null;
+    });
+  }
+
+  void _selectDesktopPanelSection(_DesktopPanelSection section) {
+    if (_desktopActiveMode != null) {
+      _cancelDesktopTemporaryMode();
+    }
+    setState(() {
+      _desktopPanelSection = _desktopPanelSection == section ? null : section;
+      _desktopSelectedMarker = null;
+      _selectionPreview.value = null;
+    });
+  }
+
+  void _selectDesktopSearchResult(_SoilSeriesSearchEntry entry) {
+    setState(() {
+      _desktopRecentSearches.removeWhere(
+        (recent) =>
+            recent.type == entry.type && recent.feature.id == entry.feature.id,
+      );
+      _desktopRecentSearches.insert(0, entry);
+      if (_desktopRecentSearches.length > 5) {
+        _desktopRecentSearches.removeRange(5, _desktopRecentSearches.length);
+      }
+    });
+    if (entry.type == _MapSearchEntryType.soilSeries) {
+      unawaited(_showSeriesUnitChoices(entry));
+      return;
+    }
+    setState(() => _selectSearchSuggestion(entry));
+  }
+
+  void _startDesktopMarkerPlacement() {
+    setState(() => _desktopPanelSection = null);
+    if (!_isPersonalMarkerMode) {
+      _togglePersonalMarkerMode();
+    }
+  }
+
   bool get _hasMeasurementPoints =>
       _distanceMeasurementPoints.isNotEmpty ||
       _areaMeasurementPoints.isNotEmpty;
@@ -1057,6 +1522,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                 _retainedMeasurementMode == _MeasurementMode.area &&
                 _areaMeasurementPoints.isNotEmpty));
     setState(() {
+      if (_usesDesktopMapShell && option != _MeasurementMenuOption.exit) {
+        _desktopPanelSection = null;
+      }
       switch (option) {
         case _MeasurementMenuOption.distance:
           _invalidateParcelAnalysis();
@@ -2615,6 +3083,25 @@ class _GisMapScreenState extends State<GisMapScreen>
     _selectSearchSuggestion(selectedEntry);
   }
 
+  void _focusFavorite(FavoriteSoilFeature favorite) {
+    final selectedEntry = _soilSeriesSearchIndex.values
+        .where((entry) => entry.feature.id == favorite.id)
+        .firstOrNull;
+    if (selectedEntry == null) {
+      unawaited(
+        AppNotification.show(
+          context,
+          message: 'Este favorito ya no está disponible.',
+          type: AppNotificationType.warning,
+          bottomOffset: 72,
+        ),
+      );
+      return;
+    }
+    setState(() => _desktopPanelSection = null);
+    _selectSearchSuggestion(selectedEntry);
+  }
+
   Future<void> _openPersonalMarkers() async {
     final markerId = await Navigator.of(context).push<String>(
       InstantPopMaterialPageRoute(
@@ -2634,6 +3121,10 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
     if (selectedMarker == null) return;
 
+    if (_usesDesktopMapShell) {
+      _focusPersonalMarker(selectedMarker);
+      return;
+    }
     final markerPoint = _safeLatLng(
       selectedMarker.latitude,
       selectedMarker.longitude,
@@ -2660,29 +3151,58 @@ class _GisMapScreenState extends State<GisMapScreen>
         .firstOrNull;
     if (selectedMeasurement == null) return;
 
+    _focusSavedMeasurement(selectedMeasurement);
+  }
+
+  void _focusSavedMeasurement(SavedMeasurement measurement) {
+    if (measurement.geometry.isEmpty) return;
     final targetCamera = CameraFit.coordinates(
-      coordinates: selectedMeasurement.geometry,
+      coordinates: measurement.geometry,
       padding: const EdgeInsets.all(72),
       maxZoom: 16,
     ).fit(_mapController.camera);
     _animateMapToPosition(targetCamera.center, targetCamera.zoom);
-
     setState(() {
-      _highlightedSavedMeasurementId = selectedMeasurement.id;
+      _desktopPanelSection = null;
+      _highlightedSavedMeasurementId = measurement.id;
+      _desktopSelectedMarker = null;
+      _selectionPreview.value = null;
+    });
+  }
+
+  void _focusPersonalMarker(PersonalMarker marker) {
+    final markerPoint = _safeLatLng(marker.latitude, marker.longitude);
+    final zoom = _mapController.camera.zoom;
+    if (markerPoint != null && _isFiniteNumber(zoom)) {
+      _mapController.move(markerPoint, zoom);
+    }
+    setState(() {
+      _desktopPanelSection = null;
+      _desktopSelectedMarker = marker;
+      _highlightedSavedMeasurementId = null;
+      _selectionPreview.value = null;
     });
   }
 
   Future<void> _hideSavedMeasurement(SavedMeasurement measurement) async {
+    if (!measurement.isVisible) return;
+    await _toggleSavedMeasurementVisibility(measurement);
+  }
+
+  Future<void> _toggleSavedMeasurementVisibility(
+    SavedMeasurement measurement,
+  ) async {
     final index = _savedMeasurements.indexWhere(
       (item) => item.id == measurement.id,
     );
     if (index == -1) return;
+    final isVisible = !measurement.isVisible;
     setState(() {
-      _savedMeasurements[index] = measurement.copyWith(isVisible: false);
-      if (_highlightedSavedMeasurementId == measurement.id) {
+      _savedMeasurements[index] = measurement.copyWith(isVisible: isVisible);
+      if (!isVisible && _highlightedSavedMeasurementId == measurement.id) {
         _highlightedSavedMeasurementId = null;
       }
-      if (_activeSavedMeasurementId == measurement.id) {
+      if (!isVisible && _activeSavedMeasurementId == measurement.id) {
         _measurementMode = null;
         _activeSavedMeasurementId = null;
         _savedMeasurementGeometrySignature = null;
@@ -3079,7 +3599,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       return;
     }
     if (_isPersonalMarkerMode) {
-      _dismissActiveToolHint();
+      setState(() => _activeToolHint = _MapToolHintType.markerActive);
       unawaited(_createPersonalMarker(point));
       return;
     }
@@ -3096,6 +3616,9 @@ class _GisMapScreenState extends State<GisMapScreen>
       _selectionPreview.value = null;
       if (_highlightedSavedMeasurementId != null) {
         setState(() => _highlightedSavedMeasurementId = null);
+      }
+      if (_usesDesktopMapShell && _desktopSelectedMarker != null) {
+        setState(() => _desktopSelectedMarker = null);
       }
       return;
     }
@@ -3142,9 +3665,27 @@ class _GisMapScreenState extends State<GisMapScreen>
   void _previewSavedMeasurement(SavedMeasurement measurement) {
     if (_activeSavedMeasurementId != null) return;
     setState(() {
+      _desktopPanelSection = null;
       _highlightedSavedMeasurementId = measurement.id;
       _selectionPreview.value = null;
+      _desktopSelectedMarker = null;
     });
+  }
+
+  bool get _usesDesktopMapShell =>
+      mounted && isSuelosArDesktopPlatform(context);
+
+  void _handlePersonalMarkerTap(PersonalMarker marker) {
+    if (_usesDesktopMapShell) {
+      setState(() {
+        _desktopPanelSection = null;
+        _desktopSelectedMarker = marker;
+        _highlightedSavedMeasurementId = null;
+        _selectionPreview.value = null;
+      });
+      return;
+    }
+    unawaited(_showPersonalMarkerDetails(marker));
   }
 
   void _analyzeSavedMeasurement(SavedMeasurement measurement) {
@@ -3245,7 +3786,9 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Future<void> _createPersonalMarker(LatLng point) async {
-    final values = await _showPersonalMarkerDialog();
+    final values = await _showPersonalMarkerDialog(
+      onCancel: _exitPersonalMarkerPlacement,
+    );
     if (!mounted || values == null) return;
 
     final now = DateTime.now();
@@ -3262,10 +3805,15 @@ class _GisMapScreenState extends State<GisMapScreen>
       _personalMarkers.add(marker);
     });
     await _persistPersonalMarkers();
+    if (!mounted) return;
+    _exitPersonalMarkerPlacement();
   }
 
   Future<({String name, String description, PersonalMarkerCategory category})?>
-  _showPersonalMarkerDialog({PersonalMarker? marker}) async {
+  _showPersonalMarkerDialog({
+    PersonalMarker? marker,
+    VoidCallback? onCancel,
+  }) async {
     final formKey = GlobalKey<FormState>();
     var name = marker?.name ?? '';
     var description = marker?.description ?? '';
@@ -3317,7 +3865,10 @@ class _GisMapScreenState extends State<GisMapScreen>
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
+            onPressed: () {
+              onCancel?.call();
+              Navigator.pop(dialogContext, false);
+            },
             child: const Text('Cancelar'),
           ),
           FilledButton(
@@ -3339,6 +3890,14 @@ class _GisMapScreenState extends State<GisMapScreen>
       description: description.trim(),
       category: category,
     );
+  }
+
+  void _exitPersonalMarkerPlacement() {
+    if (!mounted) return;
+    setState(() {
+      _isPersonalMarkerMode = false;
+      _activeToolHint = null;
+    });
   }
 
   Future<void> _persistPersonalMarkers() async {
@@ -3445,12 +4004,16 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (!mounted || values == null) return;
     final index = _personalMarkers.indexWhere((item) => item.id == marker.id);
     if (index == -1) return;
+    final updatedMarker = marker.copyWith(
+      name: values.name,
+      description: values.description,
+      category: values.category,
+    );
     setState(() {
-      _personalMarkers[index] = marker.copyWith(
-        name: values.name,
-        description: values.description,
-        category: values.category,
-      );
+      _personalMarkers[index] = updatedMarker;
+      if (_desktopSelectedMarker?.id == marker.id) {
+        _desktopSelectedMarker = updatedMarker;
+      }
     });
     await _persistPersonalMarkers();
   }
@@ -3464,6 +4027,9 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (!mounted || !confirmed) return;
     setState(() {
       _personalMarkers.removeWhere((item) => item.id == marker.id);
+      if (_desktopSelectedMarker?.id == marker.id) {
+        _desktopSelectedMarker = null;
+      }
     });
     await _persistPersonalMarkers();
   }
@@ -4358,13 +4924,1615 @@ class _ParcelDominantValue extends StatelessWidget {
   }
 }
 
+class _DesktopMapToolsPanel extends StatefulWidget {
+  const _DesktopMapToolsPanel({
+    required this.collapsed,
+    required this.selectedSection,
+    required this.onCollapsedChanged,
+    required this.onSelectSection,
+    required this.activeMode,
+    required this.onMeasureDistance,
+    required this.onMeasureArea,
+    required this.onAddMarker,
+    required this.onLocate,
+  });
+
+  final bool collapsed;
+  final _DesktopPanelSection? selectedSection;
+  final ValueChanged<bool> onCollapsedChanged;
+  final ValueChanged<_DesktopPanelSection> onSelectSection;
+  final _DesktopActiveMode? activeMode;
+  final VoidCallback onMeasureDistance;
+  final VoidCallback onMeasureArea;
+  final VoidCallback onAddMarker;
+  final VoidCallback? onLocate;
+
+  @override
+  State<_DesktopMapToolsPanel> createState() => _DesktopMapToolsPanelState();
+}
+
+class _DesktopMapToolsPanelState extends State<_DesktopMapToolsPanel>
+    with TickerProviderStateMixin {
+  bool get collapsed => widget.collapsed;
+  _DesktopPanelSection? get selectedSection => widget.selectedSection;
+  ValueChanged<bool> get onCollapsedChanged => widget.onCollapsedChanged;
+  ValueChanged<_DesktopPanelSection> get onSelectSection =>
+      widget.onSelectSection;
+  _DesktopActiveMode? get activeMode => widget.activeMode;
+  VoidCallback get onMeasureDistance => widget.onMeasureDistance;
+  VoidCallback get onMeasureArea => widget.onMeasureArea;
+  VoidCallback get onAddMarker => widget.onAddMarker;
+  VoidCallback? get onLocate => widget.onLocate;
+
+  @override
+  Widget build(BuildContext context) {
+    final duration = AppMotion.duration(
+      context,
+      const Duration(milliseconds: 200),
+    );
+    return AnimatedSize(
+      alignment: Alignment.topLeft,
+      duration: duration,
+      curve: Curves.easeOutCubic,
+      child: collapsed ? _buildCollapsedPanel() : _buildExpandedPanel(),
+    );
+  }
+
+  Widget _buildExpandedPanel() {
+    final iconColor = Theme.of(context).colorScheme.primary;
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+      ),
+      child: Scrollbar(
+        child: SingleChildScrollView(
+          primary: true,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Icon(AppIcons.layers, color: iconColor),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Navegación GIS',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Contraer herramientas',
+                    onPressed: () => onCollapsedChanged(true),
+                    icon: const Icon(AppIcons.chevronRight),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _DesktopMapPanelAction(
+                icon: AppIcons.layers,
+                label: 'Capas',
+                selected: selectedSection == _DesktopPanelSection.layers,
+                onTap: () => onSelectSection(_DesktopPanelSection.layers),
+              ),
+              _DesktopMapPanelAction(
+                icon: AppIcons.search,
+                label: 'Buscar',
+                selected: selectedSection == _DesktopPanelSection.search,
+                onTap: () => onSelectSection(_DesktopPanelSection.search),
+              ),
+              const _DesktopNavigationDivider(),
+              _DesktopMapPanelAction(
+                icon: Icons.history,
+                label: 'Mediciones',
+                selected: selectedSection == _DesktopPanelSection.measurements,
+                onTap: () => onSelectSection(_DesktopPanelSection.measurements),
+              ),
+              _DesktopMapPanelAction(
+                icon: Icons.bookmarks,
+                label: 'Marcadores',
+                selected: selectedSection == _DesktopPanelSection.markers,
+                onTap: () => onSelectSection(_DesktopPanelSection.markers),
+              ),
+              _DesktopMapPanelAction(
+                icon: AppIcons.star,
+                label: 'Favoritos',
+                selected: selectedSection == _DesktopPanelSection.favorites,
+                onTap: () => onSelectSection(_DesktopPanelSection.favorites),
+              ),
+              _DesktopMapPanelAction(
+                icon: AppIcons.myLocation,
+                label: 'Mi ubicación',
+                onTap: onLocate,
+              ),
+              const _DesktopNavigationDivider(),
+              _DesktopMapPanelAction(
+                id: 'measure-distance',
+                icon: AppIcons.ruler,
+                label: 'Medir distancia',
+                selected: activeMode == _DesktopActiveMode.distance,
+                onTap: onMeasureDistance,
+              ),
+              _DesktopMapPanelAction(
+                id: 'measure-area',
+                icon: AppIcons.analytics,
+                label: 'Medir área',
+                selected: activeMode == _DesktopActiveMode.area,
+                onTap: onMeasureArea,
+              ),
+              _DesktopMapPanelAction(
+                id: 'add-marker',
+                icon: AppIcons.addLocation,
+                label: 'Agregar marcador',
+                selected: activeMode == _DesktopActiveMode.marker,
+                onTap: onAddMarker,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCollapsedPanel() {
+    return SizedBox(
+      width: 44,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            key: const ValueKey('desktop-map-navigation-rail'),
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _DesktopMapRailButton(
+                id: 'expand',
+                tooltip: 'Expandir herramientas',
+                icon: AppIcons.layers,
+                onPressed: () => onCollapsedChanged(false),
+              ),
+              const _DesktopNavigationDivider(compact: true),
+              _DesktopMapRailButton(
+                id: 'layers',
+                tooltip: 'Capas',
+                icon: AppIcons.layers,
+                selected: selectedSection == _DesktopPanelSection.layers,
+                onPressed: () => onSelectSection(_DesktopPanelSection.layers),
+              ),
+              _DesktopMapRailButton(
+                id: 'search',
+                tooltip: 'Buscar',
+                icon: AppIcons.search,
+                selected: selectedSection == _DesktopPanelSection.search,
+                onPressed: () => onSelectSection(_DesktopPanelSection.search),
+              ),
+              const _DesktopNavigationDivider(compact: true),
+              _DesktopMapRailButton(
+                id: 'measurements',
+                tooltip: 'Mediciones',
+                icon: Icons.history,
+                selected: selectedSection == _DesktopPanelSection.measurements,
+                onPressed: () =>
+                    onSelectSection(_DesktopPanelSection.measurements),
+              ),
+              _DesktopMapRailButton(
+                id: 'markers',
+                tooltip: 'Marcadores',
+                icon: Icons.bookmarks,
+                selected: selectedSection == _DesktopPanelSection.markers,
+                onPressed: () => onSelectSection(_DesktopPanelSection.markers),
+              ),
+              _DesktopMapRailButton(
+                id: 'favorites',
+                tooltip: 'Favoritos',
+                icon: AppIcons.star,
+                selected: selectedSection == _DesktopPanelSection.favorites,
+                onPressed: () =>
+                    onSelectSection(_DesktopPanelSection.favorites),
+              ),
+              _DesktopMapRailButton(
+                id: 'location',
+                tooltip: 'Mi ubicación',
+                icon: AppIcons.myLocation,
+                onPressed: onLocate,
+              ),
+              const _DesktopNavigationDivider(compact: true),
+              _DesktopMapRailButton(
+                id: 'measure-distance',
+                tooltip: 'Medir distancia',
+                icon: AppIcons.ruler,
+                selected: activeMode == _DesktopActiveMode.distance,
+                onPressed: onMeasureDistance,
+              ),
+              _DesktopMapRailButton(
+                id: 'measure-area',
+                tooltip: 'Medir área',
+                icon: AppIcons.analytics,
+                selected: activeMode == _DesktopActiveMode.area,
+                onPressed: onMeasureArea,
+              ),
+              _DesktopMapRailButton(
+                id: 'add-marker',
+                tooltip: 'Agregar marcador',
+                icon: AppIcons.addLocation,
+                selected: activeMode == _DesktopActiveMode.marker,
+                onPressed: onAddMarker,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopNavigationDivider extends StatelessWidget {
+  const _DesktopNavigationDivider({this.compact = false});
+
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: compact ? 8 : 10),
+      child: Divider(
+        height: 1,
+        color: Theme.of(
+          context,
+        ).colorScheme.outlineVariant.withValues(alpha: 0.75),
+      ),
+    );
+  }
+}
+
+class _DesktopCloseButton extends StatefulWidget {
+  const _DesktopCloseButton({required this.tooltip, required this.onPressed});
+
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  @override
+  State<_DesktopCloseButton> createState() => _DesktopCloseButtonState();
+}
+
+class _DesktopCloseButtonState extends State<_DesktopCloseButton> {
+  bool _hovered = false;
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final emphasized = _hovered || _focused;
+    final duration = AppMotion.duration(
+      context,
+      const Duration(milliseconds: 190),
+    );
+    return Tooltip(
+      message: widget.tooltip,
+      waitDuration: const Duration(milliseconds: 350),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: AnimatedContainer(
+          duration: duration,
+          curve: Curves.easeOutCubic,
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: emphasized
+                ? colorScheme.primaryContainer
+                : colorScheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(14),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: widget.onPressed,
+              onFocusChange: (focused) => setState(() => _focused = focused),
+              splashColor: colorScheme.primary.withValues(alpha: 0.12),
+              child: Icon(
+                AppIcons.close,
+                size: 20,
+                color: emphasized
+                    ? colorScheme.primary
+                    : colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopMapPanelAction extends StatefulWidget {
+  const _DesktopMapPanelAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.id,
+    this.selected = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final String? id;
+  final bool selected;
+
+  @override
+  State<_DesktopMapPanelAction> createState() => _DesktopMapPanelActionState();
+}
+
+class _DesktopMapPanelActionState extends State<_DesktopMapPanelAction> {
+  bool _hovered = false;
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final enabled = widget.onTap != null;
+    final emphasized = widget.selected || _hovered || _focused;
+    final foreground = widget.selected
+        ? colorScheme.onSecondaryContainer
+        : colorScheme.primary;
+    final duration = AppMotion.duration(
+      context,
+      const Duration(milliseconds: 190),
+    );
+    return Tooltip(
+      message: widget.label,
+      waitDuration: const Duration(milliseconds: 350),
+      exitDuration: const Duration(milliseconds: 100),
+      child: MouseRegion(
+        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        onEnter: enabled ? (_) => setState(() => _hovered = true) : null,
+        onExit: enabled ? (_) => setState(() => _hovered = false) : null,
+        child: Semantics(
+          button: true,
+          enabled: enabled,
+          selected: widget.selected,
+          child: AnimatedScale(
+            duration: duration,
+            curve: Curves.easeOutCubic,
+            scale: _hovered && enabled ? 1.01 : 1,
+            child: AnimatedContainer(
+              key: widget.id == null
+                  ? null
+                  : ValueKey('desktop-map-action-${widget.id}'),
+              duration: duration,
+              curve: Curves.easeOutCubic,
+              decoration: BoxDecoration(
+                color: widget.selected
+                    ? colorScheme.secondaryContainer
+                    : emphasized
+                    ? colorScheme.primaryContainer.withValues(alpha: 0.52)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(14),
+                border: widget.selected
+                    ? Border.all(
+                        color: colorScheme.primary.withValues(alpha: 0.38),
+                      )
+                    : null,
+              ),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(14),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: widget.onTap,
+                  canRequestFocus: enabled,
+                  onFocusChange: (focused) =>
+                      setState(() => _focused = focused),
+                  splashColor: colorScheme.primary.withValues(alpha: 0.12),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 11,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          widget.icon,
+                          size: 20,
+                          color: enabled
+                              ? foreground
+                              : colorScheme.onSurface.withValues(alpha: 0.38),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            widget.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodyLarge
+                                ?.copyWith(
+                                  color: widget.selected
+                                      ? colorScheme.onSecondaryContainer
+                                      : null,
+                                  fontWeight: widget.selected
+                                      ? FontWeight.w600
+                                      : FontWeight.w500,
+                                ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopMapRailButton extends StatefulWidget {
+  const _DesktopMapRailButton({
+    required this.id,
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+    this.selected = false,
+  });
+
+  final String id;
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final bool selected;
+
+  @override
+  State<_DesktopMapRailButton> createState() => _DesktopMapRailButtonState();
+}
+
+class _DesktopMapRailButtonState extends State<_DesktopMapRailButton> {
+  bool _hovered = false;
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final enabled = widget.onPressed != null;
+    final emphasized = widget.selected || _hovered || _focused;
+    final duration = AppMotion.duration(
+      context,
+      const Duration(milliseconds: 190),
+    );
+    final foreground = widget.selected
+        ? colorScheme.onSecondaryContainer
+        : colorScheme.primary;
+
+    return Tooltip(
+      message: widget.tooltip,
+      waitDuration: const Duration(milliseconds: 350),
+      exitDuration: const Duration(milliseconds: 100),
+      child: MouseRegion(
+        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        onEnter: enabled ? (_) => setState(() => _hovered = true) : null,
+        onExit: enabled ? (_) => setState(() => _hovered = false) : null,
+        child: Semantics(
+          button: true,
+          enabled: enabled,
+          selected: widget.selected,
+          label: widget.tooltip,
+          child: AnimatedScale(
+            duration: duration,
+            curve: Curves.easeOutCubic,
+            scale: _hovered && enabled ? 1.03 : 1,
+            child: AnimatedContainer(
+              key: ValueKey('desktop-map-rail-${widget.id}'),
+              duration: duration,
+              curve: Curves.easeOutCubic,
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: widget.selected
+                    ? colorScheme.secondaryContainer
+                    : (emphasized
+                          ? colorScheme.primaryContainer.withValues(alpha: 0.58)
+                          : Colors.transparent),
+                borderRadius: BorderRadius.circular(14),
+                border: widget.selected
+                    ? Border.all(
+                        color: colorScheme.primary.withValues(alpha: 0.34),
+                      )
+                    : null,
+                boxShadow: widget.selected
+                    ? [
+                        BoxShadow(
+                          color: colorScheme.shadow.withValues(alpha: 0.12),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ]
+                    : const [],
+              ),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(14),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  canRequestFocus: enabled,
+                  onFocusChange: (focused) =>
+                      setState(() => _focused = focused),
+                  onTap: widget.onPressed,
+                  child: Icon(
+                    widget.icon,
+                    size: 20,
+                    color: enabled
+                        ? foreground
+                        : colorScheme.onSurface.withValues(alpha: 0.38),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopPanelTransition extends StatelessWidget {
+  const _DesktopPanelTransition({required this.panelKey, required this.child});
+
+  final Object panelKey;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: AppMotion.duration(context, const Duration(milliseconds: 200)),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) => FadeTransition(
+        opacity: animation,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0.055, 0),
+            end: Offset.zero,
+          ).animate(animation),
+          child: child,
+        ),
+      ),
+      child: KeyedSubtree(key: ValueKey(panelKey), child: child),
+    );
+  }
+}
+
+class _DesktopHeaderMapStatus extends StatelessWidget {
+  const _DesktopHeaderMapStatus({required this.zoom});
+
+  final double zoom;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: colorScheme.outlineVariant.withValues(alpha: 0.42),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _DesktopHeaderStatusItem(
+              icon: Icons.zoom_in_outlined,
+              label: 'Zoom ${zoom.round()}',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopHeaderStatusItem extends StatelessWidget {
+  const _DesktopHeaderStatusItem({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: colorScheme.primary),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DesktopActiveModePanel extends StatelessWidget {
+  const _DesktopActiveModePanel({
+    required this.mode,
+    required this.vertexCount,
+    required this.liveValue,
+    required this.onDismiss,
+  });
+
+  final _DesktopActiveMode mode;
+  final int? vertexCount;
+  final String? liveValue;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final (title, instruction, icon) = switch (mode) {
+      _DesktopActiveMode.distance => (
+        'Medir distancia',
+        'Hacé clic en el mapa para continuar midiendo.',
+        AppIcons.ruler,
+      ),
+      _DesktopActiveMode.area => (
+        'Medir área',
+        'Hacé clic en el mapa para continuar dibujando.',
+        AppIcons.analytics,
+      ),
+      _DesktopActiveMode.marker => (
+        'Agregar marcador',
+        'Hacé clic en el mapa para colocar un marcador.',
+        AppIcons.addLocation,
+      ),
+    };
+
+    return _DesktopContextPanel(
+      title: title,
+      icon: icon,
+      onDismiss: onDismiss,
+      showCloseButton: true,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colorScheme.primaryContainer.withValues(alpha: 0.24),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: colorScheme.primary.withValues(alpha: 0.18),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: colorScheme.primary,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Modo activo',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: colorScheme.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                instruction,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  height: 1.35,
+                ),
+              ),
+              if (vertexCount case final count?) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 16,
+                  runSpacing: 6,
+                  children: [
+                    _DesktopModeMetric(
+                      icon: AppIcons.location,
+                      label: '$count ${count == 1 ? 'vértice' : 'vértices'}',
+                    ),
+                    if (liveValue != null)
+                      _DesktopModeMetric(
+                        icon: mode == _DesktopActiveMode.area
+                            ? AppIcons.analytics
+                            : AppIcons.ruler,
+                        label: liveValue!,
+                      ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 8),
+              Text(
+                'Esc para cancelar',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopModeMetric extends StatelessWidget {
+  const _DesktopModeMetric({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: colorScheme.primary),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+            color: colorScheme.onSurface,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DesktopSearchPanel extends StatefulWidget {
+  const _DesktopSearchPanel({
+    required this.entries,
+    required this.selectedFeatureId,
+    required this.recentEntries,
+    required this.onSelect,
+    required this.onDismiss,
+  });
+
+  final List<_SoilSeriesSearchEntry> entries;
+  final String? selectedFeatureId;
+  final List<_SoilSeriesSearchEntry> recentEntries;
+  final ValueChanged<_SoilSeriesSearchEntry> onSelect;
+  final VoidCallback onDismiss;
+
+  @override
+  State<_DesktopSearchPanel> createState() => _DesktopSearchPanelState();
+}
+
+class _DesktopSearchPanelState extends State<_DesktopSearchPanel> {
+  final TextEditingController _controller = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _normalizeSearchText(_controller.text);
+    final filtered = query.isEmpty
+        ? const <_SoilSeriesSearchEntry>[]
+        : widget.entries
+              .where((entry) => entry.normalizedName.contains(query))
+              .toList(growable: false);
+    final groupedEntries = <Widget>[];
+    for (final type in _MapSearchEntryType.values) {
+      final entries = filtered.where((entry) => entry.type == type).toList()
+        ..sort((first, second) {
+          final rankComparison = _searchMatchRank(
+            first.normalizedName,
+            query,
+          ).compareTo(_searchMatchRank(second.normalizedName, query));
+          return rankComparison != 0
+              ? rankComparison
+              : first.name.compareTo(second.name);
+        });
+      if (entries.isEmpty) continue;
+      groupedEntries.add(
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 14, 4, 6),
+          child: Text(
+            type.sectionTitle,
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      );
+      groupedEntries.addAll(
+        entries.take(12).map((entry) {
+          final selected = widget.selectedFeatureId == entry.feature.id;
+          return _DesktopSearchResultRow(
+            entry: entry,
+            selected: selected,
+            onTap: () => widget.onSelect(entry),
+          );
+        }),
+      );
+    }
+
+    return _DesktopContextPanel(
+      title: 'Buscar',
+      subtitle: query.isEmpty
+          ? 'Localidades, unidades y series de suelo'
+          : '${filtered.length} resultados',
+      icon: AppIcons.search,
+      onDismiss: widget.onDismiss,
+      child: SizedBox(
+        height: math.min(560, MediaQuery.sizeOf(context).height * 0.64),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              key: const ValueKey('desktop-map-search-field'),
+              controller: _controller,
+              focusNode: _focusNode,
+              autofocus: true,
+              textInputAction: TextInputAction.search,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                hintText: 'Localidad, unidad o serie...',
+                prefixIcon: const Icon(AppIcons.search, size: 20),
+                suffixIcon: _controller.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Limpiar búsqueda',
+                        onPressed: () {
+                          _controller.clear();
+                          _focusNode.requestFocus();
+                          setState(() {});
+                        },
+                        icon: const Icon(AppIcons.close, size: 18),
+                      ),
+                filled: true,
+                fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: query.isEmpty
+                  ? _DesktopSearchEmptyState(
+                      recentEntries: widget.recentEntries,
+                      onSelect: widget.onSelect,
+                    )
+                  : groupedEntries.isEmpty
+                  ? Center(
+                      child: Text(
+                        'No hay coincidencias.',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    )
+                  : ListView(
+                      padding: EdgeInsets.zero,
+                      children: groupedEntries,
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopSearchEmptyState extends StatelessWidget {
+  const _DesktopSearchEmptyState({
+    required this.recentEntries,
+    required this.onSelect,
+  });
+
+  final List<_SoilSeriesSearchEntry> recentEntries;
+  final ValueChanged<_SoilSeriesSearchEntry> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return ListView(
+      padding: const EdgeInsets.only(top: 8),
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(AppIcons.search, size: 20, color: colorScheme.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Escribí una localidad, unidad cartográfica o serie de suelo.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 24),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+          child: Text(
+            'Búsquedas recientes',
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        if (recentEntries.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+            child: Text(
+              'Todavía no hay búsquedas recientes.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          )
+        else
+          ...recentEntries.map(
+            (entry) => _DesktopSearchResultRow(
+              entry: entry,
+              selected: false,
+              onTap: () => onSelect(entry),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _DesktopSearchResultRow extends StatelessWidget {
+  const _DesktopSearchResultRow({
+    required this.entry,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _SoilSeriesSearchEntry entry;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Material(
+        color: selected ? colorScheme.secondaryContainer : Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: selected
+              ? BorderSide(color: colorScheme.primary.withValues(alpha: 0.36))
+              : BorderSide.none,
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          hoverColor: colorScheme.primaryContainer.withValues(alpha: 0.48),
+          splashColor: colorScheme.primary.withValues(alpha: 0.12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            child: Row(
+              children: [
+                Icon(entry.type.icon, size: 19, color: colorScheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        entry.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        entry.subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopLayersPanel extends StatelessWidget {
+  const _DesktopLayersPanel({
+    required this.showSoilPolygons,
+    required this.showReferenceBasemap,
+    required this.onToggleSoilPolygons,
+    required this.onToggleReferenceBasemap,
+    required this.onDismiss,
+  });
+
+  final bool showSoilPolygons;
+  final bool showReferenceBasemap;
+  final VoidCallback onToggleSoilPolygons;
+  final VoidCallback onToggleReferenceBasemap;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    return _DesktopContextPanel(
+      title: 'Capas',
+      subtitle: '2 capas disponibles',
+      icon: AppIcons.layers,
+      onDismiss: onDismiss,
+      child: Column(
+        children: [
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            value: showSoilPolygons,
+            onChanged: (_) => onToggleSoilPolygons(),
+            title: const Text('Suelos'),
+            subtitle: const Text('Unidades cartográficas'),
+          ),
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            value: showReferenceBasemap,
+            onChanged: (_) => onToggleReferenceBasemap(),
+            title: const Text('Referencia'),
+            subtitle: const Text('Localidades y caminos'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DesktopCollectionPanel<T> extends StatelessWidget {
+  const _DesktopCollectionPanel({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.items,
+    required this.emptyMessage,
+    required this.itemTitle,
+    required this.itemSubtitle,
+    required this.onSelect,
+    required this.onDismiss,
+    this.itemEnabled,
+    this.itemSelected,
+    this.itemMetaLabel,
+    this.trailingBuilder,
+    this.headerAction,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final List<T> items;
+  final String emptyMessage;
+  final String Function(T item) itemTitle;
+  final String Function(T item) itemSubtitle;
+  final ValueChanged<T> onSelect;
+  final VoidCallback onDismiss;
+  final bool Function(T item)? itemEnabled;
+  final bool Function(T item)? itemSelected;
+  final String Function(T item)? itemMetaLabel;
+  final Widget Function(T item)? trailingBuilder;
+  final Widget? headerAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return _DesktopContextPanel(
+      title: title,
+      subtitle: subtitle,
+      icon: icon,
+      onDismiss: onDismiss,
+      headerAction: headerAction,
+      child: items.isEmpty
+          ? Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      icon,
+                      size: 28,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      emptyMessage,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : ListView.separated(
+              shrinkWrap: true,
+              physics: const ClampingScrollPhysics(),
+              itemCount: items.length,
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final item = items[index];
+                final enabled = itemEnabled?.call(item) ?? true;
+                final selected = itemSelected?.call(item) ?? false;
+                final colorScheme = Theme.of(context).colorScheme;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Material(
+                    color: selected
+                        ? colorScheme.secondaryContainer
+                        : Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: selected
+                          ? BorderSide(
+                              color: colorScheme.primary.withValues(
+                                alpha: 0.36,
+                              ),
+                            )
+                          : BorderSide.none,
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: ListTile(
+                      selected: selected,
+                      selectedColor: colorScheme.onSecondaryContainer,
+                      hoverColor: colorScheme.primaryContainer.withValues(
+                        alpha: 0.48,
+                      ),
+                      splashColor: colorScheme.primary.withValues(alpha: 0.12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      minVerticalPadding: 10,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                      ),
+                      leading: Icon(icon, size: 20),
+                      title: Text(
+                        itemTitle(item),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      subtitle: itemMetaLabel == null
+                          ? Text(
+                              itemSubtitle(item),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(
+                                    color: selected
+                                        ? colorScheme.onSecondaryContainer
+                                              .withValues(alpha: 0.78)
+                                        : colorScheme.onSurfaceVariant,
+                                  ),
+                            )
+                          : Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    itemMetaLabel!(item),
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(
+                                          color: colorScheme.onSurfaceVariant,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 1),
+                                  Text(
+                                    itemSubtitle(item),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(
+                                          color: selected
+                                              ? colorScheme.onSecondaryContainer
+                                                    .withValues(alpha: 0.78)
+                                              : colorScheme.onSurfaceVariant,
+                                        ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                      enabled: enabled,
+                      trailing:
+                          trailingBuilder?.call(item) ??
+                          const Icon(AppIcons.chevronRight, size: 18),
+                      onTap: enabled ? () => onSelect(item) : null,
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class _DesktopContextPanel extends StatelessWidget {
+  const _DesktopContextPanel({
+    required this.title,
+    required this.icon,
+    required this.onDismiss,
+    required this.child,
+    this.subtitle,
+    this.headerAction,
+    this.showCloseButton = false,
+  });
+
+  final String title;
+  final IconData icon;
+  final String? subtitle;
+  final VoidCallback onDismiss;
+  final Widget child;
+  final Widget? headerAction;
+  final bool showCloseButton;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.68,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    if (subtitle case final subtitle?) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              ?headerAction,
+              if (showCloseButton)
+                _DesktopCloseButton(
+                  tooltip: 'Cerrar panel',
+                  onPressed: onDismiss,
+                ),
+            ],
+          ),
+          SizedBox(height: subtitle == null ? 10 : 16),
+          Flexible(child: child),
+        ],
+      ),
+    );
+  }
+}
+
+class _DesktopMapInformationPanel extends StatelessWidget {
+  const _DesktopMapInformationPanel({
+    required this.feature,
+    required this.measurement,
+    required this.marker,
+    required this.onOpenFeatureDetails,
+    required this.featureIsFavorite,
+    required this.onToggleFeatureFavorite,
+    required this.onAnalyzeMeasurement,
+    required this.onEditMeasurement,
+    required this.onHideMeasurement,
+    required this.onOpenMarkerDetails,
+    required this.onEditMarker,
+    required this.onDeleteMarker,
+    required this.markerDate,
+    required this.onExportMeasurementPdf,
+    required this.onExportMeasurementGeoJson,
+    required this.onExportMeasurementCsv,
+    required this.onDeleteMeasurement,
+  });
+
+  final GisFeature? feature;
+  final SavedMeasurement? measurement;
+  final PersonalMarker? marker;
+  final VoidCallback? onOpenFeatureDetails;
+  final bool featureIsFavorite;
+  final VoidCallback? onToggleFeatureFavorite;
+  final VoidCallback? onAnalyzeMeasurement;
+  final VoidCallback? onEditMeasurement;
+  final VoidCallback? onHideMeasurement;
+  final VoidCallback? onOpenMarkerDetails;
+  final VoidCallback? onEditMarker;
+  final VoidCallback? onDeleteMarker;
+  final String? markerDate;
+  final VoidCallback? onExportMeasurementPdf;
+  final VoidCallback? onExportMeasurementGeoJson;
+  final VoidCallback? onExportMeasurementCsv;
+  final VoidCallback? onDeleteMeasurement;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final title = switch ((feature, measurement, marker)) {
+      (final GisFeature value, _, _) =>
+        GisSoilSeries.fromProperties(value.properties).firstOrNull?.name ??
+            _featureValue(value, 'Nombre_UC'),
+      (_, final SavedMeasurement value, _) => value.name,
+      (_, _, final PersonalMarker value) => value.name,
+      _ => '',
+    };
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.62,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 10),
+            if (feature case final selectedFeature?) ...[
+              _DesktopMapInformationValue(
+                label: 'Unidad cartográfica',
+                value: _featureValue(selectedFeature, 'Nombre_UC'),
+              ),
+              _DesktopMapInformationValue(
+                label: 'Capacidad de uso',
+                value: _featureValue(selectedFeature, 'CAP_USO'),
+              ),
+              _DesktopMapInformationValue(
+                label: 'Carta de suelo',
+                value: selectedFeature.soilMapId.toString(),
+              ),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: onOpenFeatureDetails,
+                    icon: const Icon(AppIcons.library, size: 18),
+                    label: const Text('Ver información'),
+                  ),
+                  IconButton.filledTonal(
+                    tooltip: featureIsFavorite
+                        ? 'Quitar de favoritos'
+                        : 'Agregar a favoritos',
+                    onPressed: onToggleFeatureFavorite,
+                    icon: Icon(featureIsFavorite ? Icons.star : AppIcons.star),
+                  ),
+                ],
+              ),
+            ],
+            if (measurement case final selectedMeasurement?) ...[
+              _DesktopMapInformationValue(
+                label: 'Tipo',
+                value: selectedMeasurement.type == SavedMeasurementType.area
+                    ? 'Área'
+                    : 'Distancia',
+              ),
+              _DesktopMapInformationValue(
+                label: selectedMeasurement.type == SavedMeasurementType.area
+                    ? 'Área'
+                    : 'Distancia',
+                value: selectedMeasurement.type == SavedMeasurementType.area
+                    ? _MeasurementLayer._formatArea(
+                        selectedMeasurement.areaSquareMeters ?? 0,
+                      )
+                    : _MeasurementLayer._formatDistance(
+                        selectedMeasurement.distanceMeters ?? 0,
+                      ),
+              ),
+              if (selectedMeasurement.type == SavedMeasurementType.area)
+                _DesktopMapInformationValue(
+                  label: 'Perímetro',
+                  value: _MeasurementLayer._formatDistance(
+                    selectedMeasurement.perimeterMeters ?? 0,
+                  ),
+                ),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (onAnalyzeMeasurement != null)
+                    FilledButton.tonalIcon(
+                      onPressed: onAnalyzeMeasurement,
+                      icon: const Icon(AppIcons.analytics, size: 18),
+                      label: const Text('Analizar lote'),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: onEditMeasurement,
+                    icon: const Icon(AppIcons.edit, size: 18),
+                    label: const Text('Editar'),
+                  ),
+                  IconButton.filledTonal(
+                    tooltip: 'Ocultar',
+                    onPressed: onHideMeasurement,
+                    icon: const Icon(AppIcons.visibilityOff),
+                  ),
+                  if (onExportMeasurementPdf != null &&
+                      onExportMeasurementGeoJson != null &&
+                      onExportMeasurementCsv != null &&
+                      onDeleteMeasurement != null)
+                    SavedMeasurementOverflowMenu(
+                      onExportPdf: onExportMeasurementPdf!,
+                      onExportGeoJson: onExportMeasurementGeoJson!,
+                      onExportCsv: onExportMeasurementCsv!,
+                      onDelete: onDeleteMeasurement!,
+                    ),
+                ],
+              ),
+            ],
+            if (marker case final selectedMarker?) ...[
+              _DesktopMapInformationValue(
+                label: 'Tipo',
+                value: selectedMarker.category.label,
+              ),
+              _DesktopMapInformationValue(
+                label: 'Coordenadas',
+                value:
+                    '${selectedMarker.latitude.toStringAsFixed(6)}, ${selectedMarker.longitude.toStringAsFixed(6)}',
+              ),
+              if (markerDate != null)
+                _DesktopMapInformationValue(
+                  label: 'Creado',
+                  value: markerDate!,
+                ),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: onOpenMarkerDetails,
+                    icon: const Icon(AppIcons.map, size: 18),
+                    label: const Text('Ver detalles'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: onEditMarker,
+                    icon: const Icon(AppIcons.edit, size: 18),
+                    label: const Text('Editar'),
+                  ),
+                  IconButton.filledTonal(
+                    tooltip: 'Eliminar',
+                    onPressed: onDeleteMarker,
+                    icon: const Icon(AppIcons.delete),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _featureValue(GisFeature feature, String key) {
+    final value = feature.properties[key]?.toString().trim();
+    return value == null || value.isEmpty ? 'Sin datos' : value;
+  }
+}
+
+class _DesktopMapInformationValue extends StatelessWidget {
+  const _DesktopMapInformationValue({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(value, style: Theme.of(context).textTheme.bodyLarge),
+        ],
+      ),
+    );
+  }
+}
+
 enum _MeasurementMode { distance, area }
+
+enum _DesktopPanelSection { layers, search, measurements, markers, favorites }
+
+enum _DesktopActiveMode { distance, area, marker }
+
+enum _DesktopMarkerAction { edit, delete }
 
 enum _MeasurementMenuOption { distance, area, exit }
 
 enum _MeasurementExitDecision { save, discard, cancel }
 
-enum _MapToolHintType { measureDistance, measureArea, marker }
+enum _MapToolHintType { measureDistance, measureArea, marker, markerActive }
 
 enum _VertexMenuOption { delete, cancel }
 
@@ -4415,6 +6583,10 @@ class _MapToolHintCard extends StatelessWidget {
       _MapToolHintType.marker => (
         AppIcons.addLocation,
         'Toque el mapa para marcar.',
+      ),
+      _MapToolHintType.markerActive => (
+        AppIcons.addLocation,
+        'Modo de marcador activo.',
       ),
     };
 
@@ -5427,6 +7599,7 @@ class _MeasurementLayer extends StatelessWidget {
         colorScheme: colorScheme,
         measurementColor: measurementColor,
         measurementOnColor: measurementOnColor,
+        desktopInteraction: isSuelosArDesktopPlatform(context),
         onDragStart: (position) => onStartAreaVertexDrag(index, position),
         onDragUpdate: (position) => onMoveAreaVertex(index, position),
         onDragEnd: onEndAreaVertexDrag,
@@ -5455,6 +7628,8 @@ class _MeasurementLayer extends StatelessWidget {
     if (overlay == null) {
       return;
     }
+    final desktop = isSuelosArDesktopPlatform(context);
+    final colorScheme = Theme.of(context).colorScheme;
     var deleted = false;
     final selection = await showMenu<_VertexMenuOption>(
       context: context,
@@ -5462,24 +7637,76 @@ class _MeasurementLayer extends StatelessWidget {
         Rect.fromLTWH(position.dx, position.dy, 1, 1),
         Offset.zero & overlay.size,
       ),
-      items: [
-        PopupMenuItem(
-          key: const ValueKey('delete-area-vertex'),
-          value: _VertexMenuOption.delete,
-          enabled: pointCount > minimumPointCount,
-          onTap: pointCount > minimumPointCount
-              ? () {
-                  deleted = true;
-                  onDeleteAreaVertex(index);
-                }
-              : null,
-          child: const Text('Eliminar vértice'),
-        ),
-        const PopupMenuItem(
-          value: _VertexMenuOption.cancel,
-          child: Text('Cancelar'),
-        ),
-      ],
+      elevation: desktop ? 8 : null,
+      color: desktop ? colorScheme.surfaceContainerLow : null,
+      surfaceTintColor: desktop ? Colors.transparent : null,
+      shadowColor: desktop ? colorScheme.shadow.withValues(alpha: 0.2) : null,
+      shape: desktop
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                color: colorScheme.outlineVariant.withValues(alpha: 0.65),
+              ),
+            )
+          : null,
+      menuPadding: desktop ? const EdgeInsets.symmetric(vertical: 8) : null,
+      items: desktop
+          ? [
+              PopupMenuItem(
+                key: const ValueKey('delete-area-vertex'),
+                value: _VertexMenuOption.delete,
+                enabled: pointCount > minimumPointCount,
+                height: 48,
+                onTap: pointCount > minimumPointCount
+                    ? () {
+                        deleted = true;
+                        onDeleteAreaVertex(index);
+                      }
+                    : null,
+                child: Row(
+                  children: [
+                    Icon(
+                      AppIcons.delete,
+                      size: 19,
+                      color: pointCount > minimumPointCount
+                          ? colorScheme.error
+                          : colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 12),
+                    const Flexible(child: Text('Eliminar vértice')),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: _VertexMenuOption.cancel,
+                height: 48,
+                child: Row(
+                  children: [
+                    Icon(AppIcons.close, size: 19),
+                    SizedBox(width: 12),
+                    Flexible(child: Text('Cancelar')),
+                  ],
+                ),
+              ),
+            ]
+          : [
+              PopupMenuItem(
+                key: const ValueKey('delete-area-vertex'),
+                value: _VertexMenuOption.delete,
+                enabled: pointCount > minimumPointCount,
+                onTap: pointCount > minimumPointCount
+                    ? () {
+                        deleted = true;
+                        onDeleteAreaVertex(index);
+                      }
+                    : null,
+                child: const Text('Eliminar vértice'),
+              ),
+              const PopupMenuItem(
+                value: _VertexMenuOption.cancel,
+                child: Text('Cancelar'),
+              ),
+            ],
     );
     if (!deleted && selection == _VertexMenuOption.delete) {
       onDeleteAreaVertex(index);
@@ -5640,6 +7867,7 @@ class _AreaVertexHandle extends StatefulWidget {
     required this.colorScheme,
     required this.measurementColor,
     required this.measurementOnColor,
+    required this.desktopInteraction,
     required this.onDragStart,
     required this.onDragUpdate,
     required this.onDragEnd,
@@ -5652,6 +7880,7 @@ class _AreaVertexHandle extends StatefulWidget {
   final ColorScheme colorScheme;
   final Color measurementColor;
   final Color measurementOnColor;
+  final bool desktopInteraction;
   final ValueChanged<Offset> onDragStart;
   final ValueChanged<Offset> onDragUpdate;
   final VoidCallback onDragEnd;
@@ -5663,6 +7892,14 @@ class _AreaVertexHandle extends StatefulWidget {
 
 class _AreaVertexHandleState extends State<_AreaVertexHandle> {
   bool _moved = false;
+  bool _primaryDragActive = false;
+  bool _secondaryClickActive = false;
+
+  void _resetPointerState() {
+    _primaryDragActive = false;
+    _secondaryClickActive = false;
+    _moved = false;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -5671,26 +7908,58 @@ class _AreaVertexHandleState extends State<_AreaVertexHandle> {
       behavior: HitTestBehavior.opaque,
       onPointerDown: (event) {
         _moved = false;
+        if (widget.desktopInteraction &&
+            event.kind == PointerDeviceKind.mouse) {
+          if (event.buttons == kSecondaryMouseButton) {
+            _secondaryClickActive = true;
+            _primaryDragActive = false;
+            return;
+          }
+          if (event.buttons != kPrimaryMouseButton) {
+            _resetPointerState();
+            return;
+          }
+        }
+        _primaryDragActive = true;
+        _secondaryClickActive = false;
         widget.onDragStart(event.position);
       },
       onPointerMove: (event) {
         if (event.delta.distance > 0) {
           _moved = true;
         }
-        widget.onDragUpdate(event.position);
+        if (_primaryDragActive) {
+          widget.onDragUpdate(event.position);
+        }
       },
       onPointerUp: (event) {
         final tapPosition = event.position;
-        if (!_moved) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
+        final showContextMenu =
+            !_moved && (_secondaryClickActive || !widget.desktopInteraction);
+        if (showContextMenu) {
+          if (_secondaryClickActive && widget.desktopInteraction) {
             widget.onTap(tapPosition);
-          });
+          } else {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              widget.onTap(tapPosition);
+            });
+          }
         }
-        widget.onDragEnd();
+        if (_primaryDragActive) {
+          widget.onDragEnd();
+        }
+        _resetPointerState();
       },
-      onPointerCancel: (_) => widget.onDragEnd(),
+      onPointerCancel: (_) {
+        if (_primaryDragActive) {
+          widget.onDragEnd();
+        }
+        _resetPointerState();
+      },
       child: MouseRegion(
-        cursor: SystemMouseCursors.move,
+        cursor: widget.isDragged
+            ? SystemMouseCursors.move
+            : SystemMouseCursors.click,
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: widget.isDragged
@@ -7630,14 +9899,26 @@ class _MapTopBarCard extends StatelessWidget {
   const _MapTopBarCard({
     required this.child,
     this.padding = const EdgeInsets.symmetric(horizontal: 10),
+    this.elevation = 3,
+    this.shadowAlpha = 0.18,
+    this.side,
   });
 
   final Widget child;
   final EdgeInsetsGeometry padding;
+  final double elevation;
+  final double shadowAlpha;
+  final BorderSide? side;
 
   @override
   Widget build(BuildContext context) {
-    return FloatingAppBarCard(padding: padding, child: child);
+    return FloatingAppBarCard(
+      padding: padding,
+      elevation: elevation,
+      shadowAlpha: shadowAlpha,
+      side: side,
+      child: child,
+    );
   }
 }
 

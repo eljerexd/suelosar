@@ -74,7 +74,7 @@ void main() {
     );
     await tester.pump(const Duration(seconds: 1));
     metrics.reset();
-    await tester.tap(find.byTooltip('Buscar'));
+    await tester.tap(find.text('Buscar'));
     await tester.pumpAndSettle();
 
     final dynamic state = tester.state(find.byType(GisMapScreen));

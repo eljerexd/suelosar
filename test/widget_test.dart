@@ -155,6 +155,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.android),
         home: GisMapScreen(
           repository: _SingleFeatureGisRepository(
             const GisFeature(
@@ -1331,6 +1332,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.android),
         home: GisMapScreen(
           repository: _SingleFeatureGisRepository(
             const GisFeature(
@@ -1487,7 +1489,13 @@ void main() {
       find.byKey(const ValueKey('rename-measurement-managed-area')),
     );
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Lote norte');
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      'Lote norte',
+    );
     await tester.tap(find.text('Guardar'));
     await tester.pumpAndSettle();
     expect(find.text('Lote norte'), findsOneWidget);
@@ -1575,6 +1583,8 @@ void main() {
       expect(stored.first.isVisible, isFalse);
       expect(stored.last.isVisible, isTrue);
 
+      await tester.tap(find.byTooltip('Visibilidad de mediciones'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Ocultar todas'));
       await tester.pumpAndSettle();
       preferences = await SharedPreferences.getInstance();
@@ -1588,6 +1598,8 @@ void main() {
           .toList();
       expect(stored.every((measurement) => !measurement.isVisible), isTrue);
 
+      await tester.tap(find.byTooltip('Visibilidad de mediciones'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Mostrar todas'));
       await tester.pumpAndSettle();
       preferences = await SharedPreferences.getInstance();
@@ -1726,6 +1738,7 @@ void main() {
     await _waitForMapTiles(tester);
 
     await _selectMapTool(tester, 'Markers');
+    expect(find.text('Toque el mapa para marcar.'), findsOneWidget);
     final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
     map.options.onTap!(
       const TapPosition(Offset.zero, Offset.zero),
@@ -1734,6 +1747,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Nuevo marcador'), findsOneWidget);
+    expect(find.text('Modo de marcador activo.'), findsOneWidget);
     await tester.tap(find.text('Guardar'));
     await tester.pump();
     expect(find.text('Requerido'), findsOneWidget);
@@ -1752,6 +1766,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Guardar'));
     await tester.pumpAndSettle();
+
+    expect(find.text('Modo de marcador activo.'), findsNothing);
 
     final preferences = await SharedPreferences.getInstance();
     final stored = preferences.getStringList('gis.personal_markers');

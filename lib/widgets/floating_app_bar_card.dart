@@ -8,6 +8,9 @@ class FloatingAppBarCard extends StatelessWidget {
   const FloatingAppBarCard({
     required this.child,
     this.padding = const EdgeInsets.symmetric(horizontal: 10),
+    this.elevation = 3,
+    this.shadowAlpha = 0.18,
+    this.side,
     super.key,
   });
 
@@ -15,16 +18,25 @@ class FloatingAppBarCard extends StatelessWidget {
 
   final Widget child;
   final EdgeInsetsGeometry padding;
+  final double elevation;
+  final double shadowAlpha;
+  final BorderSide? side;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Material(
       color: Colors.white,
-      elevation: 3,
-      shadowColor: colorScheme.shadow.withValues(alpha: 0.18),
+      elevation: elevation,
+      shadowColor: colorScheme.shadow.withValues(alpha: shadowAlpha),
       surfaceTintColor: Colors.transparent,
-      borderRadius: BorderRadius.circular(24),
+      borderRadius: side == null ? BorderRadius.circular(24) : null,
+      shape: side == null
+          ? null
+          : RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+              side: side!,
+            ),
       clipBehavior: Clip.antiAlias,
       child: ConstrainedBox(
         constraints: const BoxConstraints(minHeight: height),

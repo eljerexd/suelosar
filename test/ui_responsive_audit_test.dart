@@ -1,6 +1,9 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
@@ -16,6 +19,7 @@ import 'package:suelosar/screens/personal_markers_screen.dart';
 import 'package:suelosar/screens/settings_screen.dart';
 import 'package:suelosar/screens/soil_maps_screen.dart';
 import 'package:suelosar/widgets/floating_app_bar_card.dart';
+import 'package:suelosar/widgets/responsive_desktop_shell.dart';
 
 void main() {
   for (final entry in <String, Widget>{
@@ -312,6 +316,304 @@ void main() {
       same(clearActionElement),
     );
   });
+
+  testWidgets('GIS desktop shell keeps map controls in a floating side panel', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('Navegación GIS'), findsOneWidget);
+    expect(find.text('Mediciones'), findsOneWidget);
+    expect(find.text('Buscar'), findsOneWidget);
+    expect(find.text('Sin conexión'), findsNothing);
+    expect(find.textContaining('Zoom '), findsWidgets);
+    final expandedWidth = tester
+        .getSize(find.byType(SuelosArFloatingSidePanel))
+        .width;
+    await tester.tap(find.byTooltip('Contraer herramientas'));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getSize(find.byType(SuelosArFloatingSidePanel)).width,
+      lessThan(expandedWidth),
+    );
+    expect(find.byKey(const ValueKey('desktop-map-navigation-rail')), findsOne);
+    expect(find.byKey(const ValueKey('desktop-map-rail-layers')), findsOne);
+    expect(find.byKey(const ValueKey('desktop-map-rail-search')), findsOne);
+    expect(
+      find.byKey(const ValueKey('desktop-map-rail-measurements')),
+      findsOne,
+    );
+    expect(find.byKey(const ValueKey('desktop-map-rail-markers')), findsOne);
+    expect(find.byKey(const ValueKey('desktop-map-rail-favorites')), findsOne);
+    expect(find.byKey(const ValueKey('desktop-map-rail-location')), findsOne);
+    await tester.tap(find.byKey(const ValueKey('desktop-map-rail-layers')));
+    await tester.pumpAndSettle();
+    expect(find.text('Capas'), findsOneWidget);
+    expect(find.byKey(const ValueKey('desktop-map-navigation-rail')), findsOne);
+    await tester.tap(find.byTooltip('Expandir herramientas'));
+    await tester.pumpAndSettle();
+    expect(find.text('Navegación GIS'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop search opens in the right contextual panel', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.byTooltip('Contraer herramientas'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('desktop-map-rail-search')));
+    await tester.pumpAndSettle();
+
+    final searchField = find.byKey(const ValueKey('desktop-map-search-field'));
+    expect(searchField, findsOneWidget);
+    expect(tester.getCenter(searchField).dx, greaterThan(900));
+    expect(
+      find.text('Escribí una localidad, unidad cartográfica o serie de suelo.'),
+      findsOneWidget,
+    );
+    expect(find.text('Búsquedas recientes'), findsOneWidget);
+    expect(find.text('Todavía no hay búsquedas recientes.'), findsOneWidget);
+    expect(find.byTooltip('Cerrar panel'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop temporary modes share active state and cancellation', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-map-action-measure-distance')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Medir distancia'), findsWidgets);
+    expect(find.text('Modo activo'), findsOneWidget);
+    expect(find.byTooltip('Cancelar modo activo'), findsNothing);
+    expect(find.byTooltip('Cerrar panel'), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('Modo activo'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-map-action-measure-area')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Medir área'), findsWidgets);
+    await tester.tap(find.byTooltip('Cerrar panel'));
+    await tester.pumpAndSettle();
+    expect(find.text('Modo activo'), findsNothing);
+
+    final addMarkerAction = find.byKey(
+      const ValueKey('desktop-map-action-add-marker'),
+    );
+    await tester.ensureVisible(addMarkerAction);
+    await tester.pumpAndSettle();
+    await tester.tap(addMarkerAction);
+    await tester.pumpAndSettle();
+    expect(find.text('Agregar marcador'), findsWidgets);
+    await tester.tap(find.byTooltip('Cerrar panel'));
+    await tester.pumpAndSettle();
+    expect(find.text('Modo activo'), findsNothing);
+    expect(find.byTooltip('Cancelar modo activo'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop secondary mouse only opens the vertex menu', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-map-action-measure-area')),
+    );
+    await tester.pumpAndSettle();
+
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+    map.mapController!.move(const LatLng(-36.5, -60), 14);
+    await tester.pump();
+    for (final point in const <LatLng>[
+      LatLng(-36.505, -60.005),
+      LatLng(-36.495, -59.995),
+      LatLng(-36.505, -59.995),
+    ]) {
+      map.options.onTap!(const TapPosition(Offset.zero, Offset.zero), point);
+      await tester.pump();
+    }
+    expect(tester.takeException(), isNull, reason: 'measurement setup');
+
+    final vertex = find.byKey(const ValueKey('area-vertex-gesture-0'));
+    expect(vertex, findsOneWidget);
+
+    final mapCenterBefore = map.mapController!.camera.center;
+    final rightMapDrag = await tester.startGesture(
+      const Offset(700, 520),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await rightMapDrag.moveBy(const Offset(90, -45));
+    await rightMapDrag.up();
+    await tester.pump();
+    expect(map.mapController!.camera.center, mapCenterBefore);
+    expect(tester.takeException(), isNull, reason: 'secondary map drag');
+
+    dynamic state = tester.state(find.byType(GisMapScreen));
+    final vertexBefore = state.areaMeasurementPoints.first as LatLng;
+    final rightVertexDrag = await tester.startGesture(
+      tester.getCenter(vertex),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await rightVertexDrag.moveBy(const Offset(45, 30));
+    await rightVertexDrag.up();
+    await tester.pump();
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.areaMeasurementPoints.first, vertexBefore);
+    expect(find.byKey(const ValueKey('delete-area-vertex')), findsNothing);
+    expect(tester.takeException(), isNull, reason: 'secondary vertex drag');
+
+    await tester.tap(vertex);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('delete-area-vertex')), findsNothing);
+    expect(tester.takeException(), isNull, reason: 'primary vertex click');
+
+    final rightClick = await tester.startGesture(
+      tester.getCenter(vertex),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await rightClick.up();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('delete-area-vertex')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('narrow Windows GIS keeps the desktop shell', (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(760, 700);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('Navegación GIS'), findsOneWidget);
+    expect(find.byTooltip('Herramientas'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('GIS phone layout does not mount the desktop side panel', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      const MaterialApp(home: GisMapScreen(repository: _EmptyGisRepository())),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('Herramientas del mapa'), findsNothing);
+    expect(find.byTooltip('Herramientas'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop map controls are laid out before mouse interaction', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    _expectRenderBoxesLaidOut(tester, find.byType(InkWell));
+    _expectRenderBoxesLaidOut(tester, find.byType(IconButton));
+    await tester.sendEventToBinding(
+      const PointerHoverEvent(position: Offset(48, 136)),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Contraer herramientas'));
+    await tester.pump(const Duration(milliseconds: 90));
+    _expectRenderBoxesLaidOut(tester, find.byType(InkWell));
+    _expectRenderBoxesLaidOut(tester, find.byType(IconButton));
+    await tester.sendEventToBinding(
+      const PointerHoverEvent(position: Offset(48, 136)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    debugDefaultTargetPlatformOverride = null;
+  });
+}
+
+void _expectRenderBoxesLaidOut(WidgetTester tester, Finder finder) {
+  for (final element in finder.evaluate()) {
+    final renderObject = element.renderObject;
+    if (renderObject is RenderBox) {
+      expect(renderObject.hasSize, isTrue);
+    }
+  }
 }
 
 Future<void> _pumpNarrowScreen(WidgetTester tester, Widget screen) async {

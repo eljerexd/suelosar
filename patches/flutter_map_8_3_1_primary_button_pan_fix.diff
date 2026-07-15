@@ -1,0 +1,17 @@
+diff --git a/lib/src/gestures/map_interactive_viewer.dart b/lib/src/gestures/map_interactive_viewer.dart
+index cf3b8e5..20e0692 100644
+--- a/lib/src/gestures/map_interactive_viewer.dart
++++ b/lib/src/gestures/map_interactive_viewer.dart
+@@ -320,7 +320,10 @@ class MapInteractiveViewerState extends State<MapInteractiveViewer>
+       ScaleGestureRecognizer:
+           GestureRecognizerFactoryWithHandlers<ScaleGestureRecognizer>(
+-        () => ScaleGestureRecognizer(debugOwner: this),
++        () => ScaleGestureRecognizer(
++          debugOwner: this,
++          allowedButtonsFilter: (buttons) => buttons == kPrimaryButton,
++        ),
+         (recognizer) {
+           recognizer
+             ..onStart = _handleScaleStart
+             ..onUpdate = _handleScaleUpdate
+             ..onEnd = _handleScaleEnd
