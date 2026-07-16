@@ -38,6 +38,8 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
   late final bool _ownsPairingService;
   _SyncButtonFeedback _syncButtonFeedback = _SyncButtonFeedback.idle;
   Timer? _syncSuccessTimer;
+  bool _refreshingPairingDevices = false;
+  SyncStatus? _lastObservedSyncStatus;
 
   @override
   void initState() {
@@ -58,15 +60,39 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
             );
           },
         );
+    _lastObservedSyncStatus = _service.engineStatus;
+    _service.addListener(_handleSynchronizationChanged);
     unawaited(_startServices());
   }
 
   @override
   void dispose() {
     _syncSuccessTimer?.cancel();
+    _service.removeListener(_handleSynchronizationChanged);
     if (_ownsPairingService) _pairingService.dispose();
     if (_ownsService) _service.dispose();
     super.dispose();
+  }
+
+  void _handleSynchronizationChanged() {
+    final status = _service.engineStatus;
+    if (status == SyncStatus.completed &&
+        _lastObservedSyncStatus != SyncStatus.completed) {
+      unawaited(_refreshPairingDevices());
+    }
+    _lastObservedSyncStatus = status;
+  }
+
+  Future<void> _refreshPairingDevices() async {
+    if (_refreshingPairingDevices || !_pairingService.isConfigured) return;
+    _refreshingPairingDevices = true;
+    try {
+      await _pairingService.refreshDevices();
+    } catch (_) {
+      // Pairing diagnostics remain visible if refreshing the list fails.
+    } finally {
+      _refreshingPairingDevices = false;
+    }
   }
 
   @override
@@ -96,7 +122,10 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _StatusCard(service: _service),
+                      _StatusCard(
+                        service: _service,
+                        pairingService: _pairingService,
+                      ),
                       if (_service.initialHistoryProgress.status !=
                           InitialHistorySyncStatus.idle) ...[
                         const SizedBox(height: 18),
@@ -161,6 +190,7 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
                       const SizedBox(height: 18),
                       _ActionsCard(
                         service: _service,
+                        synchronizationEnabled: _pairingService.hasPeers,
                         feedback: _syncButtonFeedback,
                         onClear: _confirmAndClearQueue,
                         onSynchronize: _synchronizeNow,
@@ -189,7 +219,7 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
       await _pairingService.start();
       if (widget.openPairingOnStart) {
         if (mounted) await _openPairing();
-      } else if (!_service.isSynchronizing) {
+      } else if (_pairingService.hasPeers && !_service.isSynchronizing) {
         await _service.synchronizeNow();
       }
     } catch (_) {
@@ -217,32 +247,11 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
   }
 
   Future<void> _renameDevice(PairedDevice device) async {
-    final controller = TextEditingController(text: device.deviceName);
     final name = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Renombrar dispositivo'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLength: 80,
-          textInputAction: TextInputAction.done,
-          onSubmitted: (value) => Navigator.pop(dialogContext, value),
-          decoration: const InputDecoration(labelText: 'Nombre'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
+      builder: (dialogContext) =>
+          _RenameDeviceDialog(initialName: device.deviceName),
     );
-    controller.dispose();
     if (name == null || !mounted) return;
     try {
       await _pairingService.renameDevice(device, name);
@@ -272,7 +281,7 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
     try {
       await _pairingService.removeDevice(device);
       if (!mounted) return;
@@ -330,6 +339,7 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
   }
 
   Future<void> _synchronizeNow() async {
+    if (!_pairingService.hasPeers) return;
     if (_syncButtonFeedback == _SyncButtonFeedback.running) return;
     _syncSuccessTimer?.cancel();
     setState(() => _syncButtonFeedback = _SyncButtonFeedback.running);
@@ -459,14 +469,66 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
 
 enum _SyncButtonFeedback { idle, running, success }
 
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({required this.service});
+class _RenameDeviceDialog extends StatefulWidget {
+  const _RenameDeviceDialog({required this.initialName});
 
-  final SynchronizationService service;
+  final String initialName;
+
+  @override
+  State<_RenameDeviceDialog> createState() => _RenameDeviceDialogState();
+}
+
+class _RenameDeviceDialogState extends State<_RenameDeviceDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialName);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit([String? value]) {
+    Navigator.pop(context, value ?? _controller.text);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final presentation = _statusPresentation(context, service);
+    return AlertDialog(
+      title: const Text('Renombrar dispositivo'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLength: 80,
+        textInputAction: TextInputAction.done,
+        onSubmitted: _submit,
+        decoration: const InputDecoration(labelText: 'Nombre'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Guardar')),
+      ],
+    );
+  }
+}
+
+class _StatusCard extends StatelessWidget {
+  const _StatusCard({required this.service, required this.pairingService});
+
+  final SynchronizationService service;
+  final DevicePairingService pairingService;
+
+  @override
+  Widget build(BuildContext context) {
+    final presentation = _statusPresentation(context, service, pairingService);
     return _SyncCard(
       child: AnimatedSwitcher(
         duration: AppMotion.duration(
@@ -654,7 +716,7 @@ class _DevicesCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final devices = service.devices;
+    final devices = service.peers;
     return _SyncCard(
       title: 'Dispositivos',
       icon: AppIcons.device,
@@ -1001,6 +1063,7 @@ class _LastSyncCard extends StatelessWidget {
 class _ActionsCard extends StatelessWidget {
   const _ActionsCard({
     required this.service,
+    required this.synchronizationEnabled,
     required this.feedback,
     required this.onSynchronize,
     required this.onRetry,
@@ -1008,6 +1071,7 @@ class _ActionsCard extends StatelessWidget {
   });
 
   final SynchronizationService service;
+  final bool synchronizationEnabled;
   final _SyncButtonFeedback feedback;
   final VoidCallback onSynchronize;
   final VoidCallback onRetry;
@@ -1032,7 +1096,7 @@ class _ActionsCard extends StatelessWidget {
         runSpacing: 10,
         children: [
           FilledButton(
-            onPressed: busy ? null : onSynchronize,
+            onPressed: busy || !synchronizationEnabled ? null : onSynchronize,
             child: AnimatedSwitcher(
               duration: AppMotion.duration(
                 context,
@@ -1426,8 +1490,17 @@ class _StatusChip extends StatelessWidget {
 _StatusPresentation _statusPresentation(
   BuildContext context,
   SynchronizationService service,
+  DevicePairingService pairingService,
 ) {
   final colors = Theme.of(context).colorScheme;
+  if (!pairingService.hasPeers) {
+    return _StatusPresentation(
+      label: 'Sin vincular',
+      description: 'Agregá otro dispositivo para activar la sincronización.',
+      icon: Icons.link_off_outlined,
+      color: colors.onSurfaceVariant,
+    );
+  }
   if (service.engineStatus == SyncStatus.error) {
     return _StatusPresentation(
       label: 'Error',

@@ -25,6 +25,7 @@ void main() {
     );
 
     await service.start();
+    expect(service.hasPeers, isFalse);
     final session = await service.createPairingSession();
 
     expect(session.pairingCode, '482913');
@@ -35,7 +36,7 @@ void main() {
       (await SharedPreferences.getInstance()).getString(
         DevicePairingService.groupStorageKey,
       ),
-      backend.group.groupUuid,
+      isNull,
     );
 
     service.dispose();
@@ -53,6 +54,14 @@ void main() {
     await service.pairWithCode('482 913');
     expect(backend.claimedCode, '482913');
     expect(service.devices, hasLength(2));
+    expect(service.hasPeers, isTrue);
+    expect(service.peerCount, 1);
+    expect(
+      (await SharedPreferences.getInstance()).getString(
+        DevicePairingService.groupStorageKey,
+      ),
+      backend.group.groupUuid,
+    );
 
     await service.pairWithToken('suelosar://pair?token=another-opaque-secret');
     expect(backend.claimedToken, 'another-opaque-secret');
@@ -62,6 +71,48 @@ void main() {
     expect(service.devices.last.deviceName, 'Notebook de campo');
     await service.removeDevice(service.devices.last);
     expect(service.devices, hasLength(1));
+    expect(service.hasPeers, isFalse);
+    expect(service.peerCount, 0);
+    expect(service.group, isNull);
+    expect(
+      (await SharedPreferences.getInstance()).getString(
+        DevicePairingService.groupStorageKey,
+      ),
+      isNull,
+    );
+
+    service.dispose();
+  });
+
+  test('refresh reactivates the group when a new peer appears', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final backend = _PairingBackendFake();
+    final service = DevicePairingService(
+      backend: backend,
+      registrationLoader: () async => _registration,
+    );
+    await service.start();
+    expect(service.hasPeers, isFalse);
+
+    backend.storedDevices = [
+      ...backend.storedDevices,
+      PairedDevice(
+        deviceUuid: '22222222-2222-4222-8222-222222222222',
+        deviceName: 'Escritorio',
+        platform: 'Windows',
+        pairedAt: DateTime.utc(2026, 7, 16),
+      ),
+    ];
+    await service.refreshDevices();
+
+    expect(service.hasPeers, isTrue);
+    expect(service.group?.groupUuid, backend.group.groupUuid);
+    expect(
+      (await SharedPreferences.getInstance()).getString(
+        DevicePairingService.groupStorageKey,
+      ),
+      backend.group.groupUuid,
+    );
 
     service.dispose();
   });

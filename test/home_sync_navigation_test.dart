@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:suelosar/app/app_routes.dart';
+import 'package:suelosar/pairing/device_pairing_backend.dart';
+import 'package:suelosar/pairing/device_pairing_models.dart';
 import 'package:suelosar/screens/home_screen.dart';
 import 'package:suelosar/screens/synchronization_screen.dart';
 import 'package:suelosar/services/connectivity_service.dart';
+import 'package:suelosar/services/device_pairing_service.dart';
 import 'package:suelosar/services/synchronization_service.dart';
 import 'package:suelosar/sync/persistent_sync_queue.dart';
 import 'package:suelosar/sync/sync_coordinator.dart';
@@ -241,4 +244,150 @@ void main() {
     );
     expect(find.byType(BottomSheet), findsNothing);
   });
+
+  testWidgets('Home derives linked state from the current peer list', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final connectivity = ConnectivityService(
+      initialStatus: ConnectivityStatus.online,
+    );
+    final queue = PersistentSyncQueue(storageKey: 'test.home.peer-state.queue');
+    final engine = SyncEngine(
+      queue: queue,
+      connectivity: connectivity,
+      logger: SyncLogger(sink: (_) {}),
+    );
+    final service = SynchronizationService(
+      engine: engine,
+      connectivity: connectivity,
+      queue: queue,
+      backendConfigured: () => true,
+      backendConnected: () => true,
+      deviceDetailsLoader: () async =>
+          const SynchronizationDeviceDetails.empty(),
+    );
+    final backend = _HomePairingBackend();
+    final pairingService = DevicePairingService(
+      backend: backend,
+      registrationLoader: () async => _HomePairingBackend.registration,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(
+          synchronizationService: service,
+          devicePairingService: pairingService,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('Sincronizado'), findsOneWidget);
+
+    backend.devices = backend.devices
+        .where((device) => device.isCurrentDevice)
+        .toList(growable: false);
+    engine.status.value = SyncStatus.uploading;
+    await tester.pump();
+    engine.status.value = SyncStatus.completed;
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+
+    expect(pairingService.peerCount, 0);
+    expect(find.text('Sin configurar'), findsOneWidget);
+    expect(find.text('Sincronizado'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    service.dispose();
+    pairingService.dispose();
+    await engine.dispose();
+    await connectivity.dispose();
+  });
+}
+
+class _HomePairingBackend implements DevicePairingBackend {
+  static const registration = PairingDeviceRegistration(
+    deviceUuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    deviceName: 'Android',
+    platform: 'Android',
+  );
+
+  final group = SyncGroup(
+    groupUuid: '99999999-9999-4999-8999-999999999999',
+    ownerDeviceUuid: registration.deviceUuid,
+    createdAt: DateTime.utc(2026, 7, 16),
+  );
+
+  late List<PairedDevice> devices = [
+    PairedDevice(
+      deviceUuid: registration.deviceUuid,
+      deviceName: registration.deviceName,
+      platform: registration.platform,
+      pairedAt: DateTime.utc(2026, 7, 16),
+      isCurrentDevice: true,
+    ),
+    PairedDevice(
+      deviceUuid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      deviceName: 'Windows',
+      platform: 'Windows',
+      pairedAt: DateTime.utc(2026, 7, 16),
+    ),
+  ];
+
+  @override
+  bool get isConfigured => true;
+
+  @override
+  Future<PairingClaimResult> claimPairingToken({
+    required PairingDeviceRegistration registration,
+    String? token,
+    String? pairingCode,
+  }) async => PairingClaimResult(group: group, devices: devices);
+
+  @override
+  Future<PairingSession> createPairingSession(
+    PairingDeviceRegistration registration,
+  ) async => PairingSession(
+    token: 'token',
+    pairingCode: '123456',
+    expiresAt: DateTime.now().add(const Duration(minutes: 5)),
+  );
+
+  @override
+  Future<List<PairedDevice>> listDevices(String currentDeviceUuid) async =>
+      devices;
+
+  @override
+  Future<PairingBootstrapResult> registerCurrentDevice(
+    PairingDeviceRegistration registration,
+  ) async => PairingBootstrapResult(group: group, devices: devices);
+
+  @override
+  Future<void> removeDevice({
+    required String deviceUuid,
+    required String currentDeviceUuid,
+  }) async {
+    devices = devices
+        .where((device) => device.deviceUuid != deviceUuid)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<PairedDevice> renameDevice({
+    required String deviceUuid,
+    required String deviceName,
+    required String currentDeviceUuid,
+  }) async {
+    final device = devices.firstWhere((item) => item.deviceUuid == deviceUuid);
+    final updated = device.copyWith(deviceName: deviceName);
+    devices = [
+      for (final item in devices)
+        if (item.deviceUuid == deviceUuid) updated else item,
+    ];
+    return updated;
+  }
 }

@@ -35,8 +35,13 @@ class DevicePairingService extends ChangeNotifier {
   bool _disposed = false;
 
   DevicePairingStatus get status => _status;
-  SyncGroup? get group => _group;
+  SyncGroup? get group => hasPeers ? _group : null;
   List<PairedDevice> get devices => List.unmodifiable(_devices);
+  List<PairedDevice> get peers =>
+      List.unmodifiable(_devices.where((device) => !device.isCurrentDevice));
+  bool get hasPeers => _devices.any((device) => !device.isCurrentDevice);
+  int get peerCount =>
+      _devices.where((device) => !device.isCurrentDevice).length;
   String? get lastError => _lastError;
   bool get isConfigured => _backend?.isConfigured ?? false;
   bool get isBusy => const {
@@ -70,7 +75,8 @@ class DevicePairingService extends ChangeNotifier {
     final registration = _requireRegistration();
     final backend = _requireBackend();
     await _run(DevicePairingStatus.loading, () async {
-      _devices = await backend.listDevices(registration.deviceUuid);
+      final devices = await backend.listDevices(registration.deviceUuid);
+      await _applyPairingState(devices: devices);
     });
   }
 
@@ -138,6 +144,7 @@ class DevicePairingService extends ChangeNotifier {
       _devices = _devices
           .where((item) => item.deviceUuid != device.deviceUuid)
           .toList(growable: false);
+      await _persistPairingState();
     });
   }
 
@@ -150,21 +157,31 @@ class DevicePairingService extends ChangeNotifier {
         token: token,
         pairingCode: pairingCode,
       );
-      _group = result.group;
-      _devices = result.devices;
-      await _storeGroup(result.group.groupUuid);
+      await _applyPairingState(group: result.group, devices: result.devices);
     });
   }
 
   Future<void> _applyBootstrap(PairingBootstrapResult result) async {
-    _group = result.group;
-    _devices = result.devices;
-    await _storeGroup(result.group.groupUuid);
+    await _applyPairingState(group: result.group, devices: result.devices);
   }
 
-  Future<void> _storeGroup(String uuid) async {
+  Future<void> _applyPairingState({
+    SyncGroup? group,
+    required List<PairedDevice> devices,
+  }) async {
+    if (group != null) _group = group;
+    _devices = List<PairedDevice>.unmodifiable(devices);
+    await _persistPairingState();
+  }
+
+  Future<void> _persistPairingState() async {
     final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(groupStorageKey, uuid);
+    final group = _group;
+    if (hasPeers && group != null) {
+      await preferences.setString(groupStorageKey, group.groupUuid);
+      return;
+    }
+    await preferences.remove(groupStorageKey);
   }
 
   Future<void> _run(

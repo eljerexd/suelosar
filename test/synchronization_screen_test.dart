@@ -100,10 +100,11 @@ void main() {
         platform: 'Android',
       ),
     );
+    final pairingService = _pairingService(withPeer: true);
     await _pumpAtSize(
       tester,
       const Size(390, 844),
-      SynchronizationScreen(service: service),
+      SynchronizationScreen(service: service, pairingService: pairingService),
     );
     await tester.pump(const Duration(milliseconds: 50));
     await tester.scrollUntilVisible(
@@ -125,6 +126,7 @@ void main() {
     expect(find.text('Sincronizar ahora'), findsOneWidget);
 
     service.dispose();
+    pairingService.dispose();
     await engine.dispose();
     await connectivity.dispose();
   });
@@ -179,6 +181,81 @@ void main() {
 
     await tester.tap(find.byTooltip('Cerrar'));
     await tester.pumpAndSettle();
+    service.dispose();
+    pairingService.dispose();
+    await engine.dispose();
+    await connectivity.dispose();
+  });
+
+  testWidgets('renaming a paired device has a safe dialog lifecycle', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final connectivity = ConnectivityService(
+      initialStatus: ConnectivityStatus.online,
+    );
+    final queue = PersistentSyncQueue(storageKey: 'test.pairing.rename.queue');
+    final engine = SyncEngine(
+      queue: queue,
+      connectivity: connectivity,
+      logger: SyncLogger(sink: (_) {}),
+    );
+    final service = SynchronizationService(
+      engine: engine,
+      connectivity: connectivity,
+      queue: queue,
+      synchronizeAction: () async => false,
+      backendConfigured: () => true,
+      backendConnected: () => true,
+      deviceDetailsLoader: () async => const SynchronizationDeviceDetails(
+        name: 'Android',
+        uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        appVersion: '1.0.1',
+        platform: 'Android',
+      ),
+    );
+    final pairingService = _pairingService(withPeer: true);
+
+    await _pumpAtSize(
+      tester,
+      const Size(390, 844),
+      SynchronizationScreen(service: service, pairingService: pairingService),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Acciones del dispositivo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Renombrar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Renombrar dispositivo'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'Tablet de campo');
+    await tester.tap(find.text('Guardar'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Tablet de campo'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byTooltip('Acciones del dispositivo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Quitar dispositivo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Quitar'));
+    await tester.pumpAndSettle();
+
+    expect(pairingService.peerCount, 0);
+    expect(find.text('Sin vincular'), findsOneWidget);
+    expect(find.text('No hay dispositivos vinculados.'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Sincronizar ahora'),
+          )
+          .onPressed,
+      isNull,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
     service.dispose();
     pairingService.dispose();
     await engine.dispose();
@@ -290,7 +367,8 @@ void main() {
     expect(find.text('Cambios pendientes'), findsWidgets);
     expect(find.text('Dispositivo de prueba'), findsWidgets);
     expect(find.textContaining('15 jul 2026'), findsOneWidget);
-    expect(find.text('Actual'), findsOneWidget);
+    expect(find.text('Actual'), findsNothing);
+    expect(find.text('No hay dispositivos vinculados.'), findsOneWidget);
     expect(find.text('Agregar dispositivo'), findsOneWidget);
     expect(find.text('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -385,9 +463,21 @@ void main() {
   });
 }
 
-DevicePairingService _pairingService() {
+DevicePairingService _pairingService({bool withPeer = false}) {
+  final backend = _FakePairingBackend();
+  if (withPeer) {
+    backend.devices = [
+      ...backend.devices,
+      PairedDevice(
+        deviceUuid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        deviceName: 'Escritorio de campo',
+        platform: 'Windows',
+        pairedAt: _FakePairingBackend._createdAt,
+      ),
+    ];
+  }
   return DevicePairingService(
-    backend: _FakePairingBackend(),
+    backend: backend,
     registrationLoader: () async => const PairingDeviceRegistration(
       deviceUuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       deviceName: 'Dispositivo de prueba',

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app/app_routes.dart';
@@ -201,8 +203,14 @@ class _HomeSynchronizationStatusState extends State<_HomeSynchronizationStatus>
   late final DevicePairingService _pairingService;
   late final bool _ownsPairingService;
   final MenuController _menuController = MenuController();
-  bool? _isLinked;
+  bool _statusLoaded = false;
+  bool? _linkedOverride;
   bool _opening = false;
+  bool _refreshingPairingDevices = false;
+  SyncStatus? _lastObservedSyncStatus;
+
+  bool get _isLinked =>
+      _statusLoaded && (_linkedOverride ?? _pairingService.hasPeers);
 
   @override
   void initState() {
@@ -224,6 +232,7 @@ class _HomeSynchronizationStatusState extends State<_HomeSynchronizationStatus>
             );
           },
         );
+    _lastObservedSyncStatus = _service.engineStatus;
     _service.addListener(_handleServiceChanged);
     _pairingService.addListener(_handleServiceChanged);
     _loadStatus();
@@ -245,24 +254,54 @@ class _HomeSynchronizationStatusState extends State<_HomeSynchronizationStatus>
   }
 
   void _handleServiceChanged() {
+    final status = _service.engineStatus;
+    if (status == SyncStatus.completed &&
+        _lastObservedSyncStatus != SyncStatus.completed) {
+      unawaited(_refreshPairingDevices());
+    }
+    _lastObservedSyncStatus = status;
     if (mounted) setState(() {});
+  }
+
+  Future<void> _refreshPairingDevices() async {
+    if (_refreshingPairingDevices || !_pairingService.isConfigured) return;
+    _refreshingPairingDevices = true;
+    try {
+      await _pairingService.refreshDevices();
+    } catch (_) {
+      // The existing synchronization status remains available on failure.
+    } finally {
+      _refreshingPairingDevices = false;
+    }
   }
 
   Future<void> _loadStatus() async {
     final serviceStart = _service.start();
-    final linked =
-        await (widget.deviceLinkedStatusLoader ??
-            DevicePairingService.hasStoredSyncGroup)();
-    if (!mounted) return;
-    setState(() => _isLinked = linked);
-    await serviceStart;
-    if (linked) {
-      try {
-        await _pairingService.start();
-      } catch (_) {
-        // Synchronization status remains available if device listing fails.
-      }
+    final loader = widget.deviceLinkedStatusLoader;
+    if (loader != null) {
+      final linkedOverride = await loader();
+      if (!mounted) return;
+      setState(() {
+        _linkedOverride = linkedOverride;
+        _statusLoaded = true;
+      });
+      await serviceStart;
+      return;
     }
+    await serviceStart;
+    try {
+      await _pairingService.start();
+      if (_pairingService.isConfigured) {
+        await _pairingService.refreshDevices();
+      }
+    } catch (_) {
+      // Synchronization status remains available if device listing fails.
+    }
+    if (!mounted) return;
+    setState(() {
+      _linkedOverride = null;
+      _statusLoaded = true;
+    });
   }
 
   Future<void> _openPairing() async {
@@ -309,9 +348,9 @@ class _HomeSynchronizationStatusState extends State<_HomeSynchronizationStatus>
       isScrollControlled: true,
       constraints: const BoxConstraints(maxWidth: 520),
       builder: (sheetContext) => _SynchronizationStatusContent(
-        isLinked: _isLinked == true,
+        isLinked: _isLinked,
         presentation: presentation,
-        linkedDevices: _pairingService.devices.length,
+        linkedDevices: _pairingService.peerCount,
         lastSuccessfulAt: _service.lastSuccessfulAt,
         pendingChanges: _service.queueSize,
         showSynchronize: _needsManualSync,
@@ -372,9 +411,9 @@ class _HomeSynchronizationStatusState extends State<_HomeSynchronizationStatus>
         SizedBox(
           width: 340,
           child: _SynchronizationStatusContent(
-            isLinked: _isLinked == true,
+            isLinked: _isLinked,
             presentation: presentation,
-            linkedDevices: _pairingService.devices.length,
+            linkedDevices: _pairingService.peerCount,
             lastSuccessfulAt: _service.lastSuccessfulAt,
             pendingChanges: _service.queueSize,
             showSynchronize: _needsManualSync,
@@ -390,7 +429,7 @@ class _HomeSynchronizationStatusState extends State<_HomeSynchronizationStatus>
 
   _HomeSyncPresentation _presentation(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    if (_isLinked == null) {
+    if (!_statusLoaded) {
       return const _HomeSyncPresentation(
         icon: AppIcons.synchronization,
         color: Color(0xFF3978A8),
@@ -401,7 +440,7 @@ class _HomeSynchronizationStatusState extends State<_HomeSynchronizationStatus>
         showProgress: true,
       );
     }
-    if (!_isLinked!) {
+    if (!_isLinked) {
       return _HomeSyncPresentation(
         icon: Icons.link_off_outlined,
         color: colors.onSurfaceVariant,
@@ -462,7 +501,7 @@ class _HomeSynchronizationStatusState extends State<_HomeSynchronizationStatus>
       );
     }
     final lastSync = _service.lastSuccessfulAt;
-    final deviceCount = _pairingService.devices.length;
+    final deviceCount = _pairingService.peerCount;
     final deviceLabel = deviceCount > 0
         ? '$deviceCount ${deviceCount == 1 ? 'dispositivo' : 'dispositivos'}'
         : 'Dispositivo vinculado';

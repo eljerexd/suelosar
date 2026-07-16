@@ -15,7 +15,27 @@ void main() {
       await SettingsService.instance.setConfirmBeforeDeleting(true);
     });
     await tester.pumpWidget(const SuelosARApp());
-    await tester.pumpAndSettle();
+    final synchronizationStatus = find.byKey(
+      const ValueKey('home-synchronization-status'),
+    );
+    for (var attempt = 0; attempt < 100; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump();
+      final progress = find.descendant(
+        of: synchronizationStatus,
+        matching: find.byType(CircularProgressIndicator),
+      );
+      if (progress.evaluate().isEmpty) break;
+    }
+    expect(
+      find.descendant(
+        of: synchronizationStatus,
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsNothing,
+    );
 
     var rootBuilderRebuilds = 0;
     debugOnRebuildDirtyWidget = (element, builtOnce) {
