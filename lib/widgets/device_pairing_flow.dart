@@ -65,7 +65,10 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
   final _codeController = TextEditingController();
   PairingSession? _session;
   Timer? _countdown;
-  String? _error;
+  _PairingSessionPhase _sessionPhase = _PairingSessionPhase.loading;
+  String? _sessionError;
+  String? _joinError;
+  int _sessionGeneration = 0;
   bool _working = false;
   bool _joining = false;
   bool _scanning = false;
@@ -89,7 +92,10 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
 
   @override
   void dispose() {
+    _sessionGeneration++;
     _countdown?.cancel();
+    _countdown = null;
+    _session = null;
     _codeController.dispose();
     super.dispose();
   }
@@ -142,7 +148,7 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
                 : (value) => setState(() {
                     _joining = value.first;
                     _scanning = false;
-                    _error = null;
+                    _joinError = null;
                   }),
           ),
         ),
@@ -175,12 +181,13 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 18),
-          if (_working && session == null)
+          if (_sessionPhase == _PairingSessionPhase.loading)
             const SizedBox(
               height: 220,
               child: Center(child: CircularProgressIndicator()),
             )
-          else if (session != null && !session.isExpired) ...[
+          else if (_sessionPhase == _PairingSessionPhase.active &&
+              session != null) ...[
             Semantics(
               label: 'Código QR de vinculación',
               image: true,
@@ -227,7 +234,7 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
-          ] else ...[
+          ] else if (_sessionPhase == _PairingSessionPhase.expired) ...[
             const Icon(Icons.timer_off_outlined, size: 44),
             const SizedBox(height: 12),
             const Text('El código venció.'),
@@ -237,10 +244,19 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
               icon: const Icon(Icons.refresh_rounded),
               label: const Text('Generar otro código'),
             ),
+          ] else ...[
+            const Icon(Icons.cloud_off_outlined, size: 44),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _working ? null : _generateSession,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Reintentar'),
+            ),
           ],
-          if (_error != null) ...[
+          if (_sessionPhase == _PairingSessionPhase.error &&
+              _sessionError != null) ...[
             const SizedBox(height: 14),
-            _InlineError(_error!),
+            _InlineError(_sessionError!),
           ],
         ],
       ),
@@ -298,15 +314,15 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
                   : () => setState(() {
                       _scanning = true;
                       _scanHandled = false;
-                      _error = null;
+                      _joinError = null;
                     }),
               icon: const Icon(Icons.qr_code_scanner_rounded),
               label: const Text('Escanear QR'),
             ),
           ],
-          if (_error != null) ...[
+          if (_joinError != null) ...[
             const SizedBox(height: 14),
-            _InlineError(_error!),
+            _InlineError(_joinError!),
           ],
         ],
       ),
@@ -365,25 +381,62 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
   }
 
   Future<void> _generateSession() async {
+    final generation = ++_sessionGeneration;
+    _countdown?.cancel();
+    _countdown = null;
     setState(() {
       _working = true;
-      _error = null;
+      _session = null;
+      _sessionPhase = _PairingSessionPhase.loading;
+      _sessionError = null;
     });
     try {
       final session = await widget.service.createPairingSession();
-      if (!mounted) return;
-      _session = session;
-      _countdown?.cancel();
-      _countdown = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (!mounted) return;
-        if (_session?.isExpired == true) _countdown?.cancel();
-        setState(() {});
+      if (!mounted || generation != _sessionGeneration) return;
+      if (session.isExpired) {
+        _expireSession(generation);
+        return;
+      }
+      setState(() {
+        _session = session;
+        _sessionPhase = _PairingSessionPhase.active;
       });
+      _countdown = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => _updateCountdown(generation),
+      );
     } catch (error) {
-      if (mounted) _error = _message(error);
+      if (!mounted || generation != _sessionGeneration) return;
+      setState(() {
+        _session = null;
+        _sessionPhase = _PairingSessionPhase.error;
+        _sessionError = _message(error);
+      });
     } finally {
-      if (mounted) setState(() => _working = false);
+      if (mounted && generation == _sessionGeneration) {
+        setState(() => _working = false);
+      }
     }
+  }
+
+  void _updateCountdown(int generation) {
+    if (!mounted || generation != _sessionGeneration) return;
+    if (_session?.isExpired == true) {
+      _expireSession(generation);
+      return;
+    }
+    setState(() {});
+  }
+
+  void _expireSession(int generation) {
+    if (!mounted || generation != _sessionGeneration) return;
+    _countdown?.cancel();
+    _countdown = null;
+    setState(() {
+      _session = null;
+      _sessionPhase = _PairingSessionPhase.expired;
+      _sessionError = null;
+    });
   }
 
   Future<void> _submitCode() async {
@@ -392,7 +445,7 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
 
   Future<void> _submitToken(String token) async {
     await _complete(() => widget.service.pairWithToken(token));
-    if (mounted && _error != null) {
+    if (mounted && _joinError != null) {
       setState(() {
         _scanHandled = false;
         _scanning = false;
@@ -404,13 +457,13 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
     if (_working) return;
     setState(() {
       _working = true;
-      _error = null;
+      _joinError = null;
     });
     try {
       await operation();
       if (mounted) Navigator.pop(context, true);
     } catch (error) {
-      if (mounted) setState(() => _error = _message(error));
+      if (mounted) setState(() => _joinError = _message(error));
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -428,6 +481,8 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
     return '$minutes:$seconds';
   }
 }
+
+enum _PairingSessionPhase { loading, active, expired, error }
 
 class _InlineError extends StatelessWidget {
   const _InlineError(this.message);

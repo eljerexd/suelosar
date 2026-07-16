@@ -187,6 +187,75 @@ void main() {
     await connectivity.dispose();
   });
 
+  testWidgets('expired pairing code is replaced without a generic error', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final connectivity = ConnectivityService(
+      initialStatus: ConnectivityStatus.online,
+    );
+    final queue = PersistentSyncQueue(storageKey: 'test.pairing.expiry.queue');
+    final engine = SyncEngine(
+      queue: queue,
+      connectivity: connectivity,
+      logger: SyncLogger(sink: (_) {}),
+    );
+    final service = SynchronizationService(
+      engine: engine,
+      connectivity: connectivity,
+      queue: queue,
+      synchronizeAction: () async => true,
+      backendConfigured: () => true,
+      backendConnected: () => true,
+      deviceDetailsLoader: () async => const SynchronizationDeviceDetails(
+        name: 'Dispositivo de prueba',
+        uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        appVersion: '1.0.1',
+        platform: 'Android',
+      ),
+    );
+    final backend = _ExpiringPairingBackend();
+    final pairingService = _pairingService(backend: backend);
+
+    await _pumpAtSize(
+      tester,
+      const Size(390, 844),
+      SynchronizationScreen(service: service, pairingService: pairingService),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Agregar dispositivo'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Agregar dispositivo'));
+    await tester.pumpAndSettle();
+    expect(find.text('111111'), findsOneWidget);
+
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 150)),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('El código venció.'), findsOneWidget);
+    expect(find.text('Generar otro código'), findsOneWidget);
+    expect(find.text('No se pudo completar la vinculación.'), findsNothing);
+
+    await tester.tap(find.text('Generar otro código'));
+    await tester.pumpAndSettle();
+    expect(backend.createSessionCalls, 2);
+    expect(find.text('111111'), findsNothing);
+    expect(find.text('222222'), findsOneWidget);
+    expect(find.text('El código venció.'), findsNothing);
+    expect(find.text('No se pudo completar la vinculación.'), findsNothing);
+
+    await tester.tap(find.byTooltip('Cerrar'));
+    await tester.pumpAndSettle();
+    service.dispose();
+    pairingService.dispose();
+    await engine.dispose();
+    await connectivity.dispose();
+  });
+
   testWidgets('renaming a paired device has a safe dialog lifecycle', (
     tester,
   ) async {
@@ -463,8 +532,11 @@ void main() {
   });
 }
 
-DevicePairingService _pairingService({bool withPeer = false}) {
-  final backend = _FakePairingBackend();
+DevicePairingService _pairingService({
+  bool withPeer = false,
+  _FakePairingBackend? backend,
+}) {
+  backend ??= _FakePairingBackend();
   if (withPeer) {
     backend.devices = [
       ...backend.devices,
@@ -559,6 +631,24 @@ class _FakePairingBackend implements DevicePairingBackend {
         if (device.deviceUuid == deviceUuid) updated else device,
     ];
     return updated;
+  }
+}
+
+class _ExpiringPairingBackend extends _FakePairingBackend {
+  int createSessionCalls = 0;
+
+  @override
+  Future<PairingSession> createPairingSession(
+    PairingDeviceRegistration registration,
+  ) async {
+    createSessionCalls++;
+    return PairingSession(
+      token: 'secure-token-$createSessionCalls',
+      pairingCode: createSessionCalls == 1 ? '111111' : '222222',
+      expiresAt: createSessionCalls == 1
+          ? DateTime.now().add(const Duration(milliseconds: 100))
+          : DateTime.now().add(const Duration(minutes: 5)),
+    );
   }
 }
 
