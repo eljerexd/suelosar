@@ -10,6 +10,7 @@ import '../services/settings_service.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/measurement_color_selector.dart';
+import 'synchronization_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -76,6 +77,13 @@ class SettingsScreen extends StatelessWidget {
                       icon: AppIcons.delete,
                     ),
                   ],
+                ),
+                SizedBox(height: 18),
+                _SettingsSection(
+                  icon: AppIcons.synchronization,
+                  title: 'Sincronización',
+                  showComingSoon: false,
+                  children: [_SynchronizationSetting()],
                 ),
                 SizedBox(height: 18),
                 _SettingsSection(
@@ -540,6 +548,24 @@ class _AboutSuelosArSetting extends StatelessWidget {
         Navigator.of(context).push(
           InstantPopMaterialPageRoute(
             builder: (_) => const AboutSuelosArScreen(),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _SynchronizationSetting extends StatelessWidget {
+  const _SynchronizationSetting();
+
+  @override
+  Widget build(BuildContext context) {
+    return _NavigationSetting(
+      title: 'Estado y administración',
+      onTap: () {
+        Navigator.of(context).push(
+          InstantPopMaterialPageRoute(
+            builder: (_) => const SynchronizationScreen(),
           ),
         );
       },

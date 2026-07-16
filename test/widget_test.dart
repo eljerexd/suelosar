@@ -241,21 +241,21 @@ void main() {
     tester,
   ) async {
     final favorites = <FavoriteSoilFeature>[
-      const FavoriteSoilFeature(
+      FavoriteSoilFeature(
         id: 'contains',
         unitName: 'Complejo Alem',
         unitSymbol: 'CA1',
         soilSeries: ['Rojas'],
         pdfIdentifier: null,
       ),
-      const FavoriteSoilFeature(
+      FavoriteSoilFeature(
         id: 'prefix',
         unitName: 'Alem Grande',
         unitSymbol: 'AG1',
         soilSeries: ['Pergamino'],
         pdfIdentifier: null,
       ),
-      const FavoriteSoilFeature(
+      FavoriteSoilFeature(
         id: 'exact',
         unitName: 'Alem',
         unitSymbol: 'AL1',

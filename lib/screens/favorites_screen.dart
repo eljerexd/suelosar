@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/app_icons.dart';
 import '../models/favorite_soil_feature.dart';
+import '../repositories/sync_aware_local_repository.dart';
 import '../repositories/pdf_series_repository.dart';
 import 'pdf_viewer_screen.dart';
 import '../widgets/app_notification.dart';
@@ -204,13 +205,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     }
     setState(() => favorites.removeWhere((item) => item.id == favorite.id));
 
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(
-      FavoriteSoilFeature.storageKey,
-      favorites
-          .map((item) => jsonEncode(item.toJson()))
-          .toList(growable: false),
-    );
+    await SyncAwareLocalRepository.instance.saveFavorites(favorites);
   }
 }
 

@@ -1,0 +1,455 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+
+import '../pairing/device_pairing_models.dart';
+import '../services/device_pairing_service.dart';
+import '../utils/app_motion.dart';
+
+Future<bool> showDevicePairingFlow(
+  BuildContext context,
+  DevicePairingService service,
+) async {
+  final desktop = MediaQuery.sizeOf(context).width >= 700;
+  final content = _DevicePairingFlow(service: service, desktop: desktop);
+  if (desktop) {
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => Dialog(
+            insetPadding: const EdgeInsets.all(32),
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560, maxHeight: 720),
+              child: content,
+            ),
+          ),
+        ) ??
+        false;
+  }
+  return await showModalBottomSheet<bool>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        backgroundColor: Colors.transparent,
+        builder: (context) => SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.88,
+          child: Material(
+            color: Theme.of(context).colorScheme.surface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+            clipBehavior: Clip.antiAlias,
+            child: content,
+          ),
+        ),
+      ) ??
+      false;
+}
+
+class _DevicePairingFlow extends StatefulWidget {
+  const _DevicePairingFlow({required this.service, required this.desktop});
+
+  final DevicePairingService service;
+  final bool desktop;
+
+  @override
+  State<_DevicePairingFlow> createState() => _DevicePairingFlowState();
+}
+
+class _DevicePairingFlowState extends State<_DevicePairingFlow> {
+  final _codeController = TextEditingController();
+  PairingSession? _session;
+  Timer? _countdown;
+  String? _error;
+  bool _working = false;
+  bool _joining = false;
+  bool _scanning = false;
+  bool _scanHandled = false;
+
+  bool get _canScan =>
+      !kIsWeb &&
+      const {
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+        TargetPlatform.macOS,
+      }.contains(defaultTargetPlatform);
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_generateSession());
+    });
+  }
+
+  @override
+  void dispose() {
+    _countdown?.cancel();
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 20, 16, 12),
+          child: Row(
+            children: [
+              Icon(Icons.devices_other_outlined, color: colors.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Agregar dispositivo',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Cerrar',
+                onPressed: () => Navigator.pop(context, false),
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(
+                value: false,
+                icon: Icon(Icons.qr_code_2_rounded),
+                label: Text('Mostrar código'),
+              ),
+              ButtonSegment(
+                value: true,
+                icon: Icon(Icons.link_rounded),
+                label: Text('Vincular este equipo'),
+              ),
+            ],
+            selected: {_joining},
+            onSelectionChanged: _working
+                ? null
+                : (value) => setState(() {
+                    _joining = value.first;
+                    _scanning = false;
+                    _error = null;
+                  }),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: AnimatedSwitcher(
+            duration: AppMotion.duration(
+              context,
+              const Duration(milliseconds: 200),
+            ),
+            child: _joining
+                ? _buildJoin(key: const ValueKey('join'))
+                : _buildShare(key: const ValueKey('share')),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildShare({required Key key}) {
+    final session = _session;
+    return SingleChildScrollView(
+      key: key,
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+      child: Column(
+        children: [
+          Text(
+            'Escaneá este QR desde el dispositivo que querés vincular.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 18),
+          if (_working && session == null)
+            const SizedBox(
+              height: 220,
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (session != null && !session.isExpired) ...[
+            Semantics(
+              label: 'Código QR de vinculación',
+              image: true,
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                ),
+                child: QrImageView(
+                  data: session.qrPayload,
+                  size: widget.desktop ? 210 : 190,
+                  eyeStyle: QrEyeStyle(
+                    eyeShape: QrEyeShape.square,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  dataModuleStyle: QrDataModuleStyle(
+                    dataModuleShape: QrDataModuleShape.square,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'O ingresá este código',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            const SizedBox(height: 8),
+            SelectableText(
+              session.pairingCode,
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                letterSpacing: 6,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Vence en ${_remainingText(session.expiresAt)}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ] else ...[
+            const Icon(Icons.timer_off_outlined, size: 44),
+            const SizedBox(height: 12),
+            const Text('El código venció.'),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _working ? null : _generateSession,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Generar otro código'),
+            ),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 14),
+            _InlineError(_error!),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildJoin({required Key key}) {
+    if (_scanning && _canScan) {
+      return _buildScanner(key: key);
+    }
+    return SingleChildScrollView(
+      key: key,
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Ingresá el código que aparece en el otro dispositivo.',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 18),
+          TextField(
+            controller: _codeController,
+            enabled: !_working,
+            autofocus: widget.desktop,
+            keyboardType: TextInputType.number,
+            textInputAction: TextInputAction.done,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(6),
+            ],
+            onSubmitted: (_) => _submitCode(),
+            decoration: const InputDecoration(
+              labelText: 'Código de 6 dígitos',
+              prefixIcon: Icon(Icons.password_rounded),
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            onPressed: _working ? null : _submitCode,
+            icon: _working
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.link_rounded),
+            label: Text(_working ? 'Vinculando...' : 'Vincular dispositivo'),
+          ),
+          if (_canScan) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _working
+                  ? null
+                  : () => setState(() {
+                      _scanning = true;
+                      _scanHandled = false;
+                      _error = null;
+                    }),
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+              label: const Text('Escanear QR'),
+            ),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 14),
+            _InlineError(_error!),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScanner({required Key key}) {
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              IconButton(
+                tooltip: 'Volver al código manual',
+                onPressed: _working
+                    ? null
+                    : () => setState(() => _scanning = false),
+                icon: const Icon(Icons.arrow_back_rounded),
+              ),
+              const Expanded(child: Text('Enfocá el código QR')),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: MobileScanner(
+                onDetect: (capture) {
+                  if (_scanHandled || capture.barcodes.isEmpty) return;
+                  final value = capture.barcodes.first.rawValue;
+                  if (value == null || value.isEmpty) return;
+                  _scanHandled = true;
+                  unawaited(_submitToken(value));
+                },
+                errorBuilder: (context, error) => ColoredBox(
+                  color: Theme.of(context).colorScheme.surfaceContainer,
+                  child: const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text(
+                        'No se pudo iniciar la cámara. Usá el código manual.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _generateSession() async {
+    setState(() {
+      _working = true;
+      _error = null;
+    });
+    try {
+      final session = await widget.service.createPairingSession();
+      if (!mounted) return;
+      _session = session;
+      _countdown?.cancel();
+      _countdown = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        if (_session?.isExpired == true) _countdown?.cancel();
+        setState(() {});
+      });
+    } catch (error) {
+      if (mounted) _error = _message(error);
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  Future<void> _submitCode() async {
+    await _complete(() => widget.service.pairWithCode(_codeController.text));
+  }
+
+  Future<void> _submitToken(String token) async {
+    await _complete(() => widget.service.pairWithToken(token));
+    if (mounted && _error != null) {
+      setState(() {
+        _scanHandled = false;
+        _scanning = false;
+      });
+    }
+  }
+
+  Future<void> _complete(Future<void> Function() operation) async {
+    if (_working) return;
+    setState(() {
+      _working = true;
+      _error = null;
+    });
+    try {
+      await operation();
+      if (mounted) Navigator.pop(context, true);
+    } catch (error) {
+      if (mounted) setState(() => _error = _message(error));
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  String _message(Object error) => error is DevicePairingException
+      ? error.message
+      : 'No se pudo completar la vinculación.';
+
+  String _remainingText(DateTime expiresAt) {
+    final remaining = expiresAt.difference(DateTime.now());
+    if (remaining.isNegative) return '00:00';
+    final minutes = remaining.inMinutes.toString().padLeft(2, '0');
+    final seconds = (remaining.inSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+}
+
+class _InlineError extends StatelessWidget {
+  const _InlineError(this.message);
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.error;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.error_outline_rounded, color: color, size: 20),
+          const SizedBox(width: 10),
+          Expanded(child: Text(message)),
+        ],
+      ),
+    );
+  }
+}

@@ -7,6 +7,7 @@ import '../constants/app_icons.dart';
 import '../models/favorite_soil_feature.dart';
 import '../models/soil_map.dart';
 import '../repositories/soil_map_repository.dart';
+import '../repositories/sync_aware_local_repository.dart';
 import '../utils/app_motion.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/scrollable_empty_state.dart';
@@ -273,11 +274,7 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
       );
     }
     setState(() => _favorites = updated);
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(
-      FavoriteSoilFeature.storageKey,
-      updated.map((favorite) => jsonEncode(favorite.toJson())).toList(),
-    );
+    await SyncAwareLocalRepository.instance.saveFavorites(updated);
   }
 
   void _updateSearchQuery(String value) {

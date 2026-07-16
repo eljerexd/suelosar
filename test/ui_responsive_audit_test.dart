@@ -8,6 +8,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:suelosar/gis/gis_feature.dart';
 import 'package:suelosar/models/saved_measurement.dart';
 import 'package:suelosar/gis/gis_layer.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
@@ -401,6 +402,109 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('desktop selected soil unit shows its cartographic symbol', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    const feature = GisFeature(
+      id: 'unit-with-symbol',
+      geometry: GisGeometry(
+        type: 'Polygon',
+        coordinates: [
+          [
+            [-60.1, -36.6],
+            [-59.9, -36.6],
+            [-59.9, -36.4],
+            [-60.1, -36.4],
+            [-60.1, -36.6],
+          ],
+        ],
+      ),
+      properties: <String, Object?>{
+        'Nombre_UC': 'Unidad cartográfica AC6',
+        'CAP_USO': 'IIIes',
+        'SIMBC': ' AC6 ',
+      },
+      locality: '',
+      soilMapId: 0,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(
+          repository: _EmptyGisRepository(features: [feature]),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+    const point = LatLng(-36.5, -60);
+    final offset = map.mapController!.camera.latLngToScreenOffset(point);
+    map.options.onTap!(TapPosition(offset, offset), point);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Símbolo'), findsOneWidget);
+    expect(find.text('AC6'), findsOneWidget);
+    expect(find.text('Carta de suelo'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop selected soil unit hides a missing symbol', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    const feature = GisFeature(
+      id: 'unit-without-symbol',
+      geometry: GisGeometry(
+        type: 'Polygon',
+        coordinates: [
+          [
+            [-60.1, -36.6],
+            [-59.9, -36.6],
+            [-59.9, -36.4],
+            [-60.1, -36.4],
+            [-60.1, -36.6],
+          ],
+        ],
+      ),
+      properties: <String, Object?>{
+        'Nombre_UC': 'Unidad sin símbolo',
+        'CAP_USO': 'IVs',
+        'SIMBC': '   ',
+      },
+      locality: '',
+      soilMapId: 0,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(
+          repository: _EmptyGisRepository(features: [feature]),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+    const point = LatLng(-36.5, -60);
+    final offset = map.mapController!.camera.latLngToScreenOffset(point);
+    map.options.onTap!(TapPosition(offset, offset), point);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Símbolo'), findsNothing);
+    expect(find.text('Carta de suelo'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('desktop temporary modes share active state and cancellation', (
     tester,
   ) async {
@@ -425,10 +529,70 @@ void main() {
     expect(find.text('Modo activo'), findsOneWidget);
     expect(find.byTooltip('Cancelar modo activo'), findsNothing);
     expect(find.byTooltip('Cerrar panel'), findsOneWidget);
+    dynamic state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureDistance');
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+    map.options.onTap!(
+      const TapPosition(Offset.zero, Offset.zero),
+      const LatLng(-36.5, -60),
+    );
+    await tester.pump();
+
+    final addMarkerAction = find.byKey(
+      const ValueKey('desktop-map-action-add-marker'),
+    );
+    await tester.ensureVisible(addMarkerAction);
+    await tester.tap(addMarkerAction);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('¿Querés guardar los cambios antes de agregar un marcador?'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Descartar'));
+    await tester.pumpAndSettle();
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'addMarker');
+    expect(find.text('Agregar marcador'), findsWidgets);
+
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-map-action-measure-area')),
+    );
+    await tester.pumpAndSettle();
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureArea');
+
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-map-action-measure-distance')),
+    );
+    await tester.pumpAndSettle();
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureDistance');
+
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-map-action-measure-area')),
+    );
+    await tester.pumpAndSettle();
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureArea');
+
+    await tester.ensureVisible(addMarkerAction);
+    await tester.tap(addMarkerAction);
+    await tester.pumpAndSettle();
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'addMarker');
+
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-map-action-measure-distance')),
+    );
+    await tester.pumpAndSettle();
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureDistance');
 
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
     expect(find.text('Modo activo'), findsNothing);
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'none');
 
     await tester.tap(
       find.byKey(const ValueKey('desktop-map-action-measure-area')),
@@ -439,9 +603,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Modo activo'), findsNothing);
 
-    final addMarkerAction = find.byKey(
-      const ValueKey('desktop-map-action-add-marker'),
-    );
     await tester.ensureVisible(addMarkerAction);
     await tester.pumpAndSettle();
     await tester.tap(addMarkerAction);
@@ -451,6 +612,56 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Modo activo'), findsNothing);
     expect(find.byTooltip('Cancelar modo activo'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('phone temporary map tools are mutually exclusive', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      const MaterialApp(home: GisMapScreen(repository: _EmptyGisRepository())),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    Future<void> selectTool(String tooltip) async {
+      await tester.tap(find.byTooltip('Herramientas'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip(tooltip));
+      await tester.pumpAndSettle();
+    }
+
+    await selectTool('Medir distancia');
+    dynamic state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureDistance');
+
+    await selectTool('Marcadores');
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'addMarker');
+
+    await selectTool('Medir área');
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureArea');
+
+    await selectTool('Medir distancia');
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureDistance');
+
+    await selectTool('Medir área');
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureArea');
+
+    await selectTool('Marcadores');
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'addMarker');
+
+    await selectTool('Medir distancia');
+    state = tester.state(find.byType(GisMapScreen));
+    expect(state.activeInteractionMode, 'measureDistance');
     expect(tester.takeException(), isNull);
   });
 
@@ -636,7 +847,9 @@ Future<void> _pumpNarrowScreen(WidgetTester tester, Widget screen) async {
 }
 
 class _EmptyGisRepository implements GisRepository {
-  const _EmptyGisRepository();
+  const _EmptyGisRepository({this.features = const <GisFeature>[]});
+
+  final List<GisFeature> features;
 
   @override
   Future<GisArchiveInfo> initialize() async => const GisArchiveInfo(
@@ -650,7 +863,7 @@ class _EmptyGisRepository implements GisRepository {
   Future<GisLayer> loadTile(GisTileCoordinates coordinates) async => GisLayer(
     id: '${coordinates.zoom}-${coordinates.x}-${coordinates.y}',
     name: 'empty',
-    features: const [],
+    features: features,
   );
 
   @override

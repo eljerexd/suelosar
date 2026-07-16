@@ -25,11 +25,14 @@ import '../models/personal_marker.dart';
 import '../models/parcel_analysis.dart';
 import '../models/saved_measurement.dart';
 import '../repositories/pdf_series_repository.dart';
+import '../repositories/sync_aware_local_repository.dart';
 import '../screens/favorites_screen.dart';
 import '../screens/measurements_screen.dart';
 import '../screens/pdf_viewer_screen.dart';
 import '../screens/personal_markers_screen.dart';
 import '../services/settings_service.dart';
+import '../sync/sync_state.dart';
+import '../sync/uuid_v4.dart';
 import '../utils/app_motion.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/destructive_action_confirmation.dart';
@@ -136,7 +139,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   bool _isLocating = false;
   bool _showSoilPolygons = true;
   bool _showReferenceBasemap = true;
-  bool _isPersonalMarkerMode = false;
+  _InteractionMode _interactionMode = _InteractionMode.none;
   bool _isFollowingLocation = false;
   bool _isInvalidMeasurementWarningVisible = false;
   bool _isMeasurementDialogVisible = false;
@@ -152,7 +155,6 @@ class _GisMapScreenState extends State<GisMapScreen>
   final Map<Object, double> _mapOcclusions = <Object, double>{};
   Route<dynamic>? _registeredMapRoute;
   final List<PersonalMarker> _personalMarkers = <PersonalMarker>[];
-  _MeasurementMode? _measurementMode;
   _MeasurementMode? _retainedMeasurementMode;
   final List<LatLng> _distanceMeasurementPoints = <LatLng>[];
   final List<LatLng> _areaMeasurementPoints = <LatLng>[];
@@ -173,6 +175,23 @@ class _GisMapScreenState extends State<GisMapScreen>
   int _tileRequestId = 0;
   int _parcelRevision = 0;
   int? _visibleTileZoom;
+
+  _MeasurementMode? get _measurementMode => switch (_interactionMode) {
+    _InteractionMode.measureDistance => _MeasurementMode.distance,
+    _InteractionMode.measureArea => _MeasurementMode.area,
+    _InteractionMode.none || _InteractionMode.addMarker => null,
+  };
+
+  bool get _isPersonalMarkerMode =>
+      _interactionMode == _InteractionMode.addMarker;
+
+  void _setInteractionMode(_InteractionMode mode) {
+    if (_interactionMode == mode) return;
+    _interactionMode = mode;
+    _draggedAreaVertexIndex = null;
+    _suppressNextMapTap = false;
+    _activeToolHint = null;
+  }
 
   @visibleForTesting
   GisFeature? get currentLocationFeature => _currentLocationFeature;
@@ -198,6 +217,9 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   @visibleForTesting
   bool get mapVisualsPaused => _mapVisualsPaused;
+
+  @visibleForTesting
+  String get activeInteractionMode => _interactionMode.name;
 
   @override
   void initState() {
@@ -1416,10 +1438,41 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _togglePersonalMarkerMode() {
+    if (_isPersonalMarkerMode) {
+      setState(() => _setInteractionMode(_InteractionMode.none));
+      return;
+    }
+    unawaited(_activatePersonalMarkerMode());
+  }
+
+  Future<void> _activatePersonalMarkerMode() async {
+    final measurementMode = _measurementMode;
+    if (measurementMode != null && _measurementHasUnsavedChanges) {
+      final decision = await _showMeasurementDecisionDialog(
+        '¿Querés guardar los cambios antes de agregar un marcador?',
+      );
+      if (!mounted ||
+          decision == null ||
+          decision == _MeasurementExitDecision.cancel) {
+        return;
+      }
+      if (decision == _MeasurementExitDecision.save) {
+        await _persistMeasurement(measurementMode);
+        if (!mounted) return;
+      }
+    }
     setState(() {
-      _isPersonalMarkerMode = !_isPersonalMarkerMode;
-      _activeToolHint = _isPersonalMarkerMode ? _MapToolHintType.marker : null;
-      if (_usesDesktopMapShell && _isPersonalMarkerMode) {
+      _invalidateParcelAnalysis();
+      _distanceMeasurementPoints.clear();
+      _areaMeasurementPoints.clear();
+      _retainedMeasurementMode = null;
+      _activeSavedMeasurementId = null;
+      _highlightedSavedMeasurementId = null;
+      _savedMeasurementGeometrySignature = null;
+      _savedMeasurementColorId = null;
+      _setInteractionMode(_InteractionMode.addMarker);
+      _activeToolHint = _MapToolHintType.marker;
+      if (_usesDesktopMapShell) {
         _desktopPanelSection = null;
       }
     });
@@ -1438,8 +1491,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (_desktopActiveMode == null) return;
     setState(() {
       _invalidateParcelAnalysis();
-      _isPersonalMarkerMode = false;
-      _measurementMode = null;
+      _setInteractionMode(_InteractionMode.none);
       _retainedMeasurementMode = null;
       _activeSavedMeasurementId = null;
       _savedMeasurementGeometrySignature = null;
@@ -1528,9 +1580,8 @@ class _GisMapScreenState extends State<GisMapScreen>
       switch (option) {
         case _MeasurementMenuOption.distance:
           _invalidateParcelAnalysis();
-          _measurementMode = _MeasurementMode.distance;
+          _setInteractionMode(_InteractionMode.measureDistance);
           _retainedMeasurementMode = _MeasurementMode.distance;
-          _isPersonalMarkerMode = false;
           _areaMeasurementPoints.clear();
           if (!resumesSavedMeasurement) {
             _activeSavedMeasurementId = null;
@@ -1544,9 +1595,8 @@ class _GisMapScreenState extends State<GisMapScreen>
               : _MapToolHintType.measureDistance;
         case _MeasurementMenuOption.area:
           _invalidateParcelAnalysis();
-          _measurementMode = _MeasurementMode.area;
+          _setInteractionMode(_InteractionMode.measureArea);
           _retainedMeasurementMode = _MeasurementMode.area;
-          _isPersonalMarkerMode = false;
           _distanceMeasurementPoints.clear();
           if (!resumesSavedMeasurement) {
             _activeSavedMeasurementId = null;
@@ -1559,8 +1609,7 @@ class _GisMapScreenState extends State<GisMapScreen>
               ? null
               : _MapToolHintType.measureArea;
         case _MeasurementMenuOption.exit:
-          _measurementMode = null;
-          _activeToolHint = null;
+          _setInteractionMode(_InteractionMode.none);
       }
     });
   }
@@ -1613,7 +1662,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       }
     }
     setState(() {
-      _measurementMode = null;
+      _setInteractionMode(_InteractionMode.none);
       _draggedAreaVertexIndex = null;
       _suppressNextMapTap = false;
       _activeToolHint = null;
@@ -1755,16 +1804,17 @@ class _GisMapScreenState extends State<GisMapScreen>
           : null,
       isVisible: previous?.isVisible ?? true,
       colorId: _measurementColor.id,
+      uuid: previous?.uuid ?? UuidV4.generate(),
+      updatedAt: now.toUtc(),
+      deletedAt: previous?.deletedAt,
+      syncState: SyncState.pendingUpload,
     );
     if (existingIndex == -1) {
       existing.add(measurement);
     } else {
       existing[existingIndex] = measurement;
     }
-    await preferences.setStringList(
-      SavedMeasurement.storageKey,
-      existing.map((item) => jsonEncode(item.toJson())).toList(growable: false),
-    );
+    await SyncAwareLocalRepository.instance.saveMeasurements(existing);
     if (!mounted) return;
     setState(() {
       final renderedIndex = _savedMeasurements.indexWhere(
@@ -1967,7 +2017,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     await _hideSavedMeasurement(currentMeasurement);
     if (!mounted) return;
     setState(() {
-      _measurementMode = null;
+      _setInteractionMode(_InteractionMode.none);
       _activeSavedMeasurementId = null;
       _savedMeasurementGeometrySignature = null;
       _savedMeasurementColorId = null;
@@ -1993,7 +2043,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     setState(() {
       _savedMeasurements.removeWhere((measurement) => measurement.id == id);
       if (clearEditingState || _activeSavedMeasurementId == id) {
-        _measurementMode = null;
+        _setInteractionMode(_InteractionMode.none);
         _activeSavedMeasurementId = null;
         _savedMeasurementGeometrySignature = null;
         _savedMeasurementColorId = null;
@@ -2002,12 +2052,8 @@ class _GisMapScreenState extends State<GisMapScreen>
       }
       _highlightedSavedMeasurementId = null;
     });
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(
-      SavedMeasurement.storageKey,
-      _savedMeasurements
-          .map((item) => jsonEncode(item.toJson()))
-          .toList(growable: false),
+    await SyncAwareLocalRepository.instance.saveMeasurements(
+      _savedMeasurements,
     );
   }
 
@@ -3203,7 +3249,7 @@ class _GisMapScreenState extends State<GisMapScreen>
         _highlightedSavedMeasurementId = null;
       }
       if (!isVisible && _activeSavedMeasurementId == measurement.id) {
-        _measurementMode = null;
+        _setInteractionMode(_InteractionMode.none);
         _activeSavedMeasurementId = null;
         _savedMeasurementGeometrySignature = null;
         _savedMeasurementColorId = null;
@@ -3211,12 +3257,8 @@ class _GisMapScreenState extends State<GisMapScreen>
         _areaMeasurementPoints.clear();
       }
     });
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(
-      SavedMeasurement.storageKey,
-      _savedMeasurements
-          .map((item) => jsonEncode(item.toJson()))
-          .toList(growable: false),
+    await SyncAwareLocalRepository.instance.saveMeasurements(
+      _savedMeasurements,
     );
   }
 
@@ -3730,9 +3772,11 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _selectSavedMeasurement(SavedMeasurement measurement) {
     setState(() {
-      _measurementMode = measurement.type == SavedMeasurementType.area
-          ? _MeasurementMode.area
-          : _MeasurementMode.distance;
+      _setInteractionMode(
+        measurement.type == SavedMeasurementType.area
+            ? _InteractionMode.measureArea
+            : _InteractionMode.measureDistance,
+      );
       _retainedMeasurementMode = _measurementMode;
       _distanceMeasurementPoints
         ..clear()
@@ -3800,6 +3844,9 @@ class _GisMapScreenState extends State<GisMapScreen>
       description: values.description,
       createdAt: now,
       category: values.category,
+      uuid: UuidV4.generate(),
+      updatedAt: now.toUtc(),
+      syncState: SyncState.pendingUpload,
     );
     setState(() {
       _personalMarkers.add(marker);
@@ -3895,19 +3942,12 @@ class _GisMapScreenState extends State<GisMapScreen>
   void _exitPersonalMarkerPlacement() {
     if (!mounted) return;
     setState(() {
-      _isPersonalMarkerMode = false;
-      _activeToolHint = null;
+      _setInteractionMode(_InteractionMode.none);
     });
   }
 
   Future<void> _persistPersonalMarkers() async {
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(
-      PersonalMarker.storageKey,
-      _personalMarkers
-          .map((item) => jsonEncode(item.toJson()))
-          .toList(growable: false),
-    );
+    await SyncAwareLocalRepository.instance.saveMarkers(_personalMarkers);
   }
 
   Future<void> _showPersonalMarkerDetails(PersonalMarker marker) {
@@ -4307,13 +4347,8 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Future<void> _saveFavorites() async {
-    final preferences = await SharedPreferences.getInstance();
-    final encodedFavorites = _favoriteFeatures.values
-        .map((favorite) => jsonEncode(favorite.toJson()))
-        .toList(growable: false);
-    await preferences.setStringList(
-      FavoriteSoilFeature.storageKey,
-      encodedFavorites,
+    await SyncAwareLocalRepository.instance.saveFavorites(
+      _favoriteFeatures.values,
     );
   }
 
@@ -6324,6 +6359,7 @@ class _DesktopMapInformationPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final unitSymbol = feature?.properties['SIMBC']?.toString().trim();
     final title = switch ((feature, measurement, marker)) {
       (final GisFeature value, _, _) =>
         GisSoilSeries.fromProperties(value.properties).firstOrNull?.name ??
@@ -6359,10 +6395,11 @@ class _DesktopMapInformationPanel extends StatelessWidget {
                 label: 'Capacidad de uso',
                 value: _featureValue(selectedFeature, 'CAP_USO'),
               ),
-              _DesktopMapInformationValue(
-                label: 'Carta de suelo',
-                value: selectedFeature.soilMapId.toString(),
-              ),
+              if (unitSymbol != null && unitSymbol.isNotEmpty)
+                _DesktopMapInformationValue(
+                  label: 'Símbolo',
+                  value: unitSymbol,
+                ),
               const SizedBox(height: 14),
               Wrap(
                 spacing: 8,
@@ -6519,6 +6556,8 @@ class _DesktopMapInformationValue extends StatelessWidget {
     );
   }
 }
+
+enum _InteractionMode { none, measureDistance, measureArea, addMarker }
 
 enum _MeasurementMode { distance, area }
 

@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/app_icons.dart';
 import '../models/personal_marker.dart';
+import '../repositories/sync_aware_local_repository.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/destructive_action_confirmation.dart';
 import '../widgets/personal_marker_category_icon.dart';
@@ -215,11 +216,7 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
     );
     if (!mounted || !confirmed) return;
     setState(() => markers.removeWhere((item) => item.id == marker.id));
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(
-      PersonalMarker.storageKey,
-      markers.map((item) => jsonEncode(item.toJson())).toList(growable: false),
-    );
+    await SyncAwareLocalRepository.instance.saveMarkers(markers);
   }
 
   String _formatDate(DateTime value) {

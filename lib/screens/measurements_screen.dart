@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/app_icons.dart';
 import '../export/measurement_export.dart';
 import '../models/saved_measurement.dart';
+import '../repositories/sync_aware_local_repository.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/destructive_action_confirmation.dart';
 import '../widgets/floating_app_bar_card.dart';
@@ -361,13 +362,7 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
   }
 
   Future<void> _persistMeasurements() async {
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(
-      SavedMeasurement.storageKey,
-      _measurements!
-          .map((measurement) => jsonEncode(measurement.toJson()))
-          .toList(growable: false),
-    );
+    await SyncAwareLocalRepository.instance.saveMeasurements(_measurements!);
   }
 
   String _formatDistance(double meters) {
