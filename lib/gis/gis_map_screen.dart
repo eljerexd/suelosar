@@ -83,6 +83,9 @@ class _GisMapScreenState extends State<GisMapScreen>
     centerLongitude: -60,
   );
   static const int _maxRenderedTileCacheEntries = 96;
+  static const String _showSoilPolygonsPreferenceKey = 'gis.show_soil_polygons';
+  static const String _showReferenceBasemapPreferenceKey =
+      'gis.show_reference_basemap';
   static const bool _disableGisTilePipelineForDiagnostic = bool.fromEnvironment(
     'DISABLE_GIS_TILE_PIPELINE',
   );
@@ -124,6 +127,8 @@ class _GisMapScreenState extends State<GisMapScreen>
   final ValueNotifier<int> _parcelRevisionState = ValueNotifier<int>(0);
   final ValueNotifier<GisFeature?> _selectionPreview =
       ValueNotifier<GisFeature?>(null);
+  final ValueNotifier<_DesktopPanelSection?> _desktopPanelSectionState =
+      ValueNotifier<_DesktopPanelSection?>(null);
   Map<GisTileCoordinates, _RenderedGisTile> _visibleTiles =
       const <GisTileCoordinates, _RenderedGisTile>{};
   Set<GisTileCoordinates> _visibleTileCoordinates =
@@ -146,7 +151,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   bool _isSearchViewOpen = false;
   bool _mapVisualsPaused = false;
   bool _desktopToolsPanelCollapsed = false;
-  _DesktopPanelSection? _desktopPanelSection;
+  OverlayEntry? _desktopLayersOverlay;
   PersonalMarker? _desktopSelectedMarker;
   final List<_SoilSeriesSearchEntry> _desktopRecentSearches =
       <_SoilSeriesSearchEntry>[];
@@ -221,6 +226,12 @@ class _GisMapScreenState extends State<GisMapScreen>
   @visibleForTesting
   String get activeInteractionMode => _interactionMode.name;
 
+  @visibleForTesting
+  bool get showSoilPolygons => _showSoilPolygons;
+
+  @visibleForTesting
+  bool get showReferenceBasemap => _showReferenceBasemap;
+
   @override
   void initState() {
     super.initState();
@@ -246,6 +257,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       debugPrint('GIS diagnostic: Geolocator disabled.');
     }
     unawaited(_loadFavorites());
+    unawaited(_loadMapDisplayPreferences());
     unawaited(_loadMeasurementColor());
     unawaited(_loadSavedMeasurements());
     unawaited(_loadPersonalMarkers());
@@ -278,6 +290,7 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   @override
   void dispose() {
+    _removeDesktopLayersOverlay();
     final registeredRoute = _registeredMapRoute;
     if (registeredRoute != null) {
       GisMapOcclusionObserver.instance.unregister(registeredRoute);
@@ -294,6 +307,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     _mapViewportState.dispose();
     _parcelRevisionState.dispose();
     _selectionPreview.dispose();
+    _desktopPanelSectionState.dispose();
     if (_ownsRenderMetrics) {
       _renderMetrics.dispose();
     }
@@ -522,43 +536,57 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Widget _buildDesktopMapShell(GisArchiveInfo archiveInfo) {
-    final shell = SuelosArDesktopPageScaffold(
-      panelTopInset: 76,
-      sidePanelVerticalInset: 28,
-      sidePanel: SuelosArFloatingSidePanel(
-        padding: _desktopToolsPanelCollapsed ? const EdgeInsets.all(8) : null,
-        child: _DesktopMapToolsPanel(
-          collapsed: _desktopToolsPanelCollapsed,
-          selectedSection: _desktopPanelSection,
-          onCollapsedChanged: (collapsed) {
-            setState(() => _desktopToolsPanelCollapsed = collapsed);
-          },
-          onSelectSection: _selectDesktopPanelSection,
-          activeMode: _desktopActiveMode,
-          onMeasureDistance: () =>
-              _selectMeasurementOption(_MeasurementMenuOption.distance),
-          onMeasureArea: () =>
-              _selectMeasurementOption(_MeasurementMenuOption.area),
-          onAddMarker: _togglePersonalMarkerMode,
-          onLocate: _isLocating || _disableGeolocatorForDiagnostic
-              ? null
-              : _centerMapOnCurrentLocation,
-        ),
-      ),
-      informationPanel: _buildDesktopInformationPanel(),
-      informationAlignment: Alignment.centerRight,
-      child: _buildMap(archiveInfo, desktopShell: true),
-    );
     return CallbackShortcuts(
       bindings: <ShortcutActivator, VoidCallback>{
         const SingleActivator(LogicalKeyboardKey.escape):
             _cancelDesktopTemporaryMode,
       },
-      child: Focus(autofocus: true, child: shell),
+      child: Focus(
+        autofocus: true,
+        child: SuelosArDesktopPageScaffold(
+          panelTopInset: 76,
+          sidePanelVerticalInset: 28,
+          sidePanel: ValueListenableBuilder<_DesktopPanelSection?>(
+            valueListenable: _desktopPanelSectionState,
+            builder: (context, selectedSection, child) {
+              return SuelosArFloatingSidePanel(
+                padding: _desktopToolsPanelCollapsed
+                    ? const EdgeInsets.all(8)
+                    : null,
+                child: _DesktopMapToolsPanel(
+                  collapsed: _desktopToolsPanelCollapsed,
+                  selectedSection: selectedSection,
+                  onCollapsedChanged: (collapsed) {
+                    setState(() => _desktopToolsPanelCollapsed = collapsed);
+                  },
+                  onSelectSection: _selectDesktopPanelSection,
+                  activeMode: _desktopActiveMode,
+                  onMeasureDistance: () =>
+                      _selectMeasurementOption(_MeasurementMenuOption.distance),
+                  onMeasureArea: () =>
+                      _selectMeasurementOption(_MeasurementMenuOption.area),
+                  onAddMarker: _togglePersonalMarkerMode,
+                  onLocate: _isLocating || _disableGeolocatorForDiagnostic
+                      ? null
+                      : _centerMapOnCurrentLocation,
+                ),
+              );
+            },
+          ),
+          informationPanel: ValueListenableBuilder<_DesktopPanelSection?>(
+            valueListenable: _desktopPanelSectionState,
+            builder: (context, selectedSection, child) {
+              return _buildDesktopInformationPanel(selectedSection);
+            },
+          ),
+          informationAlignment: Alignment.centerRight,
+          child: _buildMap(archiveInfo, desktopShell: true),
+        ),
+      ),
     );
   }
 
-  Widget _buildDesktopInformationPanel() {
+  Widget _buildDesktopInformationPanel(_DesktopPanelSection? selectedSection) {
     final selectedMeasurement = _savedMeasurements
         .where(
           (measurement) =>
@@ -603,147 +631,140 @@ class _GisMapScreenState extends State<GisMapScreen>
             ),
           );
         }
-        final section = _desktopPanelSection;
+        final section = selectedSection;
         if (section != null) {
-          return _DesktopPanelTransition(
-            panelKey: section,
-            child: SuelosArFloatingInformationPanel(
-              child: switch (section) {
-                _DesktopPanelSection.layers => _DesktopLayersPanel(
-                  showSoilPolygons: _showSoilPolygons,
-                  showReferenceBasemap: _showReferenceBasemap,
-                  onToggleSoilPolygons: () => _toggleLayerVisibility(
-                    _LayerVisibilityOption.soilPolygons,
-                  ),
-                  onToggleReferenceBasemap: () => _toggleLayerVisibility(
-                    _LayerVisibilityOption.referenceBasemap,
-                  ),
-                  onDismiss: () => setState(() => _desktopPanelSection = null),
+          if (section == _DesktopPanelSection.layers) {
+            return const SizedBox.shrink();
+          }
+          final panel = SuelosArFloatingInformationPanel(
+            child: switch (section) {
+              _DesktopPanelSection.layers => _DesktopLayersPanel(
+                showSoilPolygons: _showSoilPolygons,
+                showReferenceBasemap: _showReferenceBasemap,
+                onToggleSoilPolygons: () =>
+                    _toggleLayerVisibility(_LayerVisibilityOption.soilPolygons),
+                onToggleReferenceBasemap: () => _toggleLayerVisibility(
+                  _LayerVisibilityOption.referenceBasemap,
                 ),
-                _DesktopPanelSection.search => _DesktopSearchPanel(
-                  entries: _soilSeriesSearchIndex.values.toList(
-                    growable: false,
+                onDismiss: _closeDesktopPanel,
+              ),
+              _DesktopPanelSection.search => _DesktopSearchPanel(
+                entries: _soilSeriesSearchIndex.values.toList(growable: false),
+                selectedFeatureId: _searchSelectedFeature?.id,
+                recentEntries: _desktopRecentSearches,
+                onSelect: _selectDesktopSearchResult,
+                onDismiss: _closeDesktopPanel,
+              ),
+              _DesktopPanelSection.measurements =>
+                _DesktopCollectionPanel<SavedMeasurement>(
+                  title: 'Mediciones',
+                  subtitle:
+                      '${_savedMeasurements.length} guardadas · '
+                      '${_savedMeasurements.where((item) => item.type == SavedMeasurementType.area).length} áreas · '
+                      '${_savedMeasurements.where((item) => item.type == SavedMeasurementType.distance).length} distancias',
+                  icon: Icons.history,
+                  items: _savedMeasurements,
+                  emptyMessage: 'No hay mediciones guardadas.',
+                  itemTitle: (measurement) => measurement.name,
+                  itemSubtitle: (measurement) =>
+                      measurement.type == SavedMeasurementType.area
+                      ? _MeasurementLayer._formatArea(
+                          measurement.areaSquareMeters ?? 0,
+                        )
+                      : _MeasurementLayer._formatDistance(
+                          measurement.distanceMeters ?? 0,
+                        ),
+                  onSelect: _focusSavedMeasurement,
+                  itemEnabled: (measurement) => measurement.isVisible,
+                  itemSelected: (measurement) =>
+                      measurement.id == _highlightedSavedMeasurementId,
+                  trailingBuilder: (measurement) => Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: measurement.isVisible ? 'Ocultar' : 'Mostrar',
+                        onPressed: () => unawaited(
+                          _toggleSavedMeasurementVisibility(measurement),
+                        ),
+                        icon: Icon(
+                          measurement.isVisible
+                              ? AppIcons.visibility
+                              : AppIcons.visibilityOff,
+                          size: 19,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Editar',
+                        onPressed: measurement.isVisible
+                            ? () => unawaited(
+                                _requestSelectSavedMeasurement(measurement),
+                              )
+                            : null,
+                        icon: const Icon(AppIcons.edit, size: 19),
+                      ),
+                    ],
                   ),
-                  selectedFeatureId: _searchSelectedFeature?.id,
-                  recentEntries: _desktopRecentSearches,
-                  onSelect: _selectDesktopSearchResult,
-                  onDismiss: () => setState(() => _desktopPanelSection = null),
+                  onDismiss: _closeDesktopPanel,
                 ),
-                _DesktopPanelSection.measurements =>
-                  _DesktopCollectionPanel<SavedMeasurement>(
-                    title: 'Mediciones',
-                    subtitle:
-                        '${_savedMeasurements.length} guardadas · '
-                        '${_savedMeasurements.where((item) => item.type == SavedMeasurementType.area).length} áreas · '
-                        '${_savedMeasurements.where((item) => item.type == SavedMeasurementType.distance).length} distancias',
-                    icon: Icons.history,
-                    items: _savedMeasurements,
-                    emptyMessage: 'No hay mediciones guardadas.',
-                    itemTitle: (measurement) => measurement.name,
-                    itemSubtitle: (measurement) =>
-                        measurement.type == SavedMeasurementType.area
-                        ? _MeasurementLayer._formatArea(
-                            measurement.areaSquareMeters ?? 0,
-                          )
-                        : _MeasurementLayer._formatDistance(
-                            measurement.distanceMeters ?? 0,
-                          ),
-                    onSelect: _focusSavedMeasurement,
-                    itemEnabled: (measurement) => measurement.isVisible,
-                    itemSelected: (measurement) =>
-                        measurement.id == _highlightedSavedMeasurementId,
-                    trailingBuilder: (measurement) => Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: measurement.isVisible
-                              ? 'Ocultar'
-                              : 'Mostrar',
-                          onPressed: () => unawaited(
-                            _toggleSavedMeasurementVisibility(measurement),
-                          ),
-                          icon: Icon(
-                            measurement.isVisible
-                                ? AppIcons.visibility
-                                : AppIcons.visibilityOff,
-                            size: 19,
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Editar',
-                          onPressed: measurement.isVisible
-                              ? () => unawaited(
-                                  _requestSelectSavedMeasurement(measurement),
-                                )
-                              : null,
-                          icon: const Icon(AppIcons.edit, size: 19),
-                        ),
-                      ],
-                    ),
-                    onDismiss: () =>
-                        setState(() => _desktopPanelSection = null),
+              _DesktopPanelSection.markers =>
+                _DesktopCollectionPanel<PersonalMarker>(
+                  title: 'Marcadores',
+                  subtitle: '${_personalMarkers.length} guardados',
+                  icon: Icons.bookmarks,
+                  items: _personalMarkers,
+                  emptyMessage: 'No hay marcadores personales.',
+                  itemTitle: (marker) => marker.name,
+                  itemSubtitle: (marker) => marker.category.label,
+                  itemMetaLabel: (marker) => 'Categoría',
+                  onSelect: _focusPersonalMarker,
+                  itemSelected: (marker) =>
+                      marker.id == _desktopSelectedMarker?.id,
+                  headerAction: IconButton(
+                    tooltip: 'Agregar marcador',
+                    onPressed: _startDesktopMarkerPlacement,
+                    icon: const Icon(AppIcons.addLocation),
                   ),
-                _DesktopPanelSection.markers =>
-                  _DesktopCollectionPanel<PersonalMarker>(
-                    title: 'Marcadores',
-                    subtitle: '${_personalMarkers.length} guardados',
-                    icon: Icons.bookmarks,
-                    items: _personalMarkers,
-                    emptyMessage: 'No hay marcadores personales.',
-                    itemTitle: (marker) => marker.name,
-                    itemSubtitle: (marker) => marker.category.label,
-                    itemMetaLabel: (marker) => 'Categoría',
-                    onSelect: _focusPersonalMarker,
-                    itemSelected: (marker) =>
-                        marker.id == _desktopSelectedMarker?.id,
-                    headerAction: IconButton(
-                      tooltip: 'Agregar marcador',
-                      onPressed: _startDesktopMarkerPlacement,
-                      icon: const Icon(AppIcons.addLocation),
-                    ),
-                    trailingBuilder: (marker) =>
-                        PopupMenuButton<_DesktopMarkerAction>(
-                          tooltip: 'Más acciones',
-                          onSelected: (action) {
-                            switch (action) {
-                              case _DesktopMarkerAction.edit:
-                                unawaited(_editPersonalMarker(marker));
-                              case _DesktopMarkerAction.delete:
-                                unawaited(_confirmDeletePersonalMarker(marker));
-                            }
-                          },
-                          itemBuilder: (context) => const [
-                            PopupMenuItem(
-                              value: _DesktopMarkerAction.edit,
-                              child: Text('Editar'),
-                            ),
-                            PopupMenuItem(
-                              value: _DesktopMarkerAction.delete,
-                              child: Text('Eliminar'),
-                            ),
-                          ],
-                        ),
-                    onDismiss: () =>
-                        setState(() => _desktopPanelSection = null),
-                  ),
-                _DesktopPanelSection.favorites =>
-                  _DesktopCollectionPanel<FavoriteSoilFeature>(
-                    title: 'Favoritos',
-                    subtitle: '${_favoriteFeatures.length} suelos guardados',
-                    icon: AppIcons.star,
-                    items: _favoriteFeatures.values.toList(growable: false),
-                    emptyMessage: 'No hay suelos favoritos.',
-                    itemTitle: (favorite) => favorite.dominantSoilSeries,
-                    itemSubtitle: (favorite) => favorite.unitName,
-                    onSelect: _focusFavorite,
-                    itemSelected: (favorite) =>
-                        favorite.id == _searchSelectedFeature?.id,
-                    onDismiss: () =>
-                        setState(() => _desktopPanelSection = null),
-                  ),
-              },
-            ),
+                  trailingBuilder: (marker) =>
+                      PopupMenuButton<_DesktopMarkerAction>(
+                        tooltip: 'Más acciones',
+                        onSelected: (action) {
+                          switch (action) {
+                            case _DesktopMarkerAction.edit:
+                              unawaited(_editPersonalMarker(marker));
+                            case _DesktopMarkerAction.delete:
+                              unawaited(_confirmDeletePersonalMarker(marker));
+                          }
+                        },
+                        itemBuilder: (context) => const [
+                          PopupMenuItem(
+                            value: _DesktopMarkerAction.edit,
+                            child: Text('Editar'),
+                          ),
+                          PopupMenuItem(
+                            value: _DesktopMarkerAction.delete,
+                            child: Text('Eliminar'),
+                          ),
+                        ],
+                      ),
+                  onDismiss: _closeDesktopPanel,
+                ),
+              _DesktopPanelSection.favorites =>
+                _DesktopCollectionPanel<FavoriteSoilFeature>(
+                  title: 'Favoritos',
+                  subtitle: '${_favoriteFeatures.length} suelos guardados',
+                  icon: AppIcons.star,
+                  items: _favoriteFeatures.values.toList(growable: false),
+                  emptyMessage: 'No hay suelos favoritos.',
+                  itemTitle: (favorite) => favorite.dominantSoilSeries,
+                  itemSubtitle: (favorite) => favorite.unitName,
+                  onSelect: _focusFavorite,
+                  itemSelected: (favorite) =>
+                      favorite.id == _searchSelectedFeature?.id,
+                  onDismiss: _closeDesktopPanel,
+                ),
+            },
           );
+          return _DesktopPanelTransition(panelKey: section, child: panel);
         }
         if (feature == null &&
             selectedMeasurement == null &&
@@ -1427,14 +1448,40 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _toggleLayerVisibility(_LayerVisibilityOption option) {
+    late final String preferenceKey;
+    late final bool isVisible;
     setState(() {
       switch (option) {
         case _LayerVisibilityOption.soilPolygons:
           _showSoilPolygons = !_showSoilPolygons;
+          preferenceKey = _showSoilPolygonsPreferenceKey;
+          isVisible = _showSoilPolygons;
         case _LayerVisibilityOption.referenceBasemap:
           _showReferenceBasemap = !_showReferenceBasemap;
+          preferenceKey = _showReferenceBasemapPreferenceKey;
+          isVisible = _showReferenceBasemap;
       }
     });
+    _desktopLayersOverlay?.markNeedsBuild();
+    unawaited(_persistMapDisplayPreference(preferenceKey, isVisible));
+  }
+
+  Future<void> _loadMapDisplayPreferences() async {
+    final preferences = await SharedPreferences.getInstance();
+    final showSoilPolygons =
+        preferences.getBool(_showSoilPolygonsPreferenceKey) ?? true;
+    final showReferenceBasemap =
+        preferences.getBool(_showReferenceBasemapPreferenceKey) ?? true;
+    if (!mounted) return;
+    setState(() {
+      _showSoilPolygons = showSoilPolygons;
+      _showReferenceBasemap = showReferenceBasemap;
+    });
+  }
+
+  Future<void> _persistMapDisplayPreference(String key, bool value) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(key, value);
   }
 
   void _togglePersonalMarkerMode() {
@@ -1473,7 +1520,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _setInteractionMode(_InteractionMode.addMarker);
       _activeToolHint = _MapToolHintType.marker;
       if (_usesDesktopMapShell) {
-        _desktopPanelSection = null;
+        _closeDesktopPanel();
       }
     });
   }
@@ -1508,11 +1555,63 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (_desktopActiveMode != null) {
       _cancelDesktopTemporaryMode();
     }
-    setState(() {
-      _desktopPanelSection = _desktopPanelSection == section ? null : section;
-      _desktopSelectedMarker = null;
-      _selectionPreview.value = null;
-    });
+    final currentSection = _desktopPanelSectionState.value;
+    if (currentSection == section) {
+      _closeDesktopPanel();
+      return;
+    }
+    _removeDesktopLayersOverlay();
+    _desktopPanelSectionState.value = section;
+    if (section == _DesktopPanelSection.layers) {
+      _showDesktopLayersOverlay();
+    }
+  }
+
+  void _closeDesktopPanel() {
+    _removeDesktopLayersOverlay();
+    _desktopPanelSectionState.value = null;
+  }
+
+  void _showDesktopLayersOverlay() {
+    final overlay = Overlay.of(context);
+    final entry = OverlayEntry(
+      builder: (overlayContext) {
+        final layout = SuelosArResponsiveLayout.fromContext(overlayContext);
+        return SizedBox.expand(
+          child: SafeArea(
+            child: Padding(
+              padding: layout.pagePadding.add(const EdgeInsets.only(top: 76)),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: SuelosArFloatingInformationPanel(
+                  child: _DesktopLayersPanel(
+                    showSoilPolygons: _showSoilPolygons,
+                    showReferenceBasemap: _showReferenceBasemap,
+                    onToggleSoilPolygons: () => _toggleLayerVisibility(
+                      _LayerVisibilityOption.soilPolygons,
+                    ),
+                    onToggleReferenceBasemap: () => _toggleLayerVisibility(
+                      _LayerVisibilityOption.referenceBasemap,
+                    ),
+                    onDismiss: _closeDesktopPanel,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    _desktopLayersOverlay = entry;
+    overlay.insert(entry);
+  }
+
+  void _removeDesktopLayersOverlay() {
+    final entry = _desktopLayersOverlay;
+    if (entry == null) return;
+    _desktopLayersOverlay = null;
+    entry.remove();
+    entry.dispose();
   }
 
   void _selectDesktopSearchResult(_SoilSeriesSearchEntry entry) {
@@ -1534,7 +1633,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _startDesktopMarkerPlacement() {
-    setState(() => _desktopPanelSection = null);
+    _closeDesktopPanel();
     if (!_isPersonalMarkerMode) {
       _togglePersonalMarkerMode();
     }
@@ -1575,7 +1674,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 _areaMeasurementPoints.isNotEmpty));
     setState(() {
       if (_usesDesktopMapShell && option != _MeasurementMenuOption.exit) {
-        _desktopPanelSection = null;
+        _closeDesktopPanel();
       }
       switch (option) {
         case _MeasurementMenuOption.distance:
@@ -3144,7 +3243,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       );
       return;
     }
-    setState(() => _desktopPanelSection = null);
+    _closeDesktopPanel();
     _selectSearchSuggestion(selectedEntry);
   }
 
@@ -3209,7 +3308,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     ).fit(_mapController.camera);
     _animateMapToPosition(targetCamera.center, targetCamera.zoom);
     setState(() {
-      _desktopPanelSection = null;
+      _closeDesktopPanel();
       _highlightedSavedMeasurementId = measurement.id;
       _desktopSelectedMarker = null;
       _selectionPreview.value = null;
@@ -3223,7 +3322,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _mapController.move(markerPoint, zoom);
     }
     setState(() {
-      _desktopPanelSection = null;
+      _closeDesktopPanel();
       _desktopSelectedMarker = marker;
       _highlightedSavedMeasurementId = null;
       _selectionPreview.value = null;
@@ -3244,7 +3343,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (index == -1) return;
     final isVisible = !measurement.isVisible;
     setState(() {
-      _savedMeasurements[index] = measurement.copyWith(isVisible: isVisible);
+      _savedMeasurements[index] = measurement.withLocalVisibility(isVisible);
       if (!isVisible && _highlightedSavedMeasurementId == measurement.id) {
         _highlightedSavedMeasurementId = null;
       }
@@ -3707,7 +3806,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   void _previewSavedMeasurement(SavedMeasurement measurement) {
     if (_activeSavedMeasurementId != null) return;
     setState(() {
-      _desktopPanelSection = null;
+      _closeDesktopPanel();
       _highlightedSavedMeasurementId = measurement.id;
       _selectionPreview.value = null;
       _desktopSelectedMarker = null;
@@ -3720,7 +3819,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   void _handlePersonalMarkerTap(PersonalMarker marker) {
     if (_usesDesktopMapShell) {
       setState(() {
-        _desktopPanelSection = null;
+        _closeDesktopPanel();
         _desktopSelectedMarker = marker;
         _highlightedSavedMeasurementId = null;
         _selectionPreview.value = null;
@@ -5005,11 +5104,18 @@ class _DesktopMapToolsPanelState extends State<_DesktopMapToolsPanel>
       context,
       const Duration(milliseconds: 200),
     );
-    return AnimatedSize(
-      alignment: Alignment.topLeft,
+    return AnimatedSwitcher(
       duration: duration,
-      curve: Curves.easeOutCubic,
-      child: collapsed ? _buildCollapsedPanel() : _buildExpandedPanel(),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeOutCubic,
+      layoutBuilder: (currentChild, previousChildren) =>
+          currentChild ?? const SizedBox.shrink(),
+      transitionBuilder: (child, animation) =>
+          FadeTransition(opacity: animation, child: child),
+      child: KeyedSubtree(
+        key: ValueKey(collapsed),
+        child: collapsed ? _buildCollapsedPanel() : _buildExpandedPanel(),
+      ),
     );
   }
 
@@ -5350,11 +5456,11 @@ class _DesktopMapPanelActionState extends State<_DesktopMapPanelAction> {
                     ? colorScheme.primaryContainer.withValues(alpha: 0.52)
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(14),
-                border: widget.selected
-                    ? Border.all(
-                        color: colorScheme.primary.withValues(alpha: 0.38),
-                      )
-                    : null,
+                border: Border.all(
+                  color: widget.selected
+                      ? colorScheme.primary.withValues(alpha: 0.38)
+                      : Colors.transparent,
+                ),
               ),
               child: Material(
                 color: Colors.transparent,

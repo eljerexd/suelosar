@@ -5,6 +5,17 @@ import 'package:suelosar/pairing/device_pairing_models.dart';
 import 'package:suelosar/services/device_pairing_service.dart';
 
 void main() {
+  test('stored Sync Group determines whether the device is linked', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    expect(await DevicePairingService.hasStoredSyncGroup(), isFalse);
+
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      DevicePairingService.groupStorageKey:
+          '99999999-9999-4999-8999-999999999999',
+    });
+    expect(await DevicePairingService.hasStoredSyncGroup(), isTrue);
+  });
+
   test('pairing sessions expose only an opaque one-use token', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final backend = _PairingBackendFake();

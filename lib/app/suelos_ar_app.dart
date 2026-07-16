@@ -8,6 +8,7 @@ import '../screens/measurements_screen.dart';
 import '../screens/personal_markers_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/soil_maps_screen.dart';
+import '../screens/synchronization_screen.dart';
 import '../services/settings_service.dart';
 import 'app_routes.dart';
 import 'app_theme.dart';
@@ -66,6 +67,7 @@ class _SuelosARAppState extends State<SuelosARApp> {
           AppRoutes.personalMarkers => const PersonalMarkersScreen(),
           AppRoutes.measurements => const MeasurementsScreen(),
           AppRoutes.settings => const SettingsScreen(),
+          AppRoutes.synchronization => const SynchronizationScreen(),
           _ => null,
         };
         if (page == null) return null;

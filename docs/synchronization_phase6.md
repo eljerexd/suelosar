@@ -6,8 +6,7 @@
 available. Completion is stored per group in SharedPreferences under
 `sync.initial_history.completed_groups`.
 
-1. Read markers, measurements, favorites, and the synchronization-ready
-   settings record from their existing local stores.
+1. Read markers, measurements, and favorites from their existing local stores.
 2. Keep non-deleted records whose state is `local` or `pendingUpload`.
 3. Download the remote group snapshot through `SyncBackendAdapter` and merge
    newer cloud records through `SyncLocalMergeStore`.
@@ -44,3 +43,6 @@ poll interval.
   `SyncEngine`, `SyncCoordinator`, and `SyncBackendAdapter`.
 - Realtime can wake the coordinator later without changing bootstrap storage or
   repository behavior.
+
+Application, display, performance, map-layer, and platform preferences are
+intentionally device-local and are not bootstrap entities.

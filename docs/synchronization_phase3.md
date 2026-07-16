@@ -25,7 +25,9 @@ existing local-only behavior.
 
 ## Database schema
 
-The `markers`, `measurements`, `favorites`, and `settings` tables each store:
+The original schema provides `markers`, `measurements`, `favorites`, and a
+legacy `settings` table. Current clients synchronize only markers,
+measurements, and favorites; application settings remain device-local.
 
 - `uuid`: stable entity identifier and primary key.
 - `owner_id`: authenticated Supabase user used by RLS.

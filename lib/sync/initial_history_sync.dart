@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/app_settings_sync_record.dart';
 import '../models/favorite_soil_feature.dart';
 import '../models/personal_marker.dart';
 import '../models/saved_measurement.dart';
@@ -12,6 +11,7 @@ import 'sync_engine.dart';
 import 'sync_local_merge_store.dart';
 import 'sync_logger.dart';
 import 'sync_operation.dart';
+import 'sync_payload_policy.dart';
 import 'sync_state.dart';
 import 'uuid_v4.dart';
 
@@ -33,7 +33,6 @@ class InitialHistorySyncProgress {
     this.markers = const InitialHistoryEntityProgress(),
     this.measurements = const InitialHistoryEntityProgress(),
     this.favorites = const InitialHistoryEntityProgress(),
-    this.settings = const InitialHistoryEntityProgress(),
     this.error,
   });
 
@@ -42,21 +41,19 @@ class InitialHistorySyncProgress {
   final InitialHistoryEntityProgress markers;
   final InitialHistoryEntityProgress measurements;
   final InitialHistoryEntityProgress favorites;
-  final InitialHistoryEntityProgress settings;
   final String? error;
 
   bool get isRunning =>
       status == InitialHistorySyncStatus.scanning ||
       status == InitialHistorySyncStatus.uploading;
 
-  int get total =>
-      markers.total + measurements.total + favorites.total + settings.total;
+  int get total => markers.total + measurements.total + favorites.total;
 
   InitialHistoryEntityProgress forType(SyncEntityType type) => switch (type) {
     SyncEntityType.marker => markers,
     SyncEntityType.measurement => measurements,
     SyncEntityType.favorite => favorites,
-    SyncEntityType.settings => settings,
+    SyncEntityType.settings => const InitialHistoryEntityProgress(),
   };
 }
 
@@ -117,7 +114,7 @@ class InitialHistorySync {
                     record.syncState == SyncState.pendingUpload),
           )
           .toList(growable: false);
-      for (final type in SyncEntityType.values) {
+      for (final type in SyncPayloadPolicy.synchronizedEntityTypes) {
         _totalByType[type] = eligible
             .where((record) => record.entityType == type)
             .length;
@@ -200,7 +197,6 @@ class InitialHistorySync {
         markers: _entityProgress(SyncEntityType.marker),
         measurements: _entityProgress(SyncEntityType.measurement),
         favorites: _entityProgress(SyncEntityType.favorite),
-        settings: _entityProgress(SyncEntityType.settings),
         error: error.toString(),
       );
       _preparedGroupUuid = null;
@@ -292,26 +288,6 @@ class InitialHistorySync {
     addList(PersonalMarker.storageKey, SyncEntityType.marker);
     addList(SavedMeasurement.storageKey, SyncEntityType.measurement);
     addList(FavoriteSoilFeature.storageKey, SyncEntityType.favorite);
-    final encodedSettings = preferences.getString(
-      AppSettingsSyncRecord.storageKey,
-    );
-    if (encodedSettings != null) {
-      try {
-        final decoded = jsonDecode(encodedSettings);
-        if (decoded is Map<String, dynamic>) {
-          final record = _LocalSyncRecord.fromJson(
-            SyncEntityType.settings,
-            decoded,
-          );
-          if (record != null) records.add(record);
-        }
-      } catch (_) {
-        _logger.log('Initial history record skipped', {
-          'entityType': SyncEntityType.settings.name,
-          'reason': 'malformed',
-        });
-      }
-    }
     return records;
   }
 
@@ -329,7 +305,6 @@ class InitialHistorySync {
       markers: _entityProgress(SyncEntityType.marker),
       measurements: _entityProgress(SyncEntityType.measurement),
       favorites: _entityProgress(SyncEntityType.favorite),
-      settings: _entityProgress(SyncEntityType.settings),
     );
   }
 
@@ -390,7 +365,10 @@ class _LocalSyncRecord {
         json['deletedAt']?.toString() ?? '',
       )?.toUtc(),
       syncState: SyncState.fromJson(json['syncState']),
-      payload: Map<String, Object?>.from(json),
+      payload: SyncPayloadPolicy.forUpload(
+        type,
+        Map<String, Object?>.from(json),
+      ),
     );
   }
 }

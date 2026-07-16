@@ -70,6 +70,7 @@ class SynchronizationService extends ChangeNotifier {
   bool _started = false;
   bool _disposed = false;
   bool _refreshing = false;
+  Object? _lastPublishedState;
   SynchronizationDeviceDetails _device =
       const SynchronizationDeviceDetails.empty();
   List<SyncOperation> _operations = const [];
@@ -88,6 +89,12 @@ class SynchronizationService extends ChangeNotifier {
   int get pendingDeletes => _operationCount(SyncOperationType.delete);
   int get retryCount =>
       _operations.fold(0, (total, operation) => total + operation.retryCount);
+  bool get isSynchronizing => const {
+    SyncStatus.scanning,
+    SyncStatus.preparing,
+    SyncStatus.uploading,
+    SyncStatus.downloading,
+  }.contains(engineStatus);
   bool get hasFailedOperations =>
       _operations.any((operation) => operation.retryCount > 0);
   DateTime? get lastSuccessfulAt => _lastSuccessfulAt;
@@ -134,7 +141,7 @@ class SynchronizationService extends ChangeNotifier {
       _lastDownloadCursor = preferences.getString(
         SyncCoordinator.cursorStorageKey,
       );
-      if (!_disposed) notifyListeners();
+      if (!_disposed) _notifyIfChanged('refresh');
     } finally {
       _refreshing = false;
     }
@@ -167,8 +174,53 @@ class SynchronizationService extends ChangeNotifier {
 
   void _handleStateChanged() {
     if (_disposed) return;
-    notifyListeners();
+    _notifyIfChanged('engine_or_connectivity');
     unawaited(refresh());
+  }
+
+  void _notifyIfChanged(String source) {
+    final nextState = _observableState();
+    if (_lastPublishedState == nextState) {
+      return;
+    }
+    _lastPublishedState = nextState;
+    notifyListeners();
+  }
+
+  Object _observableState() {
+    final progress = initialHistoryProgress;
+    final operationsFingerprint = _operations
+        .map(
+          (operation) =>
+              '${operation.operationId}:${operation.retryCount}:'
+              '${operation.operationType.name}',
+        )
+        .join('|');
+    return (
+      engineStatus,
+      connectivityStatus,
+      operationsFingerprint,
+      _device.name,
+      _device.uuid,
+      _device.appVersion,
+      _device.platform,
+      _lastSuccessfulAt,
+      lastError,
+      _lastDownloadCursor,
+      isBackendConfigured,
+      isBackendConnected,
+      backendAdapter,
+      currentPollingInterval,
+      progress.status,
+      progress.groupUuid,
+      progress.markers.completed,
+      progress.markers.total,
+      progress.measurements.completed,
+      progress.measurements.total,
+      progress.favorites.completed,
+      progress.favorites.total,
+      progress.error,
+    );
   }
 
   @override

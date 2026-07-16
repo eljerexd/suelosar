@@ -83,6 +83,23 @@ class SavedMeasurement implements SyncEntity {
     );
   }
 
+  SavedMeasurement withLocalVisibility(bool value) => SavedMeasurement(
+    id: id,
+    type: type,
+    name: name,
+    geometry: geometry,
+    createdAt: createdAt,
+    distanceMeters: distanceMeters,
+    areaSquareMeters: areaSquareMeters,
+    perimeterMeters: perimeterMeters,
+    isVisible: value,
+    colorId: colorId,
+    uuid: uuid,
+    updatedAt: updatedAt,
+    deletedAt: deletedAt,
+    syncState: syncState,
+  );
+
   Map<String, Object?> toJson() => <String, Object?>{
     'id': id,
     'type': type.name,

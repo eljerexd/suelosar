@@ -3,13 +3,13 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/app_settings_sync_record.dart';
 import '../models/favorite_soil_feature.dart';
 import '../models/personal_marker.dart';
 import '../models/saved_measurement.dart';
 import '../sync/sync_engine.dart';
 import '../sync/sync_logger.dart';
 import '../sync/sync_operation.dart';
+import '../sync/sync_payload_policy.dart';
 import '../sync/sync_state.dart';
 import '../sync/uuid_v4.dart';
 
@@ -43,28 +43,6 @@ class SyncAwareLocalRepository {
         records: favorites.map((favorite) => favorite.toJson()),
       );
 
-  Future<void> saveSettings(AppSettingsSyncRecord record) async {
-    final preferences = await SharedPreferences.getInstance();
-    final previousEncoded = preferences.getString(
-      AppSettingsSyncRecord.storageKey,
-    );
-    await preferences.setString(
-      AppSettingsSyncRecord.storageKey,
-      jsonEncode(record.toJson()),
-    );
-    if (previousEncoded == jsonEncode(record.toJson())) return;
-    unawaited(
-      _recordInBackground(
-        entityType: SyncEntityType.settings,
-        operationType: previousEncoded == null
-            ? SyncOperationType.create
-            : SyncOperationType.update,
-        uuid: record.uuid,
-        payload: record.toJson(),
-      ),
-    );
-  }
-
   Future<void> _saveList({
     required String storageKey,
     required SyncEntityType entityType,
@@ -82,8 +60,17 @@ class SyncAwareLocalRepository {
     );
     for (final entry in next.entries) {
       final previousRecord = previous[entry.key];
+      final syncPayload = SyncPayloadPolicy.forUpload(entityType, entry.value);
       if (previousRecord != null &&
-          jsonEncode(previousRecord) == jsonEncode(entry.value)) {
+          jsonEncode(
+                SyncPayloadPolicy.forChangeDetection(
+                  entityType,
+                  previousRecord,
+                ),
+              ) ==
+              jsonEncode(
+                SyncPayloadPolicy.forChangeDetection(entityType, entry.value),
+              )) {
         continue;
       }
       unawaited(
@@ -93,7 +80,7 @@ class SyncAwareLocalRepository {
               ? SyncOperationType.create
               : SyncOperationType.update,
           uuid: entry.key,
-          payload: entry.value,
+          payload: syncPayload,
         ),
       );
     }
@@ -111,7 +98,7 @@ class SyncAwareLocalRepository {
           entityType: entityType,
           operationType: SyncOperationType.delete,
           uuid: entry.key,
-          payload: tombstone,
+          payload: SyncPayloadPolicy.forUpload(entityType, tombstone),
         ),
       );
     }

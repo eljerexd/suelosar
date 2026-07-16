@@ -8,4 +8,5 @@
   static const String personalMarkers = '/personal-markers';
   static const String measurements = '/measurements';
   static const String settings = '/settings';
+  static const String synchronization = '/synchronization';
 }

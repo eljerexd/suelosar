@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'sync_backend_adapter.dart';
 import 'sync_operation.dart';
+import 'sync_payload_policy.dart';
 import 'sync_state.dart';
 
 class SyncAuthenticationRequiredException implements Exception {
@@ -28,7 +29,6 @@ class SupabaseSyncBackendAdapter implements SyncBackendAdapter {
     SyncEntityType.marker: 'markers',
     SyncEntityType.measurement: 'measurements',
     SyncEntityType.favorite: 'favorites',
-    SyncEntityType.settings: 'settings',
   };
 
   @override
@@ -42,6 +42,7 @@ class SupabaseSyncBackendAdapter implements SyncBackendAdapter {
 
     final grouped = <SyncEntityType, List<Map<String, Object?>>>{};
     for (final item in latestByEntity.values) {
+      if (!SyncPayloadPolicy.synchronizes(item.operation.entityType)) continue;
       grouped
           .putIfAbsent(item.operation.entityType, () => [])
           .add(_remoteRow(item));
@@ -127,8 +128,10 @@ class SupabaseSyncBackendAdapter implements SyncBackendAdapter {
   }
 
   Map<String, Object?> _remoteRow(PreparedSyncUpload item) {
-    final payload = Map<String, Object?>.from(item.payload)
-      ..['syncState'] = SyncState.synced.name;
+    final payload = SyncPayloadPolicy.forUpload(
+      item.operation.entityType,
+      item.payload,
+    )..['syncState'] = SyncState.synced.name;
     final createdAt =
         _dateFrom(payload['createdAt']) ?? item.operation.createdAt;
     final updatedAt =
@@ -161,6 +164,7 @@ class SupabaseSyncBackendAdapter implements SyncBackendAdapter {
       if (decoded is! Map<String, dynamic>) return {};
       final cursors = <String, _TableCursor>{};
       for (final entry in decoded.entries) {
+        if (!_tables.containsValue(entry.key)) continue;
         final cursor = _TableCursor.fromJson(entry.value);
         if (cursor != null) cursors[entry.key] = cursor;
       }

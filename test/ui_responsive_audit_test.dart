@@ -680,9 +680,14 @@ void main() {
       ),
     );
     await tester.pump(const Duration(seconds: 1));
-    await tester.tap(
-      find.byKey(const ValueKey('desktop-map-action-measure-area')),
+    final measureAreaAction = find.byKey(
+      const ValueKey('desktop-map-action-measure-area'),
     );
+    tester
+        .widget<InkWell>(
+          find.descendant(of: measureAreaAction, matching: find.byType(InkWell)),
+        )
+        .onTap!();
     await tester.pumpAndSettle();
 
     final map = tester.widget<FlutterMap>(find.byType(FlutterMap));

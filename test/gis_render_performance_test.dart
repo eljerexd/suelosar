@@ -6,9 +6,17 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:suelosar/constants/asset_paths.dart';
+import 'package:suelosar/app/app_routes.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
 import 'package:suelosar/gis/gis_render_metrics.dart';
 import 'package:suelosar/gis/gis_repository.dart';
+import 'package:suelosar/screens/home_screen.dart';
+import 'package:suelosar/services/connectivity_service.dart';
+import 'package:suelosar/services/synchronization_service.dart';
+import 'package:suelosar/sync/persistent_sync_queue.dart';
+import 'package:suelosar/sync/sync_engine.dart';
+import 'package:suelosar/sync/sync_logger.dart';
+import 'package:suelosar/sync/sync_status.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -96,6 +104,124 @@ void main() {
     expect(unchangedSnapshot.polygonObjectCreationCount, 0);
     expect(unchangedSnapshot.projectedPolygonCount, 0);
     expect(unchangedSnapshot.projectedGeometryCacheHitCount, greaterThan(0));
+  });
+
+  testWidgets('synchronization status invalidates only its Home widget', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final metrics = GisRenderMetrics();
+    final repository = PmTilesGisRepository.fromFile(
+      archiveFile: File('assets/maps/soil_polygons.pmtiles'),
+      layerName: AssetPaths.gisLayerName,
+    );
+    final connectivity = ConnectivityService(
+      initialStatus: ConnectivityStatus.online,
+    );
+    final queue = PersistentSyncQueue(storageKey: 'test.sync.repaint.queue');
+    final engine = SyncEngine(
+      queue: queue,
+      connectivity: connectivity,
+      logger: SyncLogger(sink: (_) {}),
+    );
+    final synchronizationService = SynchronizationService(
+      engine: engine,
+      connectivity: connectivity,
+      queue: queue,
+      backendConfigured: () => true,
+      backendConnected: () => true,
+      deviceDetailsLoader: () async =>
+          const SynchronizationDeviceDetails.empty(),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: HomeScreen(
+          deviceLinkedStatusLoader: () async => true,
+          synchronizationService: synchronizationService,
+        ),
+        onGenerateRoute: (settings) {
+          if (settings.name != AppRoutes.gisMap) return null;
+          return MaterialPageRoute<void>(
+            settings: settings,
+            builder: (_) =>
+                GisMapScreen(repository: repository, renderMetrics: metrics),
+          );
+        },
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('module-gis-map')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    await _waitForTiles(tester, metrics);
+
+    metrics.reset();
+
+    engine.status.value = SyncStatus.uploading;
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+
+    final snapshot = metrics.snapshot();
+    expect(snapshot.mapBuildCount, 0);
+    expect(snapshot.tileCollectionBuildCount, 0);
+    expect(snapshot.polygonLayerBuildCount, 0);
+    expect(snapshot.paintCount, 0);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    synchronizationService.dispose();
+    await engine.dispose();
+    metrics.dispose();
+  });
+
+  testWidgets('opening desktop Layers does not invalidate the map renderer', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final metrics = GisRenderMetrics();
+    addTearDown(metrics.dispose);
+    final repository = PmTilesGisRepository.fromFile(
+      archiveFile: File('assets/maps/soil_polygons.pmtiles'),
+      layerName: AssetPaths.gisLayerName,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: GisMapScreen(repository: repository, renderMetrics: metrics),
+      ),
+    );
+    await _waitForTiles(tester, metrics);
+    metrics.reset();
+
+    await tester.tap(find.byTooltip('Capas'));
+    await tester.pump();
+
+    final snapshot = metrics.snapshot();
+    expect(find.text('2 capas disponibles'), findsOneWidget);
+    final panelFade = find.ancestor(
+      of: find.text('2 capas disponibles'),
+      matching: find.byType(FadeTransition),
+    );
+    expect(panelFade, findsNothing);
+    expect(snapshot.mapBuildCount, 0);
+    expect(snapshot.tileCollectionBuildCount, 0);
+    expect(snapshot.polygonLayerBuildCount, 0);
+    expect(snapshot.polygonGenerationCount, 0);
+    expect(snapshot.paintCount, 0);
   });
 }
 

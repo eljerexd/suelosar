@@ -16,10 +16,16 @@ import '../widgets/device_pairing_flow.dart';
 import '../widgets/floating_app_bar_card.dart';
 
 class SynchronizationScreen extends StatefulWidget {
-  const SynchronizationScreen({this.service, this.pairingService, super.key});
+  const SynchronizationScreen({
+    this.service,
+    this.pairingService,
+    this.openPairingOnStart = false,
+    super.key,
+  });
 
   final SynchronizationService? service;
   final DevicePairingService? pairingService;
+  final bool openPairingOnStart;
 
   @override
   State<SynchronizationScreen> createState() => _SynchronizationScreenState();
@@ -181,7 +187,11 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
     await _service.start();
     try {
       await _pairingService.start();
-      await _service.synchronizeNow();
+      if (widget.openPairingOnStart) {
+        if (mounted) await _openPairing();
+      } else if (!_service.isSynchronizing) {
+        await _service.synchronizeNow();
+      }
     } catch (_) {
       // The card exposes a retryable service state without blocking sync UI.
     }
@@ -561,10 +571,6 @@ class _InitialHistoryCard extends StatelessWidget {
                   _InitialHistoryProgressRow(
                     label: 'Favoritos',
                     value: progress.favorites,
-                  ),
-                  _InitialHistoryProgressRow(
-                    label: 'Configuraci\u00f3n',
-                    value: progress.settings,
                   ),
                 ],
               ),

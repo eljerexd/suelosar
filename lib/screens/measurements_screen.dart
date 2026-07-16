@@ -341,8 +341,8 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
     );
     if (index == -1) return;
     setState(
-      () => _measurements![index] = measurement.copyWith(
-        isVisible: !measurement.isVisible,
+      () => _measurements![index] = measurement.withLocalVisibility(
+        !measurement.isVisible,
       ),
     );
     await _persistMeasurements();
@@ -353,8 +353,8 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
     if (measurements == null) return;
     setState(() {
       for (var index = 0; index < measurements.length; index++) {
-        measurements[index] = measurements[index].copyWith(
-          isVisible: isVisible,
+        measurements[index] = measurements[index].withLocalVisibility(
+          isVisible,
         );
       }
     });

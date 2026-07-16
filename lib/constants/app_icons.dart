@@ -40,7 +40,7 @@ abstract final class AppIcons {
   static const IconData warning = LucideIcons.triangle_alert;
   static const IconData error = LucideIcons.circle_x;
   static const IconData moreVertical = LucideIcons.ellipsis_vertical;
-  static const IconData synchronization = Icons.sync_rounded;
+  static const IconData synchronization = Icons.sync;
   static const IconData cloud = Icons.cloud_outlined;
   static const IconData device = Icons.devices_outlined;
   static const IconData upload = Icons.cloud_upload_outlined;

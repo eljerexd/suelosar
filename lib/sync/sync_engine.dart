@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/app_settings_sync_record.dart';
 import '../models/favorite_soil_feature.dart';
 import '../models/personal_marker.dart';
 import '../models/saved_measurement.dart';
@@ -52,6 +51,7 @@ class SyncEngine {
     _connectivitySubscription = connectivity.changes.listen(
       _handleConnectivityChanged,
     );
+    await _discardLegacySettingsOperations();
     await scanPendingChanges();
   }
 
@@ -83,29 +83,6 @@ class SyncEngine {
       SyncEntityType.favorite,
       queuedEntities,
     );
-    final encodedSettings = preferences.getString(
-      AppSettingsSyncRecord.storageKey,
-    );
-    if (encodedSettings != null) {
-      try {
-        final decoded = jsonDecode(encodedSettings);
-        if (decoded is Map<String, dynamic>) {
-          final record = AppSettingsSyncRecord.fromJson(decoded);
-          if (record.syncState == SyncState.pendingUpload &&
-              !queuedEntities.contains('settings:${record.uuid}')) {
-            await _recordLocalChangeNow(
-              entityType: SyncEntityType.settings,
-              operationType: SyncOperationType.update,
-              uuid: record.uuid,
-              payload: record.toJson(),
-            );
-            added++;
-          }
-        }
-      } catch (_) {
-        logger.log('Settings scan skipped', {'reason': 'malformed'});
-      }
-    }
     final total = (await queue.readAll()).length;
     logger.log('$added operations queued', {'total': total});
     _updateWaitingStatus(total);
@@ -209,6 +186,15 @@ class SyncEngine {
     _retryTimers.clear();
     await _localChanges.close();
     status.dispose();
+  }
+
+  Future<void> _discardLegacySettingsOperations() async {
+    final operations = await queue.readAll();
+    for (final operation in operations.where(
+      (candidate) => candidate.entityType == SyncEntityType.settings,
+    )) {
+      await cancel(operation.operationId);
+    }
   }
 
   Future<void> _recordLocalChangeNow({

@@ -185,6 +185,59 @@ void main() {
     await connectivity.dispose();
   });
 
+  testWidgets('unlinked entry opens pairing without starting synchronization', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final connectivity = ConnectivityService(
+      initialStatus: ConnectivityStatus.online,
+    );
+    final queue = PersistentSyncQueue(storageKey: 'test.pairing.entry.queue');
+    final engine = SyncEngine(
+      queue: queue,
+      connectivity: connectivity,
+      logger: SyncLogger(sink: (_) {}),
+    );
+    var synchronizationCalls = 0;
+    final service = SynchronizationService(
+      engine: engine,
+      connectivity: connectivity,
+      queue: queue,
+      synchronizeAction: () async {
+        synchronizationCalls++;
+        return true;
+      },
+      backendConfigured: () => true,
+      backendConnected: () => true,
+      deviceDetailsLoader: () async => const SynchronizationDeviceDetails(
+        name: 'Dispositivo de prueba',
+        uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        appVersion: '1.0.1',
+        platform: 'Android',
+      ),
+    );
+    final pairingService = _pairingService();
+
+    await _pumpAtSize(
+      tester,
+      const Size(390, 844),
+      SynchronizationScreen(
+        service: service,
+        pairingService: pairingService,
+        openPairingOnStart: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Vincular este equipo'), findsOneWidget);
+    expect(synchronizationCalls, 0);
+
+    service.dispose();
+    pairingService.dispose();
+    await engine.dispose();
+    await connectivity.dispose();
+  });
+
   testWidgets('synchronization page is responsive on Android and desktop', (
     tester,
   ) async {

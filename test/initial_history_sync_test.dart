@@ -3,12 +3,10 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:suelosar/models/app_settings_sync_record.dart';
 import 'package:suelosar/models/favorite_soil_feature.dart';
 import 'package:suelosar/models/personal_marker.dart';
 import 'package:suelosar/models/saved_measurement.dart';
 import 'package:suelosar/services/connectivity_service.dart';
-import 'package:suelosar/services/settings_service.dart';
 import 'package:suelosar/sync/initial_history_sync.dart';
 import 'package:suelosar/sync/persistent_sync_queue.dart';
 import 'package:suelosar/sync/sync_backend_adapter.dart';
@@ -28,18 +26,10 @@ void main() {
       final markers = List.generate(250, _marker);
       final measurements = List.generate(80, _measurement);
       final favorites = List.generate(35, _favorite);
-      final settings = AppSettingsSyncRecord(
-        values: const {'reduceAnimations': false},
-        uuid: _uuid(9000),
-        createdAt: DateTime.utc(2024),
-        updatedAt: DateTime.utc(2024, 1, 2),
-        syncState: SyncState.local,
-      );
       await _seed(
         markers: markers,
         measurements: measurements,
         favorites: favorites,
-        settings: settings,
       );
       final backend = _MemorySyncBackend();
       final harness = await _SyncHarness.start(backend, 'bootstrap.large');
@@ -49,12 +39,16 @@ void main() {
       expect(backend.rowsFor(SyncEntityType.marker), hasLength(250));
       expect(backend.rowsFor(SyncEntityType.measurement), hasLength(80));
       expect(backend.rowsFor(SyncEntityType.favorite), hasLength(35));
-      expect(backend.rowsFor(SyncEntityType.settings), hasLength(1));
+      expect(
+        backend
+            .rowsFor(SyncEntityType.measurement)
+            .every((row) => !(row['payload'] as Map).containsKey('isVisible')),
+        isTrue,
+      );
       expect(backend.uploadBatchSizes, everyElement(lessThanOrEqualTo(50)));
       expect(harness.initialHistory.progress.value.markers.completed, 250);
       expect(harness.initialHistory.progress.value.measurements.completed, 80);
       expect(harness.initialHistory.progress.value.favorites.completed, 35);
-      expect(harness.initialHistory.progress.value.settings.completed, 1);
 
       // Simulate an empty second device consuming the same cloud snapshot.
       final preferences = await SharedPreferences.getInstance();
@@ -302,7 +296,6 @@ Future<void> _seed({
   List<PersonalMarker> markers = const [],
   List<SavedMeasurement> measurements = const [],
   List<FavoriteSoilFeature> favorites = const [],
-  AppSettingsSyncRecord? settings,
 }) async {
   SharedPreferences.setMockInitialValues(<String, Object>{
     InitialHistorySync.groupStorageKey: _groupUuid,
@@ -315,10 +308,7 @@ Future<void> _seed({
     FavoriteSoilFeature.storageKey: favorites
         .map((item) => jsonEncode(item.toJson()))
         .toList(),
-    if (settings != null)
-      AppSettingsSyncRecord.storageKey: jsonEncode(settings.toJson()),
   });
-  await SettingsService.instance.initialize();
 }
 
 PersonalMarker _marker(

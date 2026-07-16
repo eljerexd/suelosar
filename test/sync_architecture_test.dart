@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:suelosar/models/app_settings_sync_record.dart';
 import 'package:suelosar/models/favorite_soil_feature.dart';
 import 'package:suelosar/models/personal_marker.dart';
 import 'package:suelosar/models/saved_measurement.dart';
@@ -147,28 +146,22 @@ void main() {
     ], uuidsBeforeSecondRun);
   });
 
-  test('settings expose a persistent sync-ready snapshot', () async {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
+  test('application settings remain device-local', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'settings.sync_record': jsonEncode({
+        'values': {'showZoomLevel': true},
+        'uuid': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'createdAt': '2026-01-01T00:00:00.000Z',
+        'updatedAt': '2026-01-01T00:00:00.000Z',
+        'deletedAt': null,
+        'syncState': 'synced',
+      }),
+    });
     await SettingsService.instance.initialize();
-    final initial = SettingsService.instance.syncRecord;
-    expect(initial, isNotNull);
-    expect(UuidV4.isValid(initial!.uuid), isTrue);
-    expect(initial.syncState, SyncState.local);
-
     await SettingsService.instance.setShowZoomLevel(false);
-    final updated = SettingsService.instance.syncRecord!;
-    expect(updated.uuid, initial.uuid);
-    expect(updated.updatedAt.isAfter(initial.updatedAt), isTrue);
-    expect(updated.syncState, SyncState.pendingUpload);
-    expect(updated.values['showZoomLevel'], isFalse);
 
     final preferences = await SharedPreferences.getInstance();
-    final encoded = preferences.getString(AppSettingsSyncRecord.storageKey);
-    expect(encoded, isNotNull);
-    final restored = AppSettingsSyncRecord.fromJson(
-      Map<String, dynamic>.from(jsonDecode(encoded!) as Map),
-    );
-    expect(restored.uuid, initial.uuid);
-    expect(restored.values['showZoomLevel'], isFalse);
+    expect(preferences.getBool('settings.show_zoom_level'), isFalse);
+    expect(preferences.getString('settings.sync_record'), isNull);
   });
 }

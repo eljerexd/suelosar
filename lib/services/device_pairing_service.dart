@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../pairing/device_pairing_backend.dart';
 import '../pairing/device_pairing_models.dart';
 import '../pairing/supabase_device_pairing_backend.dart';
+import '../sync/uuid_v4.dart';
 
 typedef PairingRegistrationLoader =
     Future<PairingDeviceRegistration> Function();
@@ -44,6 +45,11 @@ class DevicePairingService extends ChangeNotifier {
     DevicePairingStatus.joining,
     DevicePairingStatus.updating,
   }.contains(_status);
+
+  static Future<bool> hasStoredSyncGroup() async {
+    final preferences = await SharedPreferences.getInstance();
+    return UuidV4.isValid(preferences.getString(groupStorageKey)?.trim() ?? '');
+  }
 
   Future<void> start() async {
     if (_started) return;
