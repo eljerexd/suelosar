@@ -10,6 +10,7 @@ import 'package:suelosar/app/app_routes.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
 import 'package:suelosar/gis/gis_render_metrics.dart';
 import 'package:suelosar/gis/gis_repository.dart';
+import 'package:suelosar/models/saved_measurement.dart';
 import 'package:suelosar/screens/home_screen.dart';
 import 'package:suelosar/services/connectivity_service.dart';
 import 'package:suelosar/services/synchronization_service.dart';
@@ -223,6 +224,63 @@ void main() {
     expect(snapshot.polygonGenerationCount, 0);
     expect(snapshot.paintCount, 0);
   });
+
+  testWidgets('desktop panel search does not invalidate the map renderer', (
+    tester,
+  ) async {
+    final measurement = SavedMeasurement(
+      id: 'search-isolation',
+      type: SavedMeasurementType.area,
+      name: 'Campo Norte',
+      geometry: const [
+        LatLng(-36.5, -60),
+        LatLng(-36.5, -59.99),
+        LatLng(-36.49, -59.99),
+      ],
+      createdAt: DateTime.utc(2026, 7, 16),
+      areaSquareMeters: 12000,
+      perimeterMeters: 450,
+    );
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      SavedMeasurement.storageKey: [jsonEncode(measurement.toJson())],
+    });
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final metrics = GisRenderMetrics();
+    addTearDown(metrics.dispose);
+    final repository = PmTilesGisRepository.fromFile(
+      archiveFile: File('assets/maps/soil_polygons.pmtiles'),
+      layerName: AssetPaths.gisLayerName,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: GisMapScreen(repository: repository, renderMetrics: metrics),
+      ),
+    );
+    await _waitForTiles(tester, metrics);
+    await tester.tap(find.byTooltip('Mediciones'));
+    await tester.pumpAndSettle();
+    final searchField = find.byKey(
+      const ValueKey('desktop-measurements-search-field'),
+    );
+    expect(searchField, findsOneWidget);
+    await _waitForRenderIdle(tester, metrics);
+    metrics.reset();
+
+    await tester.enterText(searchField, 'campo');
+    await tester.pump();
+
+    final snapshot = metrics.snapshot();
+    expect(find.text('Campo Norte'), findsOneWidget);
+    expect(snapshot.mapBuildCount, 0);
+    expect(snapshot.tileCollectionBuildCount, 0);
+    expect(snapshot.polygonLayerBuildCount, 0);
+    expect(snapshot.polygonGenerationCount, 0);
+  });
 }
 
 Future<void> _move(
@@ -253,4 +311,27 @@ Future<void> _waitForTiles(
     }
   }
   fail('Timed out waiting for GIS tiles.');
+}
+
+Future<void> _waitForRenderIdle(
+  WidgetTester tester,
+  GisRenderMetrics metrics,
+) async {
+  var stableSamples = 0;
+  var previousBuildCount = metrics.polygonLayerBuildCount;
+  for (var attempt = 0; attempt < 100; attempt++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+    final buildCount = metrics.polygonLayerBuildCount;
+    if (buildCount == previousBuildCount) {
+      stableSamples++;
+      if (stableSamples >= 5) return;
+    } else {
+      stableSamples = 0;
+      previousBuildCount = buildCount;
+    }
+  }
+  fail('Timed out waiting for the GIS renderer to become idle.');
 }

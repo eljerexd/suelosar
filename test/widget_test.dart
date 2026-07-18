@@ -25,6 +25,7 @@ import 'package:suelosar/models/saved_measurement.dart';
 import 'package:suelosar/repositories/pdf_series_repository.dart';
 import 'package:suelosar/repositories/soil_map_repository.dart';
 import 'package:suelosar/screens/favorites_screen.dart';
+import 'package:suelosar/screens/gis_favorites_screen.dart';
 import 'package:suelosar/screens/measurements_screen.dart';
 import 'package:suelosar/screens/pdf_viewer_screen.dart';
 import 'package:suelosar/screens/personal_markers_screen.dart';
@@ -208,7 +209,7 @@ void main() {
           builder: (context) => TextButton(
             onPressed: () async {
               selectedId = await Navigator.of(context).push<String>(
-                MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+                MaterialPageRoute(builder: (_) => const GisFavoritesScreen()),
               );
             },
             child: const Text('Abrir'),
@@ -269,7 +270,7 @@ void main() {
           .toList(),
     });
 
-    await tester.pumpWidget(const MaterialApp(home: FavoritesScreen()));
+    await tester.pumpWidget(const MaterialApp(home: GisFavoritesScreen()));
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(SearchBar), 'alem');
@@ -301,7 +302,7 @@ void main() {
     tester,
   ) async {
     final favorite = FavoriteSoilFeature(
-      id: 'unit-pdf',
+      id: 'soil-map:Junín.pdf',
       unitName: 'Junín',
       unitSymbol: 'Ju1',
       soilSeries: const ['Junín'],
@@ -311,9 +312,7 @@ void main() {
       FavoriteSoilFeature.storageKey: <String>[jsonEncode(favorite.toJson())],
     });
 
-    await tester.pumpWidget(
-      const MaterialApp(home: FavoritesScreen(openPdfOnTap: true)),
-    );
+    await tester.pumpWidget(const MaterialApp(home: FavoritesScreen()));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Junín'));
     await tester.pump();

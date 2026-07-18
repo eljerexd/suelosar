@@ -18,6 +18,8 @@ samples, guidance on mobile development, and a full API reference.
 
 flutter run -d windows
 
+PARA COMPILAR = flutter build windows --release --dart-define-from-file=.vscode/supabase.env.json
+
 Hoy SuelosAR ya tiene:
 
 ✅ Cartas de suelo offline.

@@ -12,14 +12,19 @@ import 'package:suelosar/gis/gis_feature.dart';
 import 'package:suelosar/models/saved_measurement.dart';
 import 'package:suelosar/gis/gis_layer.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
+import 'package:suelosar/gis/gis_render_metrics.dart';
 import 'package:suelosar/gis/gis_repository.dart';
+import 'package:suelosar/models/favorite_soil_feature.dart';
+import 'package:suelosar/models/personal_marker.dart';
 import 'package:suelosar/screens/favorites_screen.dart';
 import 'package:suelosar/screens/home_screen.dart';
 import 'package:suelosar/screens/measurements_screen.dart';
 import 'package:suelosar/screens/personal_markers_screen.dart';
 import 'package:suelosar/screens/settings_screen.dart';
 import 'package:suelosar/screens/soil_maps_screen.dart';
+import 'package:suelosar/services/desktop_window_service.dart';
 import 'package:suelosar/widgets/floating_app_bar_card.dart';
+import 'package:suelosar/widgets/desktop_window_shortcut_scope.dart';
 import 'package:suelosar/widgets/responsive_desktop_shell.dart';
 
 void main() {
@@ -369,6 +374,174 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('desktop GIS fullscreen button and F11 share one service', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+    final windowService = _FakeDesktopWindowService();
+    final metrics = GisRenderMetrics();
+    addTearDown(windowService.dispose);
+    addTearDown(metrics.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: GisMapScreen(
+          repository: const _EmptyGisRepository(),
+          renderMetrics: metrics,
+          desktopWindowService: windowService,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    final mapElement = tester.element(find.byType(FlutterMap));
+    final mapController = tester
+        .widget<FlutterMap>(find.byType(FlutterMap))
+        .mapController;
+    metrics.reset();
+
+    expect(find.byTooltip('Pantalla completa'), findsOneWidget);
+    expect(find.byIcon(Icons.fullscreen), findsOneWidget);
+    await tester.tap(find.byTooltip('Pantalla completa'));
+    await tester.pumpAndSettle();
+    expect(windowService.toggleCount, 1);
+    expect(find.byTooltip('Salir de pantalla completa'), findsOneWidget);
+    expect(find.byIcon(Icons.fullscreen_exit), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.f11);
+    await tester.pumpAndSettle();
+    expect(windowService.toggleCount, 2);
+    expect(find.byTooltip('Pantalla completa'), findsOneWidget);
+
+    windowService.updateNativeFullScreen(true);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Salir de pantalla completa'), findsOneWidget);
+    windowService.updateNativeFullScreen(false);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Pantalla completa'), findsOneWidget);
+    expect(windowService.toggleCount, 2);
+    expect(tester.element(find.byType(FlutterMap)), same(mapElement));
+    expect(
+      tester.widget<FlutterMap>(find.byType(FlutterMap)).mapController,
+      same(mapController),
+    );
+    expect(metrics.mapBuildCount, 0);
+    expect(metrics.tileCollectionBuildCount, 0);
+    expect(metrics.polygonLayerBuildCount, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('phone GIS does not expose desktop fullscreen controls', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.reset);
+    final windowService = _FakeDesktopWindowService();
+    addTearDown(windowService.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.android),
+        home: GisMapScreen(
+          repository: const _EmptyGisRepository(),
+          desktopWindowService: windowService,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.byTooltip('Pantalla completa'), findsNothing);
+    expect(find.byTooltip('Salir de pantalla completa'), findsNothing);
+    expect(find.byIcon(Icons.fullscreen), findsNothing);
+    expect(windowService.initializeCount, 0);
+  });
+
+  testWidgets('desktop Home exposes global window controls', (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+    final windowService = _FakeDesktopWindowService();
+    addTearDown(windowService.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: HomeScreen(
+          deviceLinkedStatusLoader: () async => false,
+          desktopWindowService: windowService,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byTooltip('Pantalla completa (F11)'), findsOneWidget);
+    expect(find.byTooltip('Cerrar SuelosAR'), findsOneWidget);
+    await tester.tap(find.byTooltip('Pantalla completa (F11)'));
+    await tester.pumpAndSettle();
+    expect(windowService.toggleCount, 1);
+    expect(find.byTooltip('Salir de pantalla completa (F11)'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Cerrar SuelosAR'));
+    await tester.pumpAndSettle();
+    expect(find.text('Salir de SuelosAR'), findsOneWidget);
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(windowService.closeCount, 0);
+
+    await tester.tap(find.byTooltip('Cerrar SuelosAR'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Salir'));
+    await tester.pumpAndSettle();
+    expect(windowService.closeCount, 1);
+  });
+
+  testWidgets('global desktop shortcut toggles the shared window service', (
+    tester,
+  ) async {
+    final windowService = _FakeDesktopWindowService();
+    addTearDown(windowService.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DesktopWindowShortcutScope(
+          service: windowService,
+          child: const Scaffold(body: SizedBox.expand()),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.f11);
+    await tester.pump();
+    expect(windowService.toggleCount, 1);
+  });
+
+  testWidgets('mobile Home does not build desktop window controls', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final windowService = _FakeDesktopWindowService();
+    addTearDown(windowService.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.android),
+        home: HomeScreen(
+          deviceLinkedStatusLoader: () async => false,
+          desktopWindowService: windowService,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('home-desktop-fullscreen')), findsNothing);
+    expect(find.byKey(const ValueKey('home-desktop-exit')), findsNothing);
+  });
+
   testWidgets('desktop search opens in the right contextual panel', (
     tester,
   ) async {
@@ -399,6 +572,164 @@ void main() {
     expect(find.text('Búsquedas recientes'), findsOneWidget);
     expect(find.text('Todavía no hay búsquedas recientes.'), findsOneWidget);
     expect(find.byTooltip('Cerrar panel'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop GIS collection panels filter their local lists', (
+    tester,
+  ) async {
+    final measurements = <SavedMeasurement>[
+      SavedMeasurement(
+        id: 'campo-norte',
+        type: SavedMeasurementType.area,
+        name: 'Campo Norte',
+        geometry: const [
+          LatLng(-36.5, -60),
+          LatLng(-36.5, -59.99),
+          LatLng(-36.49, -59.99),
+        ],
+        createdAt: DateTime.utc(2026, 7, 1),
+        areaSquareMeters: 12000,
+        perimeterMeters: 450,
+      ),
+      SavedMeasurement(
+        id: 'campo-sur',
+        type: SavedMeasurementType.distance,
+        name: 'Campo Sur',
+        geometry: const [LatLng(-36.5, -60), LatLng(-36.49, -59.99)],
+        createdAt: DateTime.utc(2026, 7, 2),
+        distanceMeters: 850,
+      ),
+      SavedMeasurement(
+        id: 'lote-este',
+        type: SavedMeasurementType.area,
+        name: 'Lote Este',
+        geometry: const [
+          LatLng(-36.5, -60),
+          LatLng(-36.5, -59.98),
+          LatLng(-36.48, -59.98),
+        ],
+        createdAt: DateTime.utc(2026, 7, 3),
+        areaSquareMeters: 18000,
+        perimeterMeters: 520,
+      ),
+    ];
+    final markers = <PersonalMarker>[
+      PersonalMarker(
+        id: 'marker-north',
+        latitude: -36.5,
+        longitude: -60,
+        name: 'Muestreo norte',
+        description: 'Entrada principal',
+        createdAt: DateTime.utc(2026, 7, 1),
+      ),
+      PersonalMarker(
+        id: 'marker-lowland',
+        latitude: -36.49,
+        longitude: -59.99,
+        name: 'Bajo sur',
+        description: 'Sector anegado',
+        createdAt: DateTime.utc(2026, 7, 2),
+      ),
+    ];
+    final favorites = <FavoriteSoilFeature>[
+      FavoriteSoilFeature(
+        id: 'favorite-junin',
+        unitName: 'Unidad JN',
+        unitSymbol: 'JN',
+        soilSeries: const ['Junín'],
+        pdfIdentifier: 'junin',
+      ),
+      FavoriteSoilFeature(
+        id: 'favorite-pergamino',
+        unitName: 'Unidad PG',
+        unitSymbol: 'PG',
+        soilSeries: const ['Pergamino'],
+        pdfIdentifier: 'pergamino',
+      ),
+    ];
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      SavedMeasurement.storageKey: [
+        for (final item in measurements) jsonEncode(item.toJson()),
+      ],
+      PersonalMarker.storageKey: [
+        for (final item in markers) jsonEncode(item.toJson()),
+      ],
+      FavoriteSoilFeature.storageKey: [
+        for (final item in favorites) jsonEncode(item.toJson()),
+      ],
+    });
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.byTooltip('Contraer herramientas'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-map-rail-measurements')),
+    );
+    await tester.pumpAndSettle();
+    final measurementSearch = find.byKey(
+      const ValueKey('desktop-measurements-search-field'),
+    );
+    await tester.enterText(measurementSearch, 'campo');
+    await tester.pump();
+    expect(find.text('Campo Norte'), findsOneWidget);
+    expect(find.text('Campo Sur'), findsOneWidget);
+    expect(find.text('Lote Este'), findsNothing);
+    await tester.enterText(measurementSearch, 'sin coincidencias');
+    await tester.pump();
+    expect(find.text('No hay coincidencias.'), findsOneWidget);
+    await tester.tap(find.byTooltip('Limpiar búsqueda'));
+    await tester.pump();
+    expect(find.text('Campo Norte'), findsOneWidget);
+    expect(find.text('Campo Sur'), findsOneWidget);
+    expect(find.text('Lote Este'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('desktop-map-rail-markers')));
+    await tester.pumpAndSettle();
+    final markerSearch = find.byKey(
+      const ValueKey('desktop-markers-search-field'),
+    );
+    await tester.enterText(markerSearch, 'anegado');
+    await tester.pump();
+    expect(find.text('Bajo sur'), findsOneWidget);
+    expect(find.text('Muestreo norte'), findsNothing);
+    await tester.tap(find.byTooltip('Limpiar búsqueda'));
+    await tester.pump();
+    expect(find.text('Bajo sur'), findsOneWidget);
+    expect(find.text('Muestreo norte'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('desktop-map-rail-favorites')));
+    await tester.pumpAndSettle();
+    final favoriteSearch = find.byKey(
+      const ValueKey('desktop-favorites-search-field'),
+    );
+    await tester.enterText(favoriteSearch, 'junin');
+    await tester.pump();
+    expect(find.text('Junín'), findsOneWidget);
+    expect(find.text('Pergamino'), findsNothing);
+    await tester.tap(find.byTooltip('Limpiar búsqueda'));
+    await tester.pump();
+    expect(find.text('Junín'), findsOneWidget);
+    expect(find.text('Pergamino'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('desktop-remove-favorite-favorite-junin')),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('desktop-remove-favorite-favorite-junin')),
+      findsNothing,
+    );
+    expect(find.text('Pergamino'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -685,7 +1016,10 @@ void main() {
     );
     tester
         .widget<InkWell>(
-          find.descendant(of: measureAreaAction, matching: find.byType(InkWell)),
+          find.descendant(
+            of: measureAreaAction,
+            matching: find.byType(InkWell),
+          ),
         )
         .onTap!();
     await tester.pumpAndSettle();
@@ -873,4 +1207,56 @@ class _EmptyGisRepository implements GisRepository {
 
   @override
   Future<void> close() async {}
+}
+
+class _FakeDesktopWindowService extends DesktopWindowService {
+  bool _nativeFullScreen = false;
+  int initializeCount = 0;
+  int toggleCount = 0;
+  int closeCount = 0;
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  Future<bool> isFullScreen() async => _nativeFullScreen;
+
+  @override
+  bool get isTransitioning => false;
+
+  @override
+  Future<void> initialize() async {
+    initializeCount++;
+  }
+
+  @override
+  Future<void> enterFullScreen() async {
+    if (_nativeFullScreen) return;
+    _nativeFullScreen = true;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> exitFullScreen() async {
+    if (!_nativeFullScreen) return;
+    _nativeFullScreen = false;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> toggleFullScreen() async {
+    toggleCount++;
+    _nativeFullScreen = !_nativeFullScreen;
+    notifyListeners();
+  }
+
+  void updateNativeFullScreen(bool value) {
+    _nativeFullScreen = value;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> closeWindow() async {
+    closeCount++;
+  }
 }

@@ -26,15 +26,18 @@ import '../models/parcel_analysis.dart';
 import '../models/saved_measurement.dart';
 import '../repositories/pdf_series_repository.dart';
 import '../repositories/sync_aware_local_repository.dart';
-import '../screens/favorites_screen.dart';
+import '../screens/gis_favorites_screen.dart';
 import '../screens/measurements_screen.dart';
 import '../screens/pdf_viewer_screen.dart';
 import '../screens/personal_markers_screen.dart';
 import '../services/settings_service.dart';
+import '../services/desktop_window_service.dart';
+import '../services/gis_favorites_service.dart';
 import '../sync/sync_state.dart';
 import '../sync/uuid_v4.dart';
 import '../utils/app_motion.dart';
 import '../widgets/app_notification.dart';
+import '../widgets/desktop_fullscreen_state_builder.dart';
 import '../widgets/destructive_action_confirmation.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/measurement_color_selector.dart';
@@ -59,12 +62,14 @@ class GisMapScreen extends StatefulWidget {
     this.pdfSeriesRepository,
     this.renderMetrics,
     this.locationService,
+    this.desktopWindowService,
   });
 
   final GisRepository? repository;
   final PdfSeriesRepository? pdfSeriesRepository;
   final GisRenderMetrics? renderMetrics;
   final GisLocationService? locationService;
+  final DesktopWindowService? desktopWindowService;
 
   @override
   State<GisMapScreen> createState() => _GisMapScreenState();
@@ -100,6 +105,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   late final GisLocationService _locationService;
   late final PdfSeriesRepository _pdfSeriesRepository;
   late final GisRenderMetrics _renderMetrics;
+  late final DesktopWindowService _desktopWindowService;
   late final bool _ownsRenderMetrics;
 
   final LinkedHashMap<GisTileCoordinates, _RenderedGisTile> _renderedTileCache =
@@ -112,6 +118,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       <String, GisFeature>{};
   final Map<String, FavoriteSoilFeature> _favoriteFeatures =
       <String, FavoriteSoilFeature>{};
+  final GisFavoritesService _gisFavoritesService = GisFavoritesService();
   final ValueNotifier<_VisibleTileSnapshot> _visibleTileSnapshot =
       ValueNotifier(const _VisibleTileSnapshot());
   final ValueNotifier<_MapOverlayState> _overlayState = ValueNotifier(
@@ -237,6 +244,8 @@ class _GisMapScreenState extends State<GisMapScreen>
     super.initState();
     _ownsRenderMetrics = widget.renderMetrics == null;
     _renderMetrics = widget.renderMetrics ?? GisRenderMetrics.disabled();
+    _desktopWindowService =
+        widget.desktopWindowService ?? DesktopWindowService.instance;
     _repository =
         widget.repository ??
         PmTilesGisRepository.fromAsset(
@@ -275,6 +284,9 @@ class _GisMapScreenState extends State<GisMapScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (isSuelosArDesktopPlatform(context)) {
+      unawaited(_desktopWindowService.initialize());
+    }
     final route = ModalRoute.of(context);
     if (route == null || identical(route, _registeredMapRoute)) return;
     final previousRoute = _registeredMapRoute;
@@ -528,6 +540,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                   return _DesktopHeaderMapStatus(zoom: viewState.zoom);
                 },
               ),
+              const SizedBox(width: 6),
+              _DesktopFullscreenButton(service: _desktopWindowService),
             ],
           ),
         ),
@@ -540,6 +554,8 @@ class _GisMapScreenState extends State<GisMapScreen>
       bindings: <ShortcutActivator, VoidCallback>{
         const SingleActivator(LogicalKeyboardKey.escape):
             _cancelDesktopTemporaryMode,
+        const SingleActivator(LogicalKeyboardKey.f11): () =>
+            unawaited(_desktopWindowService.toggleFullScreen()),
       },
       child: Focus(
         autofocus: true,
@@ -664,6 +680,11 @@ class _GisMapScreenState extends State<GisMapScreen>
                       '${_savedMeasurements.where((item) => item.type == SavedMeasurementType.distance).length} distancias',
                   icon: Icons.history,
                   items: _savedMeasurements,
+                  searchFieldKey: const ValueKey(
+                    'desktop-measurements-search-field',
+                  ),
+                  searchHint: 'Buscar medición...',
+                  searchTerms: (measurement) => [measurement.name],
                   emptyMessage: 'No hay mediciones guardadas.',
                   itemTitle: (measurement) => measurement.name,
                   itemSubtitle: (measurement) =>
@@ -712,6 +733,11 @@ class _GisMapScreenState extends State<GisMapScreen>
                   subtitle: '${_personalMarkers.length} guardados',
                   icon: Icons.bookmarks,
                   items: _personalMarkers,
+                  searchFieldKey: const ValueKey(
+                    'desktop-markers-search-field',
+                  ),
+                  searchHint: 'Buscar marcador...',
+                  searchTerms: (marker) => [marker.name, marker.description],
                   emptyMessage: 'No hay marcadores personales.',
                   itemTitle: (marker) => marker.name,
                   itemSubtitle: (marker) => marker.category.label,
@@ -752,14 +778,25 @@ class _GisMapScreenState extends State<GisMapScreen>
                 _DesktopCollectionPanel<FavoriteSoilFeature>(
                   title: 'Favoritos',
                   subtitle: '${_favoriteFeatures.length} suelos guardados',
+                  subtitleBuilder: () =>
+                      '${_favoriteFeatures.length} suelos guardados',
                   icon: AppIcons.star,
-                  items: _favoriteFeatures.values.toList(growable: false),
+                  items: _favoriteFeatures.values,
+                  searchFieldKey: const ValueKey(
+                    'desktop-favorites-search-field',
+                  ),
+                  searchHint: 'Buscar favorito...',
+                  searchTerms: (favorite) => [favorite.dominantSoilSeries],
                   emptyMessage: 'No hay suelos favoritos.',
                   itemTitle: (favorite) => favorite.dominantSoilSeries,
                   itemSubtitle: (favorite) => favorite.unitName,
                   onSelect: _focusFavorite,
                   itemSelected: (favorite) =>
                       favorite.id == _searchSelectedFeature?.id,
+                  leadingKey: (favorite) =>
+                      ValueKey('desktop-remove-favorite-${favorite.id}'),
+                  leadingTooltip: 'Quitar de favoritos',
+                  onLeadingTap: _removeFavoriteFromDesktopPanel,
                   onDismiss: _closeDesktopPanel,
                 ),
             },
@@ -3199,7 +3236,7 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   Future<void> _openFavorites() async {
     final featureId = await Navigator.of(context).push<String>(
-      InstantPopMaterialPageRoute(builder: (_) => const FavoritesScreen()),
+      InstantPopMaterialPageRoute(builder: (_) => const GisFavoritesScreen()),
     );
     if (!mounted || featureId == null) {
       return;
@@ -4392,42 +4429,19 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Future<void> _loadFavorites() async {
-    final SharedPreferences preferences;
     try {
-      preferences = await SharedPreferences.getInstance();
+      final storedFavorites = await _gisFavoritesService.load();
+      if (!mounted) return;
+      setState(() {
+        _favoriteFeatures
+          ..clear()
+          ..addEntries(
+            storedFavorites.map((favorite) => MapEntry(favorite.id, favorite)),
+          );
+      });
     } catch (_) {
       return;
     }
-    final rawFavorites =
-        preferences.getStringList(FavoriteSoilFeature.storageKey) ??
-        const <String>[];
-    final favorites = <String, FavoriteSoilFeature>{};
-
-    for (final rawFavorite in rawFavorites) {
-      try {
-        final decoded = jsonDecode(rawFavorite);
-        if (decoded is! Map<String, dynamic>) {
-          continue;
-        }
-
-        final favorite = FavoriteSoilFeature.fromJson(decoded);
-        if (favorite.id.isNotEmpty) {
-          favorites[favorite.id] = favorite;
-        }
-      } catch (_) {
-        continue;
-      }
-    }
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _favoriteFeatures
-        ..clear()
-        ..addAll(favorites);
-    });
   }
 
   void _toggleFavorite(GisFeature feature, List<GisSoilSeries> series) {
@@ -4445,10 +4459,14 @@ class _GisMapScreenState extends State<GisMapScreen>
     unawaited(_saveFavorites());
   }
 
+  bool _removeFavoriteFromDesktopPanel(FavoriteSoilFeature favorite) {
+    if (_favoriteFeatures.remove(favorite.id) == null) return false;
+    unawaited(_saveFavorites());
+    return true;
+  }
+
   Future<void> _saveFavorites() async {
-    await SyncAwareLocalRepository.instance.saveFavorites(
-      _favoriteFeatures.values,
-    );
+    await _gisFavoritesService.save(_favoriteFeatures.values);
   }
 
   String? _readOptionalPdfIdentifier(GisFeature feature) {
@@ -5682,6 +5700,45 @@ class _DesktopHeaderMapStatus extends StatelessWidget {
   }
 }
 
+class _DesktopFullscreenButton extends StatelessWidget {
+  const _DesktopFullscreenButton({required this.service});
+
+  final DesktopWindowService service;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return DesktopFullscreenStateBuilder(
+      service: service,
+      builder: (context, fullScreen) {
+        return IconButton(
+          tooltip: fullScreen
+              ? 'Salir de pantalla completa'
+              : 'Pantalla completa',
+          onPressed: service.isTransitioning
+              ? null
+              : () => unawaited(service.toggleFullScreen()),
+          icon: Icon(
+            fullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+            size: 21,
+          ),
+          style: IconButton.styleFrom(
+            foregroundColor: colorScheme.primary,
+            backgroundColor: colorScheme.surfaceContainerLow,
+            disabledBackgroundColor: colorScheme.surfaceContainerLow,
+            side: BorderSide(
+              color: colorScheme.outlineVariant.withValues(alpha: 0.42),
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _DesktopHeaderStatusItem extends StatelessWidget {
   const _DesktopHeaderStatusItem({required this.icon, required this.label});
 
@@ -5939,34 +5996,13 @@ class _DesktopSearchPanelState extends State<_DesktopSearchPanel> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
-              key: const ValueKey('desktop-map-search-field'),
+            _DesktopPanelSearchField(
+              fieldKey: const ValueKey('desktop-map-search-field'),
               controller: _controller,
               focusNode: _focusNode,
               autofocus: true,
-              textInputAction: TextInputAction.search,
               onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                hintText: 'Localidad, unidad o serie...',
-                prefixIcon: const Icon(AppIcons.search, size: 20),
-                suffixIcon: _controller.text.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: 'Limpiar búsqueda',
-                        onPressed: () {
-                          _controller.clear();
-                          _focusNode.requestFocus();
-                          setState(() {});
-                        },
-                        icon: const Icon(AppIcons.close, size: 18),
-                      ),
-                filled: true,
-                fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: BorderSide.none,
-                ),
-              ),
+              hintText: 'Localidad, unidad o serie...',
             ),
             const SizedBox(height: 12),
             Expanded(
@@ -5976,20 +6012,80 @@ class _DesktopSearchPanelState extends State<_DesktopSearchPanel> {
                       onSelect: widget.onSelect,
                     )
                   : groupedEntries.isEmpty
-                  ? Center(
-                      child: Text(
-                        'No hay coincidencias.',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    )
+                  ? const _DesktopPanelNoSearchResults()
                   : ListView(
                       padding: EdgeInsets.zero,
                       children: groupedEntries,
                     ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopPanelSearchField extends StatelessWidget {
+  const _DesktopPanelSearchField({
+    required this.fieldKey,
+    required this.controller,
+    required this.onChanged,
+    required this.hintText,
+    this.focusNode,
+    this.autofocus = false,
+  });
+
+  final Key fieldKey;
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final ValueChanged<String> onChanged;
+  final String hintText;
+  final bool autofocus;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      key: fieldKey,
+      controller: controller,
+      focusNode: focusNode,
+      autofocus: autofocus,
+      textInputAction: TextInputAction.search,
+      onChanged: onChanged,
+      decoration: InputDecoration(
+        hintText: hintText,
+        prefixIcon: const Icon(AppIcons.search, size: 20),
+        suffixIcon: controller.text.isEmpty
+            ? null
+            : IconButton(
+                tooltip: 'Limpiar búsqueda',
+                onPressed: () {
+                  controller.clear();
+                  focusNode?.requestFocus();
+                  onChanged('');
+                },
+                icon: const Icon(AppIcons.close, size: 18),
+              ),
+        filled: true,
+        fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide.none,
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopPanelNoSearchResults extends StatelessWidget {
+  const _DesktopPanelNoSearchResults();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Text(
+        'No hay coincidencias.',
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
         ),
       ),
     );
@@ -6176,12 +6272,15 @@ class _DesktopLayersPanel extends StatelessWidget {
   }
 }
 
-class _DesktopCollectionPanel<T> extends StatelessWidget {
+class _DesktopCollectionPanel<T> extends StatefulWidget {
   const _DesktopCollectionPanel({
     required this.title,
     required this.subtitle,
     required this.icon,
     required this.items,
+    required this.searchFieldKey,
+    required this.searchHint,
+    required this.searchTerms,
     required this.emptyMessage,
     required this.itemTitle,
     required this.itemSubtitle,
@@ -6190,14 +6289,21 @@ class _DesktopCollectionPanel<T> extends StatelessWidget {
     this.itemEnabled,
     this.itemSelected,
     this.itemMetaLabel,
+    this.subtitleBuilder,
     this.trailingBuilder,
+    this.leadingKey,
+    this.leadingTooltip,
+    this.onLeadingTap,
     this.headerAction,
   });
 
   final String title;
   final String subtitle;
   final IconData icon;
-  final List<T> items;
+  final Iterable<T> items;
+  final Key searchFieldKey;
+  final String searchHint;
+  final Iterable<String> Function(T item) searchTerms;
   final String emptyMessage;
   final String Function(T item) itemTitle;
   final String Function(T item) itemSubtitle;
@@ -6206,145 +6312,240 @@ class _DesktopCollectionPanel<T> extends StatelessWidget {
   final bool Function(T item)? itemEnabled;
   final bool Function(T item)? itemSelected;
   final String Function(T item)? itemMetaLabel;
+  final String Function()? subtitleBuilder;
   final Widget Function(T item)? trailingBuilder;
+  final Key Function(T item)? leadingKey;
+  final String? leadingTooltip;
+  final bool Function(T item)? onLeadingTap;
   final Widget? headerAction;
 
   @override
+  State<_DesktopCollectionPanel<T>> createState() =>
+      _DesktopCollectionPanelState<T>();
+}
+
+class _DesktopCollectionPanelState<T>
+    extends State<_DesktopCollectionPanel<T>> {
+  final TextEditingController _controller = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final query = _normalizeSearchText(_controller.text);
+    final items = widget.items.toList(growable: false);
+    final filteredItems = query.isEmpty
+        ? items
+        : items
+              .where(
+                (item) => widget
+                    .searchTerms(item)
+                    .map(_normalizeSearchText)
+                    .any((term) => term.contains(query)),
+              )
+              .toList(growable: false);
+
     return _DesktopContextPanel(
-      title: title,
-      subtitle: subtitle,
-      icon: icon,
-      onDismiss: onDismiss,
-      headerAction: headerAction,
-      child: items.isEmpty
-          ? Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      icon,
-                      size: 28,
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      emptyMessage,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : ListView.separated(
-              shrinkWrap: true,
-              physics: const ClampingScrollPhysics(),
-              itemCount: items.length,
-              separatorBuilder: (context, index) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final item = items[index];
-                final enabled = itemEnabled?.call(item) ?? true;
-                final selected = itemSelected?.call(item) ?? false;
-                final colorScheme = Theme.of(context).colorScheme;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Material(
-                    color: selected
-                        ? colorScheme.secondaryContainer
-                        : Colors.transparent,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                      side: selected
-                          ? BorderSide(
-                              color: colorScheme.primary.withValues(
-                                alpha: 0.36,
-                              ),
-                            )
-                          : BorderSide.none,
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: ListTile(
-                      selected: selected,
-                      selectedColor: colorScheme.onSecondaryContainer,
-                      hoverColor: colorScheme.primaryContainer.withValues(
-                        alpha: 0.48,
-                      ),
-                      splashColor: colorScheme.primary.withValues(alpha: 0.12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      minVerticalPadding: 10,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                      ),
-                      leading: Icon(icon, size: 20),
-                      title: Text(
-                        itemTitle(item),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      subtitle: itemMetaLabel == null
-                          ? Text(
-                              itemSubtitle(item),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(
-                                    color: selected
-                                        ? colorScheme.onSecondaryContainer
-                                              .withValues(alpha: 0.78)
-                                        : colorScheme.onSurfaceVariant,
-                                  ),
-                            )
-                          : Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    itemMetaLabel!(item),
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall
-                                        ?.copyWith(
-                                          color: colorScheme.onSurfaceVariant,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                  ),
-                                  const SizedBox(height: 1),
-                                  Text(
-                                    itemSubtitle(item),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context).textTheme.bodySmall
-                                        ?.copyWith(
-                                          color: selected
-                                              ? colorScheme.onSecondaryContainer
-                                                    .withValues(alpha: 0.78)
-                                              : colorScheme.onSurfaceVariant,
-                                        ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                      enabled: enabled,
-                      trailing:
-                          trailingBuilder?.call(item) ??
-                          const Icon(AppIcons.chevronRight, size: 18),
-                      onTap: enabled ? () => onSelect(item) : null,
-                    ),
-                  ),
-                );
-              },
+      title: widget.title,
+      subtitle: query.isEmpty
+          ? widget.subtitleBuilder?.call() ?? widget.subtitle
+          : '${filteredItems.length} resultados',
+      icon: widget.icon,
+      onDismiss: widget.onDismiss,
+      headerAction: widget.headerAction,
+      child: SizedBox(
+        height: math.min(560, MediaQuery.sizeOf(context).height * 0.64),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _DesktopPanelSearchField(
+              fieldKey: widget.searchFieldKey,
+              controller: _controller,
+              focusNode: _focusNode,
+              onChanged: (_) => setState(() {}),
+              hintText: widget.searchHint,
             ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: query.isNotEmpty && filteredItems.isEmpty
+                  ? const _DesktopPanelNoSearchResults()
+                  : items.isEmpty
+                  ? _DesktopCollectionEmptyState(
+                      icon: widget.icon,
+                      message: widget.emptyMessage,
+                    )
+                  : ListView.separated(
+                      padding: EdgeInsets.zero,
+                      physics: const ClampingScrollPhysics(),
+                      itemCount: filteredItems.length,
+                      separatorBuilder: (context, index) =>
+                          const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final item = filteredItems[index];
+                        final enabled = widget.itemEnabled?.call(item) ?? true;
+                        final selected =
+                            widget.itemSelected?.call(item) ?? false;
+                        final colorScheme = Theme.of(context).colorScheme;
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Material(
+                            color: selected
+                                ? colorScheme.secondaryContainer
+                                : Colors.transparent,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              side: selected
+                                  ? BorderSide(
+                                      color: colorScheme.primary.withValues(
+                                        alpha: 0.36,
+                                      ),
+                                    )
+                                  : BorderSide.none,
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: ListTile(
+                              selected: selected,
+                              selectedColor: colorScheme.onSecondaryContainer,
+                              hoverColor: colorScheme.primaryContainer
+                                  .withValues(alpha: 0.48),
+                              splashColor: colorScheme.primary.withValues(
+                                alpha: 0.12,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              minVerticalPadding: 10,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                              ),
+                              leading: widget.onLeadingTap == null
+                                  ? Icon(widget.icon, size: 20)
+                                  : Tooltip(
+                                      message: widget.leadingTooltip ?? '',
+                                      child: InkResponse(
+                                        key: widget.leadingKey?.call(item),
+                                        onTap: () {
+                                          if (widget.onLeadingTap!(item)) {
+                                            setState(() {});
+                                          }
+                                        },
+                                        child: Icon(widget.icon, size: 20),
+                                      ),
+                                    ),
+                              title: Text(
+                                widget.itemTitle(item),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleSmall
+                                    ?.copyWith(fontWeight: FontWeight.w600),
+                              ),
+                              subtitle: widget.itemMetaLabel == null
+                                  ? Text(
+                                      widget.itemSubtitle(item),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: selected
+                                                ? colorScheme
+                                                      .onSecondaryContainer
+                                                      .withValues(alpha: 0.78)
+                                                : colorScheme.onSurfaceVariant,
+                                          ),
+                                    )
+                                  : Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            widget.itemMetaLabel!(item),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .labelSmall
+                                                ?.copyWith(
+                                                  color: colorScheme
+                                                      .onSurfaceVariant,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                          ),
+                                          const SizedBox(height: 1),
+                                          Text(
+                                            widget.itemSubtitle(item),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  color: selected
+                                                      ? colorScheme
+                                                            .onSecondaryContainer
+                                                            .withValues(
+                                                              alpha: 0.78,
+                                                            )
+                                                      : colorScheme
+                                                            .onSurfaceVariant,
+                                                ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                              enabled: enabled,
+                              trailing:
+                                  widget.trailingBuilder?.call(item) ??
+                                  const Icon(AppIcons.chevronRight, size: 18),
+                              onTap: enabled
+                                  ? () => widget.onSelect(item)
+                                  : null,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopCollectionEmptyState extends StatelessWidget {
+  const _DesktopCollectionEmptyState({
+    required this.icon,
+    required this.message,
+  });
+
+  final IconData icon;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 28, color: Theme.of(context).colorScheme.outline),
+          const SizedBox(height: 10),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

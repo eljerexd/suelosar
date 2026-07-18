@@ -29,9 +29,6 @@ class MainActivity : FlutterActivity() {
         )
         flutterEngine.plugins.add(dev.fluttercommunity.plus.share.SharePlusPlugin())
         flutterEngine.plugins.add(io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin())
-        flutterEngine.plugins.add(
-            com.syncfusion.flutter.pdfviewer.SyncfusionFlutterPdfViewerPlugin(),
-        )
         flutterEngine.plugins.add(io.flutter.plugins.urllauncher.UrlLauncherPlugin())
     }
 }

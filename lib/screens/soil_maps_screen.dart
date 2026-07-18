@@ -1,15 +1,13 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/app_icons.dart';
-import '../models/favorite_soil_feature.dart';
+import '../models/pdf_soil_sheet_favorite.dart';
 import '../models/soil_map.dart';
 import '../repositories/soil_map_repository.dart';
-import '../repositories/sync_aware_local_repository.dart';
+import '../services/pdf_soil_sheet_favorites_service.dart';
 import '../utils/app_motion.dart';
 import '../widgets/floating_app_bar_card.dart';
+import '../widgets/responsive_desktop_shell.dart';
 import '../widgets/scrollable_empty_state.dart';
 import 'pdf_viewer_screen.dart';
 
@@ -24,8 +22,10 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
   static const String _missingPdfMessage = 'Carta de suelo no disponible';
 
   final SoilMapRepository _soilMapRepository = const SoilMapRepository();
+  final PdfSoilSheetFavoritesService _favoritesService =
+      PdfSoilSheetFavoritesService();
   late final Future<List<SoilMap>> _soilMapsFuture;
-  List<FavoriteSoilFeature> _favorites = const [];
+  List<PdfSoilSheetFavorite> _favorites = const [];
   String _searchQuery = '';
 
   @override
@@ -51,107 +51,137 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
           const SizedBox(width: 10),
         ],
       ),
-      body: Column(
-        children: [
-          FloatingAppBarCard(
-            padding: EdgeInsets.zero,
-            child: SearchBar(
-              onChanged: _updateSearchQuery,
-              hintText: 'Buscar carta de suelo...',
-              leading: const Icon(AppIcons.search),
-              elevation: const WidgetStatePropertyAll(0),
-              backgroundColor: const WidgetStatePropertyAll(Colors.white),
-              surfaceTintColor: const WidgetStatePropertyAll(
-                Colors.transparent,
-              ),
-              shape: WidgetStatePropertyAll(
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-              ),
-              padding: const WidgetStatePropertyAll(
-                EdgeInsets.symmetric(horizontal: 18),
-              ),
-            ),
-          ),
-          const SizedBox(height: 22),
-          Expanded(
-            child: FutureBuilder<List<SoilMap>>(
-              future: _soilMapsFuture,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState != ConnectionState.done) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-
-                if (snapshot.hasError) {
-                  return const _SoilMapLoadError();
-                }
-
-                final soilMaps = _filterSoilMaps(snapshot.data ?? const []);
-                if (soilMaps.isEmpty) {
-                  return const _EmptySoilMapSearch();
-                }
-
-                final favoriteMaps = soilMaps
-                    .where(_isFavorite)
-                    .toList(growable: false);
-                return CustomScrollView(
-                  slivers: [
-                    const SliverToBoxAdapter(child: SizedBox(height: 4)),
-                    SliverToBoxAdapter(
-                      child: AnimatedSize(
-                        duration: AppMotion.duration(
-                          context,
-                          const Duration(milliseconds: 220),
-                          reduced: const Duration(milliseconds: 60),
+      body: SuelosArResponsivePage(
+        builder: (context, layout) {
+          final maxContentWidth = layout.isPhone
+              ? double.infinity
+              : layout.isTablet
+              ? 820.0
+              : 900.0;
+          return Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxContentWidth),
+              child: Column(
+                children: [
+                  FloatingAppBarCard(
+                    padding: EdgeInsets.zero,
+                    child: SearchBar(
+                      onChanged: _updateSearchQuery,
+                      hintText: 'Buscar carta de suelo...',
+                      leading: const Icon(AppIcons.search),
+                      elevation: const WidgetStatePropertyAll(0),
+                      backgroundColor: const WidgetStatePropertyAll(
+                        Colors.white,
+                      ),
+                      surfaceTintColor: const WidgetStatePropertyAll(
+                        Colors.transparent,
+                      ),
+                      shape: WidgetStatePropertyAll(
+                        RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(24),
                         ),
-                        curve: Curves.easeOutCubic,
-                        alignment: Alignment.topCenter,
-                        child: Column(
-                          children: [
-                            _SectionTitle(
-                              icon: AppIcons.star,
-                              title: 'Favoritos (${favoriteMaps.length})',
+                      ),
+                      padding: const WidgetStatePropertyAll(
+                        EdgeInsets.symmetric(horizontal: 18),
+                      ),
+                    ),
+                  ),
+                  SizedBox(height: layout.isPhone ? 22 : 26),
+                  Expanded(
+                    child: FutureBuilder<List<SoilMap>>(
+                      future: _soilMapsFuture,
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState != ConnectionState.done) {
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        }
+
+                        if (snapshot.hasError) {
+                          return const _SoilMapLoadError();
+                        }
+
+                        final soilMaps = _filterSoilMaps(
+                          snapshot.data ?? const [],
+                        );
+                        if (soilMaps.isEmpty) {
+                          return const _EmptySoilMapSearch();
+                        }
+
+                        final favoriteMaps = soilMaps
+                            .where(_isFavorite)
+                            .toList(growable: false);
+                        return CustomScrollView(
+                          slivers: [
+                            const SliverToBoxAdapter(
+                              child: SizedBox(height: 4),
                             ),
-                            const SizedBox(height: 8),
-                            if (favoriteMaps.isEmpty)
-                              const _EmptyFavorites()
-                            else
-                              ..._buildSoilMapItems(
-                                context,
-                                favoriteMaps,
-                                colorScheme,
+                            SliverToBoxAdapter(
+                              child: AnimatedSize(
+                                duration: AppMotion.duration(
+                                  context,
+                                  const Duration(milliseconds: 220),
+                                  reduced: const Duration(milliseconds: 60),
+                                ),
+                                curve: Curves.easeOutCubic,
+                                alignment: Alignment.topCenter,
+                                child: Column(
+                                  children: [
+                                    _SectionTitle(
+                                      icon: AppIcons.star,
+                                      title:
+                                          'Favoritos (${favoriteMaps.length})',
+                                    ),
+                                    const SizedBox(height: 12),
+                                    if (favoriteMaps.isEmpty)
+                                      const _EmptyFavorites()
+                                    else
+                                      ..._buildSoilMapItems(
+                                        context,
+                                        favoriteMaps,
+                                        colorScheme,
+                                      ),
+                                  ],
+                                ),
                               ),
+                            ),
+                            const SliverToBoxAdapter(
+                              child: SizedBox(height: 32),
+                            ),
+                            const SliverToBoxAdapter(
+                              child: _SectionTitle(
+                                icon: AppIcons.library,
+                                title: 'Todas las cartas',
+                              ),
+                            ),
+                            const SliverToBoxAdapter(
+                              child: SizedBox(height: 12),
+                            ),
+                            SliverList.separated(
+                              itemCount: soilMaps.length,
+                              itemBuilder: (context, index) =>
+                                  _buildSoilMapItem(
+                                    context,
+                                    soilMaps[index],
+                                    colorScheme,
+                                  ),
+                              separatorBuilder: (context, index) =>
+                                  const SizedBox(height: 10),
+                            ),
+                            const SliverToBoxAdapter(
+                              child: SizedBox(height: 24),
+                            ),
                           ],
-                        ),
-                      ),
+                        );
+                      },
                     ),
-                    const SliverToBoxAdapter(child: SizedBox(height: 30)),
-                    const SliverToBoxAdapter(
-                      child: _SectionTitle(
-                        icon: AppIcons.library,
-                        title: 'Todas las cartas',
-                      ),
-                    ),
-                    const SliverToBoxAdapter(child: SizedBox(height: 8)),
-                    SliverList.separated(
-                      itemCount: soilMaps.length,
-                      itemBuilder: (context, index) => _buildSoilMapItem(
-                        context,
-                        soilMaps[index],
-                        colorScheme,
-                      ),
-                      separatorBuilder: (context, index) => Divider(
-                        height: 1,
-                        thickness: 0.5,
-                        color: colorScheme.outlineVariant,
-                      ),
-                    ),
-                    const SliverToBoxAdapter(child: SizedBox(height: 20)),
-                  ],
-                );
-              },
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -164,8 +194,7 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
     return [
       for (var index = 0; index < soilMaps.length; index++) ...[
         _buildSoilMapItem(context, soilMaps[index], colorScheme),
-        if (index != soilMaps.length - 1)
-          Divider(height: 1, thickness: 0.5, color: colorScheme.outlineVariant),
+        if (index != soilMaps.length - 1) const SizedBox(height: 10),
       ],
     ];
   }
@@ -176,105 +205,97 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
     ColorScheme colorScheme,
   ) {
     final isFavorite = _isFavorite(soilMap);
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      mouseCursor: SystemMouseCursors.click,
-      hoverColor: colorScheme.surfaceContainerHigh,
-      splashColor: colorScheme.primary.withValues(alpha: 0.08),
-      onTap: () => _openSoilMapPdf(context, soilMap),
-      title: Text(
-        soilMap.name,
-        style: Theme.of(
-          context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            tooltip: isFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos',
-            onPressed: () => _toggleFavorite(soilMap),
-            icon: AnimatedSwitcher(
-              duration: AppMotion.duration(
-                context,
-                const Duration(milliseconds: 220),
-                reduced: const Duration(milliseconds: 60),
-              ),
-              switchInCurve: Curves.easeOutBack,
-              switchOutCurve: Curves.easeIn,
-              transitionBuilder: (child, animation) =>
-                  ScaleTransition(scale: animation, child: child),
-              child: Icon(
-                AppIcons.star,
-                key: ValueKey(isFavorite),
-                color: isFavorite
-                    ? colorScheme.primary
-                    : colorScheme.onSurfaceVariant,
-                fill: isFavorite ? 1 : 0,
+    return Material(
+      color: colorScheme.surface,
+      elevation: 1,
+      shadowColor: colorScheme.shadow.withValues(alpha: 0.1),
+      surfaceTintColor: Colors.transparent,
+      borderRadius: BorderRadius.circular(18),
+      clipBehavior: Clip.antiAlias,
+      child: ListTile(
+        minTileHeight: 68,
+        contentPadding: const EdgeInsets.fromLTRB(14, 6, 8, 6),
+        mouseCursor: SystemMouseCursors.click,
+        hoverColor: colorScheme.surfaceContainerHigh,
+        splashColor: colorScheme.primary.withValues(alpha: 0.08),
+        onTap: () => _openSoilMapPdf(context, soilMap),
+        leading: Container(
+          width: 42,
+          height: 42,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: colorScheme.primaryContainer.withValues(alpha: 0.55),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Icon(AppIcons.pdf, size: 22, color: colorScheme.primary),
+        ),
+        title: Text(
+          soilMap.name,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: isFavorite
+                  ? 'Quitar de favoritos'
+                  : 'Agregar a favoritos',
+              onPressed: () => _toggleFavorite(soilMap),
+              icon: AnimatedSwitcher(
+                duration: AppMotion.duration(
+                  context,
+                  const Duration(milliseconds: 220),
+                  reduced: const Duration(milliseconds: 60),
+                ),
+                switchInCurve: Curves.easeOutBack,
+                switchOutCurve: Curves.easeIn,
+                transitionBuilder: (child, animation) =>
+                    ScaleTransition(scale: animation, child: child),
+                child: Icon(
+                  AppIcons.star,
+                  key: ValueKey(isFavorite),
+                  color: isFavorite
+                      ? colorScheme.primary
+                      : colorScheme.onSurfaceVariant,
+                  fill: isFavorite ? 1 : 0,
+                ),
               ),
             ),
-          ),
-          Icon(
-            AppIcons.chevronRight,
-            size: 19,
-            color: colorScheme.onSurfaceVariant,
-          ),
-        ],
+            Icon(
+              AppIcons.chevronRight,
+              size: 19,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ],
+        ),
       ),
     );
   }
 
   bool _isFavorite(SoilMap soilMap) {
-    return _favorites.any((favorite) {
-      final pdf = favorite.pdfIdentifier?.trim();
-      return pdf == soilMap.pdf ||
-          favorite.unitName == soilMap.name ||
-          favorite.dominantSoilSeries == soilMap.name;
-    });
+    return _favorites.any(
+      (favorite) => favorite.pdfIdentifier.trim() == soilMap.pdf.trim(),
+    );
   }
 
   Future<void> _loadFavorites() async {
-    final preferences = await SharedPreferences.getInstance();
-    final encoded =
-        preferences.getStringList(FavoriteSoilFeature.storageKey) ?? const [];
-    final favorites = <FavoriteSoilFeature>[];
-    for (final value in encoded) {
-      try {
-        final decoded = jsonDecode(value);
-        if (decoded is Map<String, dynamic>) {
-          favorites.add(FavoriteSoilFeature.fromJson(decoded));
-        }
-      } on FormatException {
-        // Keep valid local favorites when one entry is malformed.
-      }
-    }
+    final favorites = await _favoritesService.load();
     if (mounted) {
       setState(() => _favorites = favorites);
     }
   }
 
   Future<void> _toggleFavorite(SoilMap soilMap) async {
-    final updated = List<FavoriteSoilFeature>.of(_favorites);
-    if (_isFavorite(soilMap)) {
-      updated.removeWhere((favorite) {
-        final pdf = favorite.pdfIdentifier?.trim();
-        return pdf == soilMap.pdf ||
-            favorite.unitName == soilMap.name ||
-            favorite.dominantSoilSeries == soilMap.name;
-      });
-    } else {
-      updated.add(
-        FavoriteSoilFeature(
-          id: 'soil-map:${soilMap.pdf}',
-          unitName: soilMap.name,
-          unitSymbol: '',
-          soilSeries: [soilMap.name],
-          pdfIdentifier: soilMap.pdf,
-        ),
-      );
-    }
-    setState(() => _favorites = updated);
-    await SyncAwareLocalRepository.instance.saveFavorites(updated);
+    final updated = await _favoritesService.toggle(
+      _favorites,
+      title: soilMap.name,
+      pdfIdentifier: soilMap.pdf,
+    );
+    if (mounted) setState(() => _favorites = updated);
   }
 
   void _updateSearchQuery(String value) {
@@ -316,12 +337,27 @@ class _SectionTitle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       child: Row(
         children: [
           if (icon != null) ...[
-            Icon(icon, size: 18, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(width: 8),
+            Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Theme.of(
+                  context,
+                ).colorScheme.primaryContainer.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                icon,
+                size: 17,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+            const SizedBox(width: 10),
           ],
           Text(
             title,

@@ -8,9 +8,11 @@ import '../constants/app_icons.dart';
 import '../pairing/device_pairing_models.dart';
 import '../services/connectivity_service.dart';
 import '../services/device_pairing_service.dart';
+import '../services/desktop_window_service.dart';
 import '../services/synchronization_service.dart';
 import '../sync/sync_status.dart';
 import '../utils/app_motion.dart';
+import '../widgets/desktop_fullscreen_state_builder.dart';
 import '../widgets/responsive_desktop_shell.dart';
 import 'synchronization_screen.dart';
 
@@ -21,16 +23,27 @@ class HomeScreen extends StatelessWidget {
     this.deviceLinkedStatusLoader,
     this.synchronizationService,
     this.devicePairingService,
+    this.desktopWindowService,
     super.key,
   });
 
   final DeviceLinkedStatusLoader? deviceLinkedStatusLoader;
   final SynchronizationService? synchronizationService;
   final DevicePairingService? devicePairingService;
+  final DesktopWindowService? desktopWindowService;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final desktopLayout = isSuelosArDesktopPlatform(context);
+    final synchronizationStatus = RepaintBoundary(
+      child: _HomeSynchronizationStatus(
+        key: const ValueKey('home-synchronization-status'),
+        deviceLinkedStatusLoader: deviceLinkedStatusLoader,
+        service: synchronizationService,
+        pairingService: devicePairingService,
+      ),
+    );
     return Scaffold(
       backgroundColor: Color.alphaBlend(
         colorScheme.primary.withValues(alpha: 0.025),
@@ -163,18 +176,97 @@ class HomeScreen extends StatelessWidget {
             Positioned(
               top: 8,
               right: 20,
-              child: RepaintBoundary(
-                child: _HomeSynchronizationStatus(
-                  key: const ValueKey('home-synchronization-status'),
-                  deviceLinkedStatusLoader: deviceLinkedStatusLoader,
-                  service: synchronizationService,
-                  pairingService: devicePairingService,
-                ),
-              ),
+              child: desktopLayout
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        synchronizationStatus,
+                        const SizedBox(width: 8),
+                        _HomeDesktopWindowControls(
+                          service:
+                              desktopWindowService ??
+                              DesktopWindowService.instance,
+                        ),
+                      ],
+                    )
+                  : synchronizationStatus,
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _HomeDesktopWindowControls extends StatelessWidget {
+  const _HomeDesktopWindowControls({required this.service});
+
+  final DesktopWindowService service;
+
+  Future<void> _confirmExit(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Salir de SuelosAR'),
+        content: const Text('¿Desea cerrar SuelosAR?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Salir'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await service.closeWindow();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final buttonStyle = IconButton.styleFrom(
+      foregroundColor: colorScheme.onSurfaceVariant,
+      backgroundColor: colorScheme.surfaceContainerLow,
+      disabledBackgroundColor: colorScheme.surfaceContainerLow,
+      minimumSize: const Size.square(40),
+      maximumSize: const Size.square(40),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    );
+    return DesktopFullscreenStateBuilder(
+      service: service,
+      builder: (context, isFullScreen) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              key: const ValueKey('home-desktop-fullscreen'),
+              tooltip: isFullScreen
+                  ? 'Salir de pantalla completa (F11)'
+                  : 'Pantalla completa (F11)',
+              onPressed: service.isTransitioning
+                  ? null
+                  : () => unawaited(service.toggleFullScreen()),
+              style: buttonStyle,
+              iconSize: 20,
+              icon: Icon(
+                isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+              ),
+            ),
+            const SizedBox(width: 4),
+            IconButton(
+              key: const ValueKey('home-desktop-exit'),
+              tooltip: 'Cerrar SuelosAR',
+              onPressed: () => _confirmExit(context),
+              style: buttonStyle,
+              iconSize: 19,
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        );
+      },
     );
   }
 }

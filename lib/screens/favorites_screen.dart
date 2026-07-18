@@ -1,21 +1,16 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/app_icons.dart';
-import '../models/favorite_soil_feature.dart';
-import '../repositories/sync_aware_local_repository.dart';
+import '../models/pdf_soil_sheet_favorite.dart';
 import '../repositories/pdf_series_repository.dart';
+import '../services/pdf_soil_sheet_favorites_service.dart';
 import 'pdf_viewer_screen.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/scrollable_empty_state.dart';
 
 class FavoritesScreen extends StatefulWidget {
-  const FavoritesScreen({this.openPdfOnTap = false, super.key});
-
-  final bool openPdfOnTap;
+  const FavoritesScreen({super.key});
 
   @override
   State<FavoritesScreen> createState() => _FavoritesScreenState();
@@ -23,7 +18,9 @@ class FavoritesScreen extends StatefulWidget {
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
   final PdfSeriesRepository _pdfSeriesRepository = PdfSeriesRepository();
-  List<FavoriteSoilFeature>? _favorites;
+  final PdfSoilSheetFavoritesService _favoritesService =
+      PdfSoilSheetFavoritesService();
+  List<PdfSoilSheetFavorite>? _favorites;
   String _searchQuery = '';
 
   @override
@@ -82,22 +79,18 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         final favorite = filteredFavorites[index];
         return ListTile(
           title: Text(
-            favorite.unitName.isEmpty ? 'Unidad sin nombre' : favorite.unitName,
+            favorite.title.isEmpty ? 'Carta sin nombre' : favorite.title,
           ),
-          subtitle: Text(
-            'Símbolo: ${favorite.unitSymbol.isEmpty ? 'Sin datos' : favorite.unitSymbol}\n'
-            'Serie principal: ${favorite.dominantSoilSeries}',
-          ),
+          subtitle: Text('Memoria descriptiva\n${favorite.pdfIdentifier}'),
           isThreeLine: true,
-          onTap: () {
-            if (widget.openPdfOnTap) {
-              _openFavoritePdf(favorite);
-            } else {
-              Navigator.of(context).pop(favorite.id);
-            }
-          },
+          onTap: () => _openFavoritePdf(favorite),
           trailing: IconButton(
-            icon: const Icon(AppIcons.delete),
+            key: ValueKey('remove-favorite-${favorite.id}'),
+            icon: Icon(
+              AppIcons.star,
+              fill: 1,
+              color: Theme.of(context).colorScheme.primary,
+            ),
             tooltip: 'Quitar de favoritos',
             onPressed: () => _removeFavorite(favorite),
           ),
@@ -106,15 +99,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     );
   }
 
-  Future<void> _openFavoritePdf(FavoriteSoilFeature favorite) async {
-    final savedIdentifier = favorite.pdfIdentifier?.trim() ?? '';
+  Future<void> _openFavoritePdf(PdfSoilSheetFavorite favorite) async {
+    final savedIdentifier = favorite.pdfIdentifier.trim();
     final assetPath = savedIdentifier.isNotEmpty
         ? savedIdentifier.startsWith('assets/')
               ? savedIdentifier
               : 'assets/pdfs/$savedIdentifier'
-        : await _pdfSeriesRepository.findPdfForSeries(
-            favorite.dominantSoilSeries,
-          );
+        : await _pdfSeriesRepository.findPdfForSeries(favorite.title);
     if (!mounted) return;
     if (assetPath == null) {
       AppNotification.show(
@@ -126,26 +117,25 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     }
     await openLocalPdfViewer(
       context,
-      title: favorite.dominantSoilSeries,
+      title: favorite.title,
       assetPath: assetPath,
       unavailableMessage: 'Memoria descriptiva no disponible.',
     );
   }
 
-  List<FavoriteSoilFeature> _filterFavorites(
-    List<FavoriteSoilFeature> favorites,
+  List<PdfSoilSheetFavorite> _filterFavorites(
+    List<PdfSoilSheetFavorite> favorites,
   ) {
     final query = _normalizeSearchText(_searchQuery.trim());
     if (query.isEmpty) {
       return favorites;
     }
 
-    final matches = <({FavoriteSoilFeature favorite, int rank})>[];
+    final matches = <({PdfSoilSheetFavorite favorite, int rank})>[];
     for (final favorite in favorites) {
       final fields = <String>[
-        favorite.unitSymbol,
-        favorite.unitName,
-        favorite.dominantSoilSeries,
+        favorite.title,
+        favorite.pdfIdentifier,
       ].map(_normalizeSearchText);
       var bestRank = 3;
       for (final field in fields) {
@@ -170,42 +160,25 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       if (rankComparison != 0) {
         return rankComparison;
       }
-      return first.favorite.unitName.compareTo(second.favorite.unitName);
+      return first.favorite.title.compareTo(second.favorite.title);
     });
     return matches.map((match) => match.favorite).toList(growable: false);
   }
 
   Future<void> _loadFavorites() async {
-    final preferences = await SharedPreferences.getInstance();
-    final favorites = <FavoriteSoilFeature>[];
-    for (final rawFavorite
-        in preferences.getStringList(FavoriteSoilFeature.storageKey) ??
-            const <String>[]) {
-      try {
-        final decoded = jsonDecode(rawFavorite);
-        if (decoded is Map<String, dynamic>) {
-          final favorite = FavoriteSoilFeature.fromJson(decoded);
-          if (favorite.id.isNotEmpty) {
-            favorites.add(favorite);
-          }
-        }
-      } catch (_) {
-        // Ignore malformed records while preserving valid favorites.
-      }
-    }
+    final favorites = await _favoritesService.load();
     if (mounted) {
       setState(() => _favorites = favorites);
     }
   }
 
-  Future<void> _removeFavorite(FavoriteSoilFeature favorite) async {
+  Future<void> _removeFavorite(PdfSoilSheetFavorite favorite) async {
     final favorites = _favorites;
     if (favorites == null) {
       return;
     }
-    setState(() => favorites.removeWhere((item) => item.id == favorite.id));
-
-    await SyncAwareLocalRepository.instance.saveFavorites(favorites);
+    final updated = await _favoritesService.remove(favorites, favorite);
+    if (mounted) setState(() => _favorites = updated);
   }
 }
 
@@ -263,7 +236,7 @@ class _EmptyFavorites extends StatelessWidget {
             Text('Todavía no hay favoritos', style: textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
-              'Guardá unidades desde el mapa para encontrarlas acá.',
+              'Guardá cartas de suelo para encontrarlas acá.',
               textAlign: TextAlign.center,
               style: textTheme.bodyMedium,
             ),
