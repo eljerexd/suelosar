@@ -16,12 +16,20 @@ class GisFavoritesScreen extends StatefulWidget {
 class _GisFavoritesScreenState extends State<GisFavoritesScreen> {
   final GisFavoritesService _favoritesService = GisFavoritesService();
   List<FavoriteSoilFeature>? _favorites;
-  String _searchQuery = '';
+  final ValueNotifier<String> _searchQuery = ValueNotifier('');
+  final Map<String, ({String name, String symbol, String series})>
+  _searchIndex = {};
 
   @override
   void initState() {
     super.initState();
     _loadFavorites();
+  }
+
+  @override
+  void dispose() {
+    _searchQuery.dispose();
+    super.dispose();
   }
 
   @override
@@ -43,21 +51,26 @@ class _GisFavoritesScreenState extends State<GisFavoritesScreen> {
           SearchBar(
             hintText: 'Buscar favorito...',
             leading: const Icon(AppIcons.search),
-            onChanged: (value) => setState(() => _searchQuery = value),
+            onChanged: (value) => _searchQuery.value = value,
           ),
           const SizedBox(height: 12),
-          Expanded(child: _buildContent()),
+          Expanded(
+            child: ValueListenableBuilder<String>(
+              valueListenable: _searchQuery,
+              builder: (context, query, _) => _buildContent(query),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildContent() {
+  Widget _buildContent(String query) {
     final favorites = _favorites;
     if (favorites == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    final filtered = _filterFavorites(favorites);
+    final filtered = _filterFavorites(favorites, query);
     if (filtered.isEmpty) {
       return ScrollableEmptyState(
         child: Padding(
@@ -85,6 +98,7 @@ class _GisFavoritesScreenState extends State<GisFavoritesScreen> {
     }
 
     return ListView.separated(
+      addAutomaticKeepAlives: false,
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: filtered.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
@@ -117,16 +131,15 @@ class _GisFavoritesScreenState extends State<GisFavoritesScreen> {
 
   List<FavoriteSoilFeature> _filterFavorites(
     List<FavoriteSoilFeature> favorites,
+    String searchQuery,
   ) {
-    final query = _normalize(_searchQuery.trim());
+    final query = _normalize(searchQuery.trim());
     if (query.isEmpty) return favorites;
     final matches = <({FavoriteSoilFeature favorite, int rank})>[];
     for (final favorite in favorites) {
-      final fields = <String>[
-        favorite.unitName,
-        favorite.unitSymbol,
-        favorite.dominantSoilSeries,
-      ].map(_normalize);
+      final indexed = _searchIndex[favorite.id];
+      if (indexed == null) continue;
+      final fields = [indexed.name, indexed.symbol, indexed.series];
       var bestRank = 3;
       for (final field in fields) {
         final rank = field == query
@@ -151,15 +164,35 @@ class _GisFavoritesScreenState extends State<GisFavoritesScreen> {
 
   Future<void> _loadFavorites() async {
     final favorites = await _favoritesService.load();
-    if (mounted) setState(() => _favorites = favorites);
+    if (mounted) {
+      _rebuildSearchIndex(favorites);
+      setState(() => _favorites = favorites);
+    }
   }
 
   Future<void> _removeFavorite(FavoriteSoilFeature favorite) async {
     final favorites = _favorites;
     if (favorites == null) return;
     final updated = favorites.where((item) => item.id != favorite.id).toList();
-    setState(() => _favorites = updated);
+    setState(() {
+      _favorites = updated;
+      _searchIndex.remove(favorite.id);
+    });
     await _favoritesService.save(updated);
+  }
+
+  void _rebuildSearchIndex(List<FavoriteSoilFeature> favorites) {
+    _searchIndex
+      ..clear()
+      ..addEntries(
+        favorites.map(
+          (favorite) => MapEntry(favorite.id, (
+            name: _normalize(favorite.unitName),
+            symbol: _normalize(favorite.unitSymbol),
+            series: _normalize(favorite.dominantSoilSeries),
+          )),
+        ),
+      );
   }
 }
 

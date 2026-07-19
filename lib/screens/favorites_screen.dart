@@ -21,12 +21,19 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   final PdfSoilSheetFavoritesService _favoritesService =
       PdfSoilSheetFavoritesService();
   List<PdfSoilSheetFavorite>? _favorites;
-  String _searchQuery = '';
+  final ValueNotifier<String> _searchQuery = ValueNotifier('');
+  final Map<String, ({String title, String pdfIdentifier})> _searchIndex = {};
 
   @override
   void initState() {
     super.initState();
     _loadFavorites();
+  }
+
+  @override
+  void dispose() {
+    _searchQuery.dispose();
+    super.dispose();
   }
 
   @override
@@ -48,16 +55,21 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           SearchBar(
             hintText: 'Buscar favorito...',
             leading: const Icon(AppIcons.search),
-            onChanged: (value) => setState(() => _searchQuery = value),
+            onChanged: (value) => _searchQuery.value = value,
           ),
           const SizedBox(height: 12),
-          Expanded(child: _buildFavoritesContent()),
+          Expanded(
+            child: ValueListenableBuilder<String>(
+              valueListenable: _searchQuery,
+              builder: (context, query, _) => _buildFavoritesContent(query),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildFavoritesContent() {
+  Widget _buildFavoritesContent(String query) {
     final favorites = _favorites;
     if (favorites == null) {
       return const Center(child: CircularProgressIndicator());
@@ -66,12 +78,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       return const _EmptyFavorites();
     }
 
-    final filteredFavorites = _filterFavorites(favorites);
+    final filteredFavorites = _filterFavorites(favorites, query);
     if (filteredFavorites.isEmpty) {
       return const _NoFavoriteSearchResults();
     }
 
     return ListView.separated(
+      addAutomaticKeepAlives: false,
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: filteredFavorites.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
@@ -125,18 +138,18 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
 
   List<PdfSoilSheetFavorite> _filterFavorites(
     List<PdfSoilSheetFavorite> favorites,
+    String searchQuery,
   ) {
-    final query = _normalizeSearchText(_searchQuery.trim());
+    final query = _normalizeSearchText(searchQuery.trim());
     if (query.isEmpty) {
       return favorites;
     }
 
     final matches = <({PdfSoilSheetFavorite favorite, int rank})>[];
     for (final favorite in favorites) {
-      final fields = <String>[
-        favorite.title,
-        favorite.pdfIdentifier,
-      ].map(_normalizeSearchText);
+      final indexed = _searchIndex[favorite.id];
+      if (indexed == null) continue;
+      final fields = [indexed.title, indexed.pdfIdentifier];
       var bestRank = 3;
       for (final field in fields) {
         final rank = field == query
@@ -168,6 +181,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Future<void> _loadFavorites() async {
     final favorites = await _favoritesService.load();
     if (mounted) {
+      _rebuildSearchIndex(favorites);
       setState(() => _favorites = favorites);
     }
   }
@@ -178,7 +192,25 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       return;
     }
     final updated = await _favoritesService.remove(favorites, favorite);
-    if (mounted) setState(() => _favorites = updated);
+    if (mounted) {
+      setState(() {
+        _favorites = updated;
+        _searchIndex.remove(favorite.id);
+      });
+    }
+  }
+
+  void _rebuildSearchIndex(List<PdfSoilSheetFavorite> favorites) {
+    _searchIndex
+      ..clear()
+      ..addEntries(
+        favorites.map(
+          (favorite) => MapEntry(favorite.id, (
+            title: _normalizeSearchText(favorite.title),
+            pdfIdentifier: _normalizeSearchText(favorite.pdfIdentifier),
+          )),
+        ),
+      );
   }
 }
 

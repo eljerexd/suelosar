@@ -222,6 +222,12 @@ class _GisMapScreenState extends State<GisMapScreen>
   int get renderedTileCacheSize => _renderedTileCache.length;
 
   @visibleForTesting
+  int get visibleTileCount => _visibleTileCoordinates.length;
+
+  @visibleForTesting
+  int get prefetchedTileCount => _prefetchedTileCoordinates.length;
+
+  @visibleForTesting
   int get maxRenderedTileCacheEntries => _maxRenderedTileCacheEntries;
 
   @visibleForTesting

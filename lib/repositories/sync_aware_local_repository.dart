@@ -58,6 +58,7 @@ class SyncAwareLocalRepository {
       storageKey,
       nextRecords.map(jsonEncode).toList(growable: false),
     );
+    final changes = <SyncLocalChange>[];
     for (final entry in next.entries) {
       final previousRecord = previous[entry.key];
       final syncPayload = SyncPayloadPolicy.forUpload(entityType, entry.value);
@@ -73,8 +74,8 @@ class SyncAwareLocalRepository {
               )) {
         continue;
       }
-      unawaited(
-        _recordInBackground(
+      changes.add(
+        SyncLocalChange(
           entityType: entityType,
           operationType: previousRecord == null
               ? SyncOperationType.create
@@ -93,8 +94,8 @@ class SyncAwareLocalRepository {
         ..['updatedAt'] = deletedAt.toIso8601String()
         ..['deletedAt'] = deletedAt.toIso8601String()
         ..['syncState'] = SyncState.pendingUpload.name;
-      unawaited(
-        _recordInBackground(
+      changes.add(
+        SyncLocalChange(
           entityType: entityType,
           operationType: SyncOperationType.delete,
           uuid: entry.key,
@@ -102,25 +103,16 @@ class SyncAwareLocalRepository {
         ),
       );
     }
+    if (changes.isNotEmpty) unawaited(_recordInBackground(changes));
   }
 
-  Future<void> _recordInBackground({
-    required SyncEntityType entityType,
-    required SyncOperationType operationType,
-    required String uuid,
-    required Map<String, Object?> payload,
-  }) async {
+  Future<void> _recordInBackground(List<SyncLocalChange> changes) async {
     try {
-      await _engine.recordLocalChange(
-        entityType: entityType,
-        operationType: operationType,
-        uuid: uuid,
-        payload: payload,
-      );
+      await _engine.recordLocalChanges(changes);
     } catch (error) {
       _logger.log('Local change enqueue failed', {
-        'entityType': entityType.name,
-        'uuid': uuid,
+        'entityTypes': changes.map((change) => change.entityType.name).toSet(),
+        'count': changes.length,
         'error': error.toString(),
       });
     }

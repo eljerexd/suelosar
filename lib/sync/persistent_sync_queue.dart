@@ -20,6 +20,12 @@ class PersistentSyncQueue {
   Future<void> enqueue(SyncOperation operation) =>
       _write((operations) => operations..add(operation));
 
+  Future<void> enqueueAll(Iterable<SyncOperation> newOperations) {
+    final additions = newOperations.toList(growable: false);
+    if (additions.isEmpty) return Future<void>.value();
+    return _write((operations) => operations..addAll(additions));
+  }
+
   Future<void> cancel(String operationId) => _write(
     (operations) =>
         operations

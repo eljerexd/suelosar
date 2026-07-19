@@ -23,13 +23,20 @@ class MeasurementsScreen extends StatefulWidget {
 
 class _MeasurementsScreenState extends State<MeasurementsScreen> {
   List<SavedMeasurement>? _measurements;
-  String _searchQuery = '';
+  final ValueNotifier<String> _searchQuery = ValueNotifier('');
+  final Map<String, String> _searchNames = {};
   _MeasurementFilter _selectedFilter = _MeasurementFilter.all;
 
   @override
   void initState() {
     super.initState();
     _loadMeasurements();
+  }
+
+  @override
+  void dispose() {
+    _searchQuery.dispose();
+    super.dispose();
   }
 
   @override
@@ -52,7 +59,7 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
           FloatingAppBarCard(
             padding: EdgeInsets.zero,
             child: SearchBar(
-              onChanged: (value) => setState(() => _searchQuery = value),
+              onChanged: (value) => _searchQuery.value = value,
               hintText: 'Buscar medición...',
               leading: const Icon(AppIcons.search),
               elevation: const WidgetStatePropertyAll(0),
@@ -71,23 +78,28 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
           const SizedBox(height: 16),
           _buildFilterToolbar(),
           const SizedBox(height: 18),
-          Expanded(child: _buildContent()),
+          Expanded(
+            child: ValueListenableBuilder<String>(
+              valueListenable: _searchQuery,
+              builder: (context, query, _) => _buildContent(query),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildContent() {
+  Widget _buildContent(String query) {
     final measurements = _measurements;
     if (measurements == null) {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final filteredMeasurements = _filterMeasurements(measurements);
+    final filteredMeasurements = _filterMeasurements(measurements, query);
     if (filteredMeasurements.isEmpty) {
       return _EmptyMeasurements(
         filter: _selectedFilter,
-        isSearchResult: _searchQuery.trim().isNotEmpty,
+        isSearchResult: query.trim().isNotEmpty,
       );
     }
 
@@ -97,6 +109,7 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 760),
           child: ListView.separated(
+            addAutomaticKeepAlives: false,
             padding: const EdgeInsets.fromLTRB(0, 4, 0, 20),
             itemCount: filteredMeasurements.length,
             separatorBuilder: (_, _) => const SizedBox(height: 10),
@@ -188,8 +201,9 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
 
   List<SavedMeasurement> _filterMeasurements(
     List<SavedMeasurement> measurements,
+    String searchQuery,
   ) {
-    final query = _normalize(_searchQuery.trim());
+    final query = _normalize(searchQuery.trim());
     return measurements
         .where((measurement) {
           final matchesType = switch (_selectedFilter) {
@@ -200,7 +214,9 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
               measurement.type == SavedMeasurementType.distance,
           };
           return matchesType &&
-              (query.isEmpty || _normalize(measurement.name).contains(query));
+              (query.isEmpty ||
+                  (_searchNames[measurement.id] ?? _normalize(measurement.name))
+                      .contains(query));
         })
         .toList(growable: false);
   }
@@ -238,7 +254,10 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
         // Keep valid measurements available if one local record is malformed.
       }
     }
-    if (mounted) setState(() => _measurements = measurements);
+    if (mounted) {
+      _rebuildSearchNames(measurements);
+      setState(() => _measurements = measurements);
+    }
   }
 
   Future<void> _renameMeasurement(SavedMeasurement measurement) async {
@@ -273,7 +292,11 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
       (item) => item.id == measurement.id,
     );
     if (index == -1) return;
-    setState(() => _measurements![index] = measurement.copyWith(name: name));
+    setState(() {
+      final updated = measurement.copyWith(name: name);
+      _measurements![index] = updated;
+      _searchNames[updated.id] = _normalize(updated.name);
+    });
     await _persistMeasurements();
   }
 
@@ -284,9 +307,10 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
       message: 'Esta acción elimina la medición permanentemente.',
     );
     if (!mounted || !confirmed) return;
-    setState(
-      () => _measurements!.removeWhere((item) => item.id == measurement.id),
-    );
+    setState(() {
+      _measurements!.removeWhere((item) => item.id == measurement.id);
+      _searchNames.remove(measurement.id);
+    });
     await _persistMeasurements();
   }
 
@@ -363,6 +387,17 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
 
   Future<void> _persistMeasurements() async {
     await SyncAwareLocalRepository.instance.saveMeasurements(_measurements!);
+  }
+
+  void _rebuildSearchNames(List<SavedMeasurement> measurements) {
+    _searchNames
+      ..clear()
+      ..addEntries(
+        measurements.map(
+          (measurement) =>
+              MapEntry(measurement.id, _normalize(measurement.name)),
+        ),
+      );
   }
 
   String _formatDistance(double meters) {

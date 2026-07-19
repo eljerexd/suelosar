@@ -147,6 +147,7 @@ class InitialHistorySync {
             .add(operation);
       }
 
+      final uploads = <SyncLocalChange>[];
       for (final record in eligible) {
         final key = _entityKey(record.entityType, record.uuid);
         final remote = remoteByEntity[key];
@@ -172,13 +173,16 @@ class InitialHistorySync {
         for (final operation in existing) {
           await engine.cancel(operation.operationId);
         }
-        await engine.recordLocalChange(
-          entityType: record.entityType,
-          operationType: SyncOperationType.create,
-          uuid: record.uuid,
-          payload: record.payload,
+        uploads.add(
+          SyncLocalChange(
+            entityType: record.entityType,
+            operationType: SyncOperationType.create,
+            uuid: record.uuid,
+            payload: record.payload,
+          ),
         );
       }
+      await engine.recordLocalChanges(uploads);
 
       _publishProgress(
         _pendingEntityKeys.isEmpty

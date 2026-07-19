@@ -938,6 +938,18 @@ class _ModuleCardState extends State<_ModuleCard> {
       context,
       const Duration(milliseconds: 180),
     );
+    final cardContent = InkWell(
+      onTap: widget.onTap,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: cardHeight),
+        child: Padding(
+          padding: widget.primary
+              ? const EdgeInsets.symmetric(horizontal: 20, vertical: 16)
+              : const EdgeInsets.fromLTRB(20, 12, 16, 12),
+          child: _buildCardContent(context, colorScheme),
+        ),
+      ),
+    );
     return Semantics(
       button: true,
       child: MouseRegion(
@@ -971,23 +983,10 @@ class _ModuleCardState extends State<_ModuleCard> {
                       : BorderSide.none,
                 ),
                 clipBehavior: Clip.antiAlias,
-                child: InkWell(
-                  onTap: widget.onTap,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(minHeight: cardHeight),
-                    child: Padding(
-                      padding: widget.primary
-                          ? const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 16,
-                            )
-                          : const EdgeInsets.fromLTRB(20, 12, 16, 12),
-                      child: _buildCardContent(context, colorScheme),
-                    ),
-                  ),
-                ),
+                child: child,
               );
             },
+            child: cardContent,
           ),
         ),
       ),

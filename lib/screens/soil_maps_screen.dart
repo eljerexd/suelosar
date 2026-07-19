@@ -26,13 +26,26 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
       PdfSoilSheetFavoritesService();
   late final Future<List<SoilMap>> _soilMapsFuture;
   List<PdfSoilSheetFavorite> _favorites = const [];
-  String _searchQuery = '';
+  Set<String> _favoritePdfIdentifiers = const {};
+  final Map<SoilMap, String> _searchNames = Map.identity();
+  final ValueNotifier<String> _searchQuery = ValueNotifier('');
 
   @override
   void initState() {
     super.initState();
-    _soilMapsFuture = _soilMapRepository.loadSoilMaps();
+    _soilMapsFuture = _soilMapRepository.loadSoilMaps().then((soilMaps) {
+      for (final soilMap in soilMaps) {
+        _searchNames[soilMap] = soilMap.name.toLowerCase();
+      }
+      return soilMaps;
+    });
     _loadFavorites();
+  }
+
+  @override
+  void dispose() {
+    _searchQuery.dispose();
+    super.dispose();
   }
 
   @override
@@ -89,92 +102,97 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                   ),
                   SizedBox(height: layout.isPhone ? 22 : 26),
                   Expanded(
-                    child: FutureBuilder<List<SoilMap>>(
-                      future: _soilMapsFuture,
-                      builder: (context, snapshot) {
-                        if (snapshot.connectionState != ConnectionState.done) {
-                          return const Center(
-                            child: CircularProgressIndicator(),
-                          );
-                        }
+                    child: ValueListenableBuilder<String>(
+                      valueListenable: _searchQuery,
+                      builder: (context, query, _) =>
+                          FutureBuilder<List<SoilMap>>(
+                            future: _soilMapsFuture,
+                            builder: (context, snapshot) {
+                              if (snapshot.connectionState !=
+                                  ConnectionState.done) {
+                                return const Center(
+                                  child: CircularProgressIndicator(),
+                                );
+                              }
 
-                        if (snapshot.hasError) {
-                          return const _SoilMapLoadError();
-                        }
+                              if (snapshot.hasError) {
+                                return const _SoilMapLoadError();
+                              }
 
-                        final soilMaps = _filterSoilMaps(
-                          snapshot.data ?? const [],
-                        );
-                        if (soilMaps.isEmpty) {
-                          return const _EmptySoilMapSearch();
-                        }
+                              final soilMaps = _filterSoilMaps(
+                                snapshot.data ?? const [],
+                                query,
+                              );
+                              if (soilMaps.isEmpty) {
+                                return const _EmptySoilMapSearch();
+                              }
 
-                        final favoriteMaps = soilMaps
-                            .where(_isFavorite)
-                            .toList(growable: false);
-                        return CustomScrollView(
-                          slivers: [
-                            const SliverToBoxAdapter(
-                              child: SizedBox(height: 4),
-                            ),
-                            SliverToBoxAdapter(
-                              child: AnimatedSize(
-                                duration: AppMotion.duration(
-                                  context,
-                                  const Duration(milliseconds: 220),
-                                  reduced: const Duration(milliseconds: 60),
-                                ),
-                                curve: Curves.easeOutCubic,
-                                alignment: Alignment.topCenter,
-                                child: Column(
-                                  children: [
-                                    _SectionTitle(
+                              final favoriteMaps = soilMaps
+                                  .where(_isFavorite)
+                                  .toList(growable: false);
+                              return CustomScrollView(
+                                slivers: [
+                                  const SliverToBoxAdapter(
+                                    child: SizedBox(height: 4),
+                                  ),
+                                  SliverToBoxAdapter(
+                                    child: _SectionTitle(
                                       icon: AppIcons.star,
                                       title:
                                           'Favoritos (${favoriteMaps.length})',
                                     ),
-                                    const SizedBox(height: 12),
-                                    if (favoriteMaps.isEmpty)
-                                      const _EmptyFavorites()
-                                    else
-                                      ..._buildSoilMapItems(
-                                        context,
-                                        favoriteMaps,
-                                        colorScheme,
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            const SliverToBoxAdapter(
-                              child: SizedBox(height: 32),
-                            ),
-                            const SliverToBoxAdapter(
-                              child: _SectionTitle(
-                                icon: AppIcons.library,
-                                title: 'Todas las cartas',
-                              ),
-                            ),
-                            const SliverToBoxAdapter(
-                              child: SizedBox(height: 12),
-                            ),
-                            SliverList.separated(
-                              itemCount: soilMaps.length,
-                              itemBuilder: (context, index) =>
-                                  _buildSoilMapItem(
-                                    context,
-                                    soilMaps[index],
-                                    colorScheme,
                                   ),
-                              separatorBuilder: (context, index) =>
-                                  const SizedBox(height: 10),
-                            ),
-                            const SliverToBoxAdapter(
-                              child: SizedBox(height: 24),
-                            ),
-                          ],
-                        );
-                      },
+                                  const SliverToBoxAdapter(
+                                    child: SizedBox(height: 12),
+                                  ),
+                                  if (favoriteMaps.isEmpty)
+                                    const SliverToBoxAdapter(
+                                      child: _EmptyFavorites(),
+                                    )
+                                  else
+                                    SliverList.separated(
+                                      addAutomaticKeepAlives: false,
+                                      itemCount: favoriteMaps.length,
+                                      itemBuilder: (context, index) =>
+                                          _buildSoilMapItem(
+                                            context,
+                                            favoriteMaps[index],
+                                            colorScheme,
+                                          ),
+                                      separatorBuilder: (context, index) =>
+                                          const SizedBox(height: 10),
+                                    ),
+                                  const SliverToBoxAdapter(
+                                    child: SizedBox(height: 32),
+                                  ),
+                                  const SliverToBoxAdapter(
+                                    child: _SectionTitle(
+                                      icon: AppIcons.library,
+                                      title: 'Todas las cartas',
+                                    ),
+                                  ),
+                                  const SliverToBoxAdapter(
+                                    child: SizedBox(height: 12),
+                                  ),
+                                  SliverList.separated(
+                                    addAutomaticKeepAlives: false,
+                                    itemCount: soilMaps.length,
+                                    itemBuilder: (context, index) =>
+                                        _buildSoilMapItem(
+                                          context,
+                                          soilMaps[index],
+                                          colorScheme,
+                                        ),
+                                    separatorBuilder: (context, index) =>
+                                        const SizedBox(height: 10),
+                                  ),
+                                  const SliverToBoxAdapter(
+                                    child: SizedBox(height: 24),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
                     ),
                   ),
                 ],
@@ -184,19 +202,6 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
         },
       ),
     );
-  }
-
-  List<Widget> _buildSoilMapItems(
-    BuildContext context,
-    List<SoilMap> soilMaps,
-    ColorScheme colorScheme,
-  ) {
-    return [
-      for (var index = 0; index < soilMaps.length; index++) ...[
-        _buildSoilMapItem(context, soilMaps[index], colorScheme),
-        if (index != soilMaps.length - 1) const SizedBox(height: 10),
-      ],
-    ];
   }
 
   Widget _buildSoilMapItem(
@@ -277,15 +282,16 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
   }
 
   bool _isFavorite(SoilMap soilMap) {
-    return _favorites.any(
-      (favorite) => favorite.pdfIdentifier.trim() == soilMap.pdf.trim(),
-    );
+    return _favoritePdfIdentifiers.contains(soilMap.pdf.trim());
   }
 
   Future<void> _loadFavorites() async {
     final favorites = await _favoritesService.load();
     if (mounted) {
-      setState(() => _favorites = favorites);
+      setState(() {
+        _favorites = favorites;
+        _favoritePdfIdentifiers = _favoriteIdentifiers(favorites);
+      });
     }
   }
 
@@ -295,17 +301,20 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
       title: soilMap.name,
       pdfIdentifier: soilMap.pdf,
     );
-    if (mounted) setState(() => _favorites = updated);
+    if (mounted) {
+      setState(() {
+        _favorites = updated;
+        _favoritePdfIdentifiers = _favoriteIdentifiers(updated);
+      });
+    }
   }
 
   void _updateSearchQuery(String value) {
-    setState(() {
-      _searchQuery = value;
-    });
+    _searchQuery.value = value;
   }
 
-  List<SoilMap> _filterSoilMaps(List<SoilMap> soilMaps) {
-    final query = _searchQuery.trim().toLowerCase();
+  List<SoilMap> _filterSoilMaps(List<SoilMap> soilMaps, String searchQuery) {
+    final query = searchQuery.trim().toLowerCase();
 
     if (query.isEmpty) {
       return soilMaps;
@@ -313,10 +322,15 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
 
     return soilMaps
         .where((soilMap) {
-          return soilMap.name.toLowerCase().contains(query);
+          return (_searchNames[soilMap] ?? soilMap.name.toLowerCase()).contains(
+            query,
+          );
         })
         .toList(growable: false);
   }
+
+  Set<String> _favoriteIdentifiers(List<PdfSoilSheetFavorite> favorites) =>
+      favorites.map((favorite) => favorite.pdfIdentifier.trim()).toSet();
 
   Future<void> _openSoilMapPdf(BuildContext context, SoilMap soilMap) async {
     await openLocalPdfViewer(

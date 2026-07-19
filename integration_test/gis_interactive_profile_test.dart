@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -60,31 +61,128 @@ void main() {
     );
     final isolateId = isolate.id!;
 
-    final pan = await _profilePhase(
+    final state = tester.state(find.byType(GisMapScreen)) as dynamic;
+
+    final rapidPan = await _profilePhase(
       tester: tester,
       metrics: metrics,
       service: service,
       isolateId: isolateId,
+      repository: repository,
+      screenState: state,
       action: () => _continuousPan(tester),
     );
-    final zoom = await _profilePhase(
+    final sustainedPan = await _profilePhase(
       tester: tester,
       metrics: metrics,
       service: service,
       isolateId: isolateId,
-      action: () => _continuousPinch(tester),
+      repository: repository,
+      screenState: state,
+      action: () => _sustainedPan(tester),
+    );
+    final zoomIn = await _profilePhase(
+      tester: tester,
+      metrics: metrics,
+      service: service,
+      isolateId: isolateId,
+      repository: repository,
+      screenState: state,
+      action: () async {
+        final center = tester.getCenter(find.byType(FlutterMap));
+        await _pinch(tester, center, outward: true);
+      },
+    );
+    final zoomOut = await _profilePhase(
+      tester: tester,
+      metrics: metrics,
+      service: service,
+      isolateId: isolateId,
+      repository: repository,
+      screenState: state,
+      action: () async {
+        final center = tester.getCenter(find.byType(FlutterMap));
+        await _pinch(tester, center, outward: false);
+      },
+    );
+    final panAndZoom = await _profilePhase(
+      tester: tester,
+      metrics: metrics,
+      service: service,
+      isolateId: isolateId,
+      repository: repository,
+      screenState: state,
+      action: () => _panAndPinch(tester),
+    );
+    final polygonSelection = await _profilePhase(
+      tester: tester,
+      metrics: metrics,
+      service: service,
+      isolateId: isolateId,
+      repository: repository,
+      screenState: state,
+      action: () async {
+        final currentMap = tester.widget<FlutterMap>(find.byType(FlutterMap));
+        final point = currentMap.mapController!.camera.center;
+        final offset = tester.getCenter(find.byType(FlutterMap));
+        currentMap.options.onTap!(TapPosition(offset, offset), point);
+        await tester.pump();
+      },
+    );
+    final polygonDeselection = await _profilePhase(
+      tester: tester,
+      metrics: metrics,
+      service: service,
+      isolateId: isolateId,
+      repository: repository,
+      screenState: state,
+      action: () async {
+        final currentMap = tester.widget<FlutterMap>(find.byType(FlutterMap));
+        currentMap.options.onTap!(
+          const TapPosition(Offset.zero, Offset.zero),
+          const LatLng(0, 0),
+        );
+        await tester.pump();
+      },
+    );
+    final layerToggle = await _profilePhase(
+      tester: tester,
+      metrics: metrics,
+      service: service,
+      isolateId: isolateId,
+      repository: repository,
+      screenState: state,
+      action: () => _toggleSoilLayer(tester),
+    );
+    final mouseWheel = await _profilePhase(
+      tester: tester,
+      metrics: metrics,
+      service: service,
+      isolateId: isolateId,
+      repository: repository,
+      screenState: state,
+      action: () => _desktopMouseWheelZoom(tester),
     );
 
     final report = <String, Object?>{
       'device': 'windows',
-      'pan': pan,
-      'zoom': zoom,
+      'rapid_pan': rapidPan,
+      'sustained_pan': sustainedPan,
+      'zoom_in': zoomIn,
+      'zoom_out': zoomOut,
+      'pan_and_zoom': panAndZoom,
+      'polygon_selection': polygonSelection,
+      'polygon_deselection': polygonDeselection,
+      'layer_toggle': layerToggle,
+      'desktop_mouse_wheel': mouseWheel,
     };
     binding.reportData = report;
     debugPrint('GIS_INTERACTIVE_PROFILE ${jsonEncode(report)}');
 
-    expect((pan['frames'] as int), greaterThan(20));
-    expect((zoom['frames'] as int), greaterThan(20));
+    expect((rapidPan['frames'] as int), greaterThan(20));
+    expect((sustainedPan['frames'] as int), greaterThan(100));
+    expect((zoomIn['frames'] as int), greaterThan(10));
+    expect((zoomOut['frames'] as int), greaterThan(10));
   });
 }
 
@@ -93,6 +191,8 @@ Future<Map<String, Object?>> _profilePhase({
   required GisRenderMetrics metrics,
   required VmService service,
   required String isolateId,
+  required PmTilesGisRepository repository,
+  required dynamic screenState,
   required Future<void> Function() action,
 }) async {
   final availableStreams =
@@ -105,6 +205,7 @@ Future<Map<String, Object?>> _profilePhase({
   await service.clearVMTimeline();
   await service.getAllocationProfile(isolateId, reset: true, gc: true);
   final memoryBefore = await service.getMemoryUsage(isolateId);
+  final cacheBefore = repository.cacheMetrics;
   final startMicros = (await service.getVMTimelineMicros()).timestamp!;
 
   metrics.reset();
@@ -129,6 +230,7 @@ Future<Map<String, Object?>> _profilePhase({
   );
   final allocations = await service.getAllocationProfile(isolateId);
   final memoryAfter = await service.getMemoryUsage(isolateId);
+  final cacheAfter = repository.cacheMetrics;
   final snapshot = metrics.snapshot();
 
   return <String, Object?>{
@@ -136,6 +238,7 @@ Future<Map<String, Object?>> _profilePhase({
     'cpu_us': _cpuSummary(cpu),
     'pmtiles_read_wall_us': _timelineDuration(timeline, 'SuelosAR.PMTilesRead'),
     'mvt_decode_cpu_us': _timelineDuration(timeline, 'SuelosAR.MVTDecode'),
+    'timeline': _timelineSummary(timeline),
     'polygon_generation_cpu_us':
         snapshot.totalPolygonGenerationDuration.inMicroseconds,
     'polygon_paint_cpu_us': snapshot.totalPaintDuration.inMicroseconds,
@@ -144,6 +247,11 @@ Future<Map<String, Object?>> _profilePhase({
       'map': snapshot.mapBuildCount,
       'tile_collection': snapshot.tileCollectionBuildCount,
       'polygon_layer': snapshot.polygonLayerBuildCount,
+    },
+    'paint': <String, int>{
+      'repaint_regions': snapshot.paintCount,
+      'polygon_objects_created': snapshot.polygonObjectCreationCount,
+      'polygon_objects_reused': snapshot.polygonObjectReuseCount,
     },
     'geometry': <String, num>{
       'samples': snapshot.visibleGeometrySampleCount,
@@ -164,6 +272,17 @@ Future<Map<String, Object?>> _profilePhase({
       'projection_cache_hits': snapshot.projectedGeometryCacheHitCount,
     },
     'gc_events': _gcEventCount(timeline),
+    'cache': <String, int>{
+      'entries': cacheAfter.cachedTileCount,
+      'maximum_entries': cacheAfter.maximumCachedTileCount,
+      'hits': cacheAfter.cacheHitCount - cacheBefore.cacheHitCount,
+      'misses': cacheAfter.decodedTileCount - cacheBefore.decodedTileCount,
+      'coalesced':
+          cacheAfter.coalescedRequestCount - cacheBefore.coalescedRequestCount,
+      'visible_tiles': screenState.visibleTileCount as int,
+      'prefetch_tiles': screenState.prefetchedTileCount as int,
+      'rendered_tile_entries': screenState.renderedTileCacheSize as int,
+    },
     'allocated_bytes': (allocations.members ?? const <ClassHeapStats>[])
         .fold<int>(0, (sum, item) => sum + (item.accumulatedSize ?? 0)),
     'allocated_instances': (allocations.members ?? const <ClassHeapStats>[])
@@ -190,6 +309,9 @@ Map<String, Object?> _frameSummary(List<FrameTiming> timings, Duration wall) {
   return <String, Object?>{
     'frames': timings.length,
     'wall_us': wall.inMicroseconds,
+    'throughput_fps': timings.length * 1000000 / wallMicros,
+    'frame_rate_from_average': total.isEmpty ? 0 : 1000000 / _average(total),
+    'minimum_fps': total.isEmpty ? 0 : 1000000 / total.reduce(math.max),
     'average_frame_us': _average(total),
     'worst_frame_us': total.isEmpty ? 0 : total.reduce(math.max),
     'p95_frame_us': _percentile(total, 0.95),
@@ -201,6 +323,44 @@ Map<String, Object?> _frameSummary(List<FrameTiming> timings, Duration wall) {
     'raster_utilization':
         raster.fold<int>(0, (sum, value) => sum + value) / wallMicros,
     'frames_over_16_7_ms': total.where((value) => value > 16667).length,
+  };
+}
+
+Map<String, Object?> _timelineSummary(Timeline timeline) {
+  var buildMicros = 0;
+  var layoutMicros = 0;
+  var paintMicros = 0;
+  var rasterMicros = 0;
+  var shaderMicros = 0;
+  var shaderEvents = 0;
+
+  for (final event in timeline.traceEvents ?? const <TimelineEvent>[]) {
+    final json = event.json ?? const <String, dynamic>{};
+    if (json['ph']?.toString() != 'X') continue;
+    final name = json['name']?.toString().toLowerCase() ?? '';
+    final duration = (json['dur'] as num?)?.round() ?? 0;
+    if (name == 'build' || name.contains('buildframe')) {
+      buildMicros += duration;
+    } else if (name == 'layout' || name.contains('performlayout')) {
+      layoutMicros += duration;
+    } else if (name == 'paint' || name.contains('paintframe')) {
+      paintMicros += duration;
+    } else if (name.contains('raster')) {
+      rasterMicros += duration;
+    }
+    if (name.contains('shader')) {
+      shaderEvents++;
+      shaderMicros += duration;
+    }
+  }
+
+  return <String, Object?>{
+    'build_us': buildMicros,
+    'layout_us': layoutMicros,
+    'paint_us': paintMicros,
+    'raster_us': rasterMicros,
+    'shader_events': shaderEvents,
+    'shader_us': shaderMicros,
   };
 }
 
@@ -332,20 +492,71 @@ Future<void> _continuousPan(WidgetTester tester) async {
   }
 }
 
-Future<void> _continuousPinch(WidgetTester tester) async {
+Future<void> _sustainedPan(WidgetTester tester) async {
   final center = tester.getCenter(find.byType(FlutterMap));
-  await _pinch(tester, center, outward: true);
-  await tester.pump(const Duration(milliseconds: 200));
-  await tester.runAsync(
-    () => Future<void>.delayed(const Duration(milliseconds: 120)),
+  const deltas = <Offset>[
+    Offset(-4, 0),
+    Offset(0, -4),
+    Offset(4, 0),
+    Offset(0, 4),
+  ];
+  final gesture = await tester.startGesture(center);
+  for (var cycle = 0; cycle < 3; cycle++) {
+    for (final delta in deltas) {
+      for (var frame = 0; frame < 75; frame++) {
+        await gesture.moveBy(delta);
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+    }
+  }
+  await gesture.up();
+  await tester.pump(const Duration(milliseconds: 220));
+}
+
+Future<void> _panAndPinch(WidgetTester tester) async {
+  final center = tester.getCenter(find.byType(FlutterMap));
+  final left = await tester.startGesture(
+    center + const Offset(-70, 0),
+    pointer: 11,
   );
-  await tester.pump();
-  await _pinch(tester, center, outward: false);
-  await tester.pump(const Duration(milliseconds: 200));
-  await tester.runAsync(
-    () => Future<void>.delayed(const Duration(milliseconds: 120)),
+  final right = await tester.startGesture(
+    center + const Offset(70, 0),
+    pointer: 12,
   );
+  for (var frame = 0; frame < 60; frame++) {
+    final zoomDirection = frame < 30 ? 1.0 : -1.0;
+    await left.moveBy(Offset(-2 * zoomDirection + 1.2, 0.7));
+    await right.moveBy(Offset(2 * zoomDirection + 1.2, 0.7));
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+  await left.up();
+  await right.up();
+  await tester.pump(const Duration(milliseconds: 220));
+}
+
+Future<void> _toggleSoilLayer(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('Capas').first);
   await tester.pump();
+  final soilTile = find.widgetWithText(SwitchListTile, 'Suelos');
+  expect(soilTile, findsOneWidget);
+  tester.widget<SwitchListTile>(soilTile).onChanged!(false);
+  await tester.pump();
+  tester.widget<SwitchListTile>(soilTile).onChanged!(true);
+  await tester.pump();
+}
+
+Future<void> _desktopMouseWheelZoom(WidgetTester tester) async {
+  final center = tester.getCenter(find.byType(FlutterMap));
+  for (var index = 0; index < 12; index++) {
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: center,
+        scrollDelta: Offset(0, index < 6 ? -120 : 120),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+  await tester.pump(const Duration(milliseconds: 220));
 }
 
 Future<void> _pinch(

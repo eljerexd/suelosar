@@ -17,6 +17,21 @@ import 'sync_state.dart';
 import 'sync_status.dart';
 import 'uuid_v4.dart';
 
+@immutable
+class SyncLocalChange {
+  const SyncLocalChange({
+    required this.entityType,
+    required this.operationType,
+    required this.uuid,
+    required this.payload,
+  });
+
+  final SyncEntityType entityType;
+  final SyncOperationType operationType;
+  final String uuid;
+  final Map<String, Object?> payload;
+}
+
 class SyncEngine {
   SyncEngine({
     PersistentSyncQueue? queue,
@@ -93,14 +108,20 @@ class SyncEngine {
     required SyncOperationType operationType,
     required String uuid,
     required Map<String, Object?> payload,
-  }) => _serialize(
-    () => _recordLocalChangeNow(
+  }) => recordLocalChanges(<SyncLocalChange>[
+    SyncLocalChange(
       entityType: entityType,
       operationType: operationType,
       uuid: uuid,
       payload: payload,
     ),
-  );
+  ]);
+
+  Future<void> recordLocalChanges(Iterable<SyncLocalChange> changes) {
+    final batch = changes.toList(growable: false);
+    if (batch.isEmpty) return Future<void>.value();
+    return _serialize(() => _recordLocalChangesNow(batch));
+  }
 
   Future<void> cancel(String operationId) => _serialize(() async {
     final operations = await queue.readAll();
@@ -165,13 +186,14 @@ class SyncEngine {
         .toList(growable: false);
     await queue.removeAll(ids);
     final remaining = await queue.readAll();
-    for (final operation in confirmed) {
-      if (!remaining.any(
-        (candidate) => candidate.payloadReference == operation.payloadReference,
-      )) {
-        await payloadStore.remove(operation.payloadReference);
-      }
-    }
+    final retainedReferences = remaining
+        .map((operation) => operation.payloadReference)
+        .toSet();
+    await payloadStore.removeAll(
+      confirmed
+          .map((operation) => operation.payloadReference)
+          .where((reference) => !retainedReferences.contains(reference)),
+    );
     status.value = remaining.isEmpty ? SyncStatus.completed : SyncStatus.queued;
     if (remaining.isEmpty) logger.log('Queue completed');
   });
@@ -197,34 +219,40 @@ class SyncEngine {
     }
   }
 
-  Future<void> _recordLocalChangeNow({
-    required SyncEntityType entityType,
-    required SyncOperationType operationType,
-    required String uuid,
-    required Map<String, Object?> payload,
-  }) async {
+  Future<void> _recordLocalChangesNow(List<SyncLocalChange> changes) async {
+    if (changes.isEmpty) return;
     status.value = SyncStatus.preparing;
-    final operationId = UuidV4.generate();
-    final payloadReference = '${entityType.name}:$uuid:$operationId';
-    final isDelete = operationType == SyncOperationType.delete;
-    await payloadStore.put(payloadReference, payload, tombstone: isDelete);
-    await queue.enqueue(
-      SyncOperation(
-        operationId: operationId,
-        uuid: uuid,
-        entityType: entityType,
-        operationType: operationType,
-        createdAt: DateTime.now().toUtc(),
-        retryCount: 0,
-        payloadReference: payloadReference,
-      ),
+    final createdAt = DateTime.now().toUtc();
+    final operations = <SyncOperation>[];
+    final payloads = <String, Map<String, Object?>>{};
+    final tombstoneReferences = <String>{};
+    for (final change in changes) {
+      final operationId = UuidV4.generate();
+      final payloadReference =
+          '${change.entityType.name}:${change.uuid}:$operationId';
+      operations.add(
+        SyncOperation(
+          operationId: operationId,
+          uuid: change.uuid,
+          entityType: change.entityType,
+          operationType: change.operationType,
+          createdAt: createdAt,
+          retryCount: 0,
+          payloadReference: payloadReference,
+        ),
+      );
+      payloads[payloadReference] = change.payload;
+      if (change.operationType == SyncOperationType.delete) {
+        tombstoneReferences.add(payloadReference);
+      }
+    }
+    await payloadStore.putAll(
+      payloads,
+      tombstoneReferences: tombstoneReferences,
     );
+    await queue.enqueueAll(operations);
     final total = (await queue.readAll()).length;
-    logger.log('1 operations queued', {
-      'total': total,
-      'entityType': entityType.name,
-      'operationType': operationType.name,
-    });
+    logger.log('${operations.length} operations queued', {'total': total});
     _updateWaitingStatus(total);
     _localChanges.add(null);
   }
@@ -236,6 +264,7 @@ class SyncEngine {
     Set<String> queuedEntities,
   ) async {
     var added = 0;
+    final changes = <SyncLocalChange>[];
     for (final encoded
         in preferences.getStringList(storageKey) ?? const <String>[]) {
       try {
@@ -259,11 +288,13 @@ class SyncEngine {
             : createdAt != null && updatedAt != null && updatedAt == createdAt
             ? SyncOperationType.create
             : SyncOperationType.update;
-        await _recordLocalChangeNow(
-          entityType: entityType,
-          operationType: operationType,
-          uuid: uuid,
-          payload: Map<String, Object?>.from(decoded),
+        changes.add(
+          SyncLocalChange(
+            entityType: entityType,
+            operationType: operationType,
+            uuid: uuid,
+            payload: Map<String, Object?>.from(decoded),
+          ),
         );
         queuedEntities.add(key);
         added++;
@@ -274,6 +305,7 @@ class SyncEngine {
         });
       }
     }
+    await _recordLocalChangesNow(changes);
     return added;
   }
 

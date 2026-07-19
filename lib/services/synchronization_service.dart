@@ -66,7 +66,6 @@ class SynchronizationService extends ChangeNotifier {
   final InitialHistorySyncProgress Function() _initialHistoryProgress;
   final SynchronizeAction _reuploadLocalDataAction;
   StreamSubscription<ConnectivityStatus>? _connectivitySubscription;
-  Timer? _refreshTimer;
   bool _started = false;
   bool _disposed = false;
   bool _refreshing = false;
@@ -117,10 +116,6 @@ class SynchronizationService extends ChangeNotifier {
     _engine.status.addListener(_handleStateChanged);
     _connectivitySubscription = _connectivity.changes.listen(
       (_) => _handleStateChanged(),
-    );
-    _refreshTimer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => unawaited(refresh()),
     );
     _device = await _deviceDetailsLoader();
     if (_disposed) return;
@@ -227,7 +222,6 @@ class SynchronizationService extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _started = false;
-    _refreshTimer?.cancel();
     _engine.status.removeListener(_handleStateChanged);
     unawaited(_connectivitySubscription?.cancel());
     super.dispose();

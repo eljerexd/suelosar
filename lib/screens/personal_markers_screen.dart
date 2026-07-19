@@ -20,12 +20,20 @@ class PersonalMarkersScreen extends StatefulWidget {
 
 class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
   List<PersonalMarker>? _markers;
-  String _searchQuery = '';
+  final ValueNotifier<String> _searchQuery = ValueNotifier('');
+  final Map<String, ({String name, String description, String category})>
+  _searchIndex = {};
 
   @override
   void initState() {
     super.initState();
     _loadMarkers();
+  }
+
+  @override
+  void dispose() {
+    _searchQuery.dispose();
+    super.dispose();
   }
 
   @override
@@ -47,7 +55,7 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
           FloatingAppBarCard(
             padding: EdgeInsets.zero,
             child: SearchBar(
-              onChanged: (value) => setState(() => _searchQuery = value),
+              onChanged: (value) => _searchQuery.value = value,
               hintText: 'Buscar marcador...',
               leading: const Icon(AppIcons.search),
               elevation: const WidgetStatePropertyAll(0),
@@ -64,13 +72,18 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
             ),
           ),
           const SizedBox(height: 22),
-          Expanded(child: _buildContent()),
+          Expanded(
+            child: ValueListenableBuilder<String>(
+              valueListenable: _searchQuery,
+              builder: (context, query, _) => _buildContent(query),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildContent() {
+  Widget _buildContent(String query) {
     final markers = _markers;
     if (markers == null) {
       return const Center(child: CircularProgressIndicator());
@@ -79,18 +92,19 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
       return const _EmptyPersonalMarkers();
     }
 
-    final filteredMarkers = _filterMarkers(markers);
+    final filteredMarkers = _filterMarkers(markers, query);
     if (filteredMarkers.isEmpty) {
       return const _NoMarkerSearchResults();
     }
 
     return ListView.separated(
+      addAutomaticKeepAlives: false,
       padding: const EdgeInsets.fromLTRB(0, 4, 0, 20),
       itemCount: filteredMarkers.length,
       separatorBuilder: (_, _) => const SizedBox(height: 10),
       itemBuilder: (context, index) {
         final marker = filteredMarkers[index];
-        final description = marker.description.split(RegExp(r'\r?\n')).first;
+        final description = _firstLine(marker.description);
         final colorScheme = Theme.of(context).colorScheme;
         return Material(
           color: Colors.white,
@@ -175,16 +189,20 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
     );
   }
 
-  List<PersonalMarker> _filterMarkers(List<PersonalMarker> markers) {
-    final query = _normalize(_searchQuery.trim());
+  List<PersonalMarker> _filterMarkers(
+    List<PersonalMarker> markers,
+    String searchQuery,
+  ) {
+    final query = _normalize(searchQuery.trim());
     if (query.isEmpty) return markers;
     return markers
-        .where(
-          (marker) =>
-              _normalize(marker.name).contains(query) ||
-              _normalize(marker.description).contains(query) ||
-              _normalize(marker.category.label).contains(query),
-        )
+        .where((marker) {
+          final indexed = _searchIndex[marker.id];
+          return indexed != null &&
+              (indexed.name.contains(query) ||
+                  indexed.description.contains(query) ||
+                  indexed.category.contains(query));
+        })
         .toList(growable: false);
   }
 
@@ -203,7 +221,10 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
         // Preserve valid local markers if one stored entry is malformed.
       }
     }
-    if (mounted) setState(() => _markers = markers);
+    if (mounted) {
+      _rebuildSearchIndex(markers);
+      setState(() => _markers = markers);
+    }
   }
 
   Future<void> _deleteMarker(PersonalMarker marker) async {
@@ -215,7 +236,10 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
       message: 'Se eliminará "${marker.name}" permanentemente.',
     );
     if (!mounted || !confirmed) return;
-    setState(() => markers.removeWhere((item) => item.id == marker.id));
+    setState(() {
+      markers.removeWhere((item) => item.id == marker.id);
+      _searchIndex.remove(marker.id);
+    });
     await SyncAwareLocalRepository.instance.saveMarkers(markers);
   }
 
@@ -235,6 +259,27 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
     }
     return buffer.toString();
   }
+
+  void _rebuildSearchIndex(List<PersonalMarker> markers) {
+    _searchIndex
+      ..clear()
+      ..addEntries(
+        markers.map(
+          (marker) => MapEntry(marker.id, (
+            name: _normalize(marker.name),
+            description: _normalize(marker.description),
+            category: _normalize(marker.category.label),
+          )),
+        ),
+      );
+  }
+}
+
+String _firstLine(String value) {
+  final lineBreak = value.indexOf('\n');
+  var end = lineBreak < 0 ? value.length : lineBreak;
+  if (end > 0 && value.codeUnitAt(end - 1) == 13) end--;
+  return end == value.length ? value : value.substring(0, end);
 }
 
 class _EmptyPersonalMarkers extends StatelessWidget {

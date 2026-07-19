@@ -12,14 +12,24 @@ class SyncPayloadStore {
     String reference,
     Map<String, Object?> payload, {
     bool tombstone = false,
+  }) => putAll(<String, Map<String, Object?>>{
+    reference: payload,
+  }, tombstoneReferences: tombstone ? <String>{reference} : const <String>{});
+
+  Future<void> putAll(
+    Map<String, Map<String, Object?>> additions, {
+    Set<String> tombstoneReferences = const <String>{},
   }) async {
+    if (additions.isEmpty) return;
     final preferences = await SharedPreferences.getInstance();
-    final payloads = _readMap(preferences, storageKey);
-    payloads[reference] = payload;
+    final payloads = _readMap(preferences, storageKey)..addAll(additions);
     await preferences.setString(storageKey, jsonEncode(payloads));
-    if (tombstone) {
+    if (tombstoneReferences.isNotEmpty) {
       final tombstones = _readMap(preferences, tombstoneStorageKey);
-      tombstones[reference] = payload;
+      for (final reference in tombstoneReferences) {
+        final payload = additions[reference];
+        if (payload != null) tombstones[reference] = payload;
+      }
       await preferences.setString(tombstoneStorageKey, jsonEncode(tombstones));
     }
   }
@@ -30,11 +40,16 @@ class SyncPayloadStore {
     return value is Map ? Map<String, Object?>.from(value) : null;
   }
 
-  Future<void> remove(String reference) async {
+  Future<void> remove(String reference) => removeAll(<String>{reference});
+
+  Future<void> removeAll(Iterable<String> references) async {
+    final removed = references.toSet();
+    if (removed.isEmpty) return;
     final preferences = await SharedPreferences.getInstance();
-    final payloads = _readMap(preferences, storageKey)..remove(reference);
+    final payloads = _readMap(preferences, storageKey)
+      ..removeWhere((key, _) => removed.contains(key));
     final tombstones = _readMap(preferences, tombstoneStorageKey)
-      ..remove(reference);
+      ..removeWhere((key, _) => removed.contains(key));
     await preferences.setString(storageKey, jsonEncode(payloads));
     await preferences.setString(tombstoneStorageKey, jsonEncode(tombstones));
   }

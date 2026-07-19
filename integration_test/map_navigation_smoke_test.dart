@@ -12,9 +12,10 @@ void main() {
     await tester.pump();
 
     expect(find.byType(FlutterMap), findsNothing);
-    expect(find.byIcon(Icons.map_outlined), findsOneWidget);
+    final mapLauncher = find.byKey(const ValueKey('module-gis-map'));
+    expect(mapLauncher, findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.map_outlined));
+    await tester.tap(mapLauncher);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
