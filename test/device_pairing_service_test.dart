@@ -42,6 +42,24 @@ void main() {
     service.dispose();
   });
 
+  test('pairing session retries a failed device registration', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final backend = _PairingBackendFake()..registrationFailuresRemaining = 1;
+    final service = DevicePairingService(
+      backend: backend,
+      registrationLoader: () async => _registration,
+    );
+
+    await expectLater(service.start(), throwsA(isA<DevicePairingException>()));
+    final session = await service.createPairingSession();
+
+    expect(backend.registrationCalls, 2);
+    expect(session.pairingCode, '482913');
+    expect(session.qrPayload, 'suelosar://pair?token=opaque-secret');
+
+    service.dispose();
+  });
+
   test('manual and QR pairing share the same service workflow', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final backend = _PairingBackendFake();
@@ -154,6 +172,8 @@ class _PairingBackendFake implements DevicePairingBackend {
   String? claimedCode;
   String? claimedToken;
   int claimCount = 0;
+  int registrationCalls = 0;
+  int registrationFailuresRemaining = 0;
 
   late List<PairedDevice> storedDevices = [_currentDevice];
 
@@ -205,7 +225,14 @@ class _PairingBackendFake implements DevicePairingBackend {
   @override
   Future<PairingBootstrapResult> registerCurrentDevice(
     PairingDeviceRegistration registration,
-  ) async => PairingBootstrapResult(group: group, devices: storedDevices);
+  ) async {
+    registrationCalls++;
+    if (registrationFailuresRemaining > 0) {
+      registrationFailuresRemaining--;
+      throw const DevicePairingException('Registro temporalmente fallido.');
+    }
+    return PairingBootstrapResult(group: group, devices: storedDevices);
+  }
 
   @override
   Future<void> removeDevice({

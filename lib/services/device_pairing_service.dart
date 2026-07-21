@@ -59,16 +59,21 @@ class DevicePairingService extends ChangeNotifier {
   Future<void> start() async {
     if (_started) return;
     _started = true;
-    _registration = await _registrationLoader();
-    _backend ??= _backendLoader();
-    if (!isConfigured) {
-      _notify();
-      return;
+    try {
+      _registration = await _registrationLoader();
+      _backend ??= _backendLoader();
+      if (!isConfigured) {
+        _notify();
+        return;
+      }
+      await _run(DevicePairingStatus.loading, () async {
+        final result = await _backend!.registerCurrentDevice(_registration!);
+        await _applyBootstrap(result);
+      });
+    } catch (_) {
+      _started = false;
+      rethrow;
     }
-    await _run(DevicePairingStatus.loading, () async {
-      final result = await _backend!.registerCurrentDevice(_registration!);
-      await _applyBootstrap(result);
-    });
   }
 
   Future<void> refreshDevices() async {
@@ -81,6 +86,7 @@ class DevicePairingService extends ChangeNotifier {
   }
 
   Future<PairingSession> createPairingSession() async {
+    if (!_started) await start();
     final registration = _requireRegistration();
     final backend = _requireBackend();
     late PairingSession session;

@@ -12,7 +12,9 @@ import '../widgets/scrollable_empty_state.dart';
 import 'pdf_viewer_screen.dart';
 
 class SoilMapsScreen extends StatefulWidget {
-  const SoilMapsScreen({super.key});
+  const SoilMapsScreen({this.soilMapsLoader, super.key});
+
+  final Future<List<SoilMap>> Function()? soilMapsLoader;
 
   @override
   State<SoilMapsScreen> createState() => _SoilMapsScreenState();
@@ -33,12 +35,14 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
   @override
   void initState() {
     super.initState();
-    _soilMapsFuture = _soilMapRepository.loadSoilMaps().then((soilMaps) {
-      for (final soilMap in soilMaps) {
-        _searchNames[soilMap] = soilMap.name.toLowerCase();
-      }
-      return soilMaps;
-    });
+    _soilMapsFuture = (widget.soilMapsLoader ?? _soilMapRepository.loadSoilMaps)
+        .call()
+        .then((soilMaps) {
+          for (final soilMap in soilMaps) {
+            _searchNames[soilMap] = soilMap.name.toLowerCase();
+          }
+          return soilMaps;
+        });
     _loadFavorites();
   }
 
@@ -53,6 +57,7 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     return FloatingHeaderScaffold(
+      collapseHeaderForAndroidPhoneLandscapeKeyboard: true,
       header: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -100,7 +105,7 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                       ),
                     ),
                   ),
-                  SizedBox(height: layout.isPhone ? 22 : 26),
+                  _SoilMapsSearchGap(isPhone: layout.isPhone),
                   Expanded(
                     child: ValueListenableBuilder<String>(
                       valueListenable: _searchQuery,
@@ -187,7 +192,7 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                                         const SizedBox(height: 10),
                                   ),
                                   const SliverToBoxAdapter(
-                                    child: SizedBox(height: 24),
+                                    child: _SoilMapListBottomClearance(),
                                   ),
                                 ],
                               );
@@ -373,15 +378,33 @@ class _SectionTitle extends StatelessWidget {
             ),
             const SizedBox(width: 10),
           ],
-          Text(
-            title,
-            style: Theme.of(
-              context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          Flexible(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
           ),
         ],
       ),
     );
+  }
+}
+
+class _SoilMapsSearchGap extends StatelessWidget {
+  const _SoilMapsSearchGap({required this.isPhone});
+
+  final bool isPhone;
+
+  @override
+  Widget build(BuildContext context) {
+    final compactLandscapeKeyboard =
+        isSuelosArAndroidPhoneLandscape(context) &&
+        MediaQuery.viewInsetsOf(context).bottom > 0;
+    return SizedBox(height: compactLandscapeKeyboard ? 8 : (isPhone ? 22 : 26));
   }
 }
 
@@ -469,6 +492,21 @@ class _SoilMapLoadError extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SoilMapListBottomClearance extends StatelessWidget {
+  const _SoilMapListBottomClearance();
+
+  @override
+  Widget build(BuildContext context) {
+    final keyboardInset = isSuelosArCompactAndroidPortrait(context)
+        ? MediaQuery.viewInsetsOf(context).bottom
+        : 0.0;
+    return SizedBox(
+      key: const ValueKey('soil-maps-keyboard-clearance'),
+      height: 24 + keyboardInset,
     );
   }
 }

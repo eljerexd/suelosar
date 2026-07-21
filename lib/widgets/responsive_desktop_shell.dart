@@ -16,6 +16,22 @@ bool isSuelosArDesktopPlatform(BuildContext context) {
   };
 }
 
+bool isSuelosArCompactAndroidPortrait(BuildContext context) {
+  if (kIsWeb || Theme.of(context).platform != TargetPlatform.android) {
+    return false;
+  }
+  final size = MediaQuery.sizeOf(context);
+  return size.height > size.width && size.shortestSide < 600;
+}
+
+bool isSuelosArAndroidPhoneLandscape(BuildContext context) {
+  if (kIsWeb || Theme.of(context).platform != TargetPlatform.android) {
+    return false;
+  }
+  final size = MediaQuery.sizeOf(context);
+  return size.width > size.height && size.shortestSide < 600;
+}
+
 /// Layout metrics derived from the current viewport width.
 ///
 /// Phone values deliberately mirror the existing Android spacing. Tablet and

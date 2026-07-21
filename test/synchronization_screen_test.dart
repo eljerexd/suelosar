@@ -158,11 +158,14 @@ void main() {
         platform: 'Android',
       ),
     );
-    final pairingService = _pairingService();
+    final backend = _FakePairingBackend()
+      ..createSessionCompleter = Completer<PairingSession>();
+    final pairingService = _pairingService(backend: backend);
     await _pumpAtSize(
       tester,
       const Size(390, 844),
       SynchronizationScreen(service: service, pairingService: pairingService),
+      platform: TargetPlatform.android,
     );
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
@@ -172,15 +175,110 @@ void main() {
     );
 
     await tester.tap(find.text('Agregar dispositivo'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    final loadingIntro = tester.getRect(find.textContaining('Escane'));
+    final loadingProgress = tester.getRect(
+      find.byType(CircularProgressIndicator),
+    );
+    expect(loadingProgress.top - loadingIntro.bottom, lessThan(64));
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey('android-phone-pairing-sheet')))
+          .height,
+      closeTo(844 * 0.74, 1),
+    );
+    backend.createSessionCompleter!.complete(
+      PairingSession(
+        token: 'secure-one-time-token',
+        pairingCode: '482913',
+        expiresAt: DateTime.now().add(const Duration(minutes: 5)),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('Mostrar código'), findsOneWidget);
     expect(find.text('482913'), findsOneWidget);
     expect(find.text('Vincular este equipo'), findsOneWidget);
     expect(find.textContaining('Vence en'), findsOneWidget);
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey('android-phone-pairing-sheet')))
+          .height,
+      closeTo(844 * 0.74, 1),
+    );
 
-    await tester.tap(find.byTooltip('Cerrar'));
+    tester.view.physicalSize = const Size(360, 640);
+    await tester.pump();
+    expect(find.text('482913'), findsOneWidget);
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey('android-phone-pairing-sheet')))
+          .height,
+      closeTo(640 * 0.74, 1),
+    );
+    expect(tester.takeException(), isNull);
+
+    tester.view.physicalSize = const Size(390, 844);
+    await tester.pump();
+    await tester.tap(find.text('Vincular este equipo'));
     await tester.pumpAndSettle();
+    final segmentedRect = tester.getRect(find.byType(SegmentedButton<bool>));
+    final joinIntroRect = tester.getRect(
+      find.textContaining('Ingres\u00e1 el c\u00f3digo'),
+    );
+    expect(joinIntroRect.top - segmentedRect.bottom, lessThan(40));
+    final pairingSheet = find.byKey(
+      const ValueKey('android-phone-pairing-sheet'),
+    );
+    final codeField = find.descendant(
+      of: pairingSheet,
+      matching: find.byType(TextField),
+    );
+    final editableText = tester.widget<EditableText>(
+      find.descendant(of: codeField, matching: find.byType(EditableText)),
+    );
+    expect(editableText.focusNode.hasFocus, isTrue);
+    final segmentedBeforeKeyboard = tester.widget<SegmentedButton<bool>>(
+      find.byType(SegmentedButton<bool>),
+    );
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+    addTearDown(() => tester.view.viewInsets = FakeViewPadding.zero);
+    await tester.pump();
+
+    expect(
+      tester.widget<SegmentedButton<bool>>(find.byType(SegmentedButton<bool>)),
+      same(segmentedBeforeKeyboard),
+    );
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey('android-phone-pairing-sheet')))
+          .height,
+      closeTo(844 * 0.74, 1),
+    );
+    const keyboardTop = 844.0 - 280;
+    expect(tester.getRect(codeField).bottom, lessThan(keyboardTop));
+    final linkButton = find.widgetWithText(
+      FilledButton,
+      'Vincular dispositivo',
+    );
+    await tester.ensureVisible(linkButton);
+    await tester.pump();
+    expect(tester.getRect(linkButton).bottom, lessThanOrEqualTo(keyboardTop));
+
+    await tester.enterText(codeField, '123456');
+    await tester.tap(linkButton);
+    expect(backend.claimCalls, 1);
+    expect(backend.claimedCode, '123456');
+    expect(tester.takeException(), isNull);
+
+    tester.view.viewInsets = FakeViewPadding.zero;
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('android-phone-pairing-sheet')),
+      findsNothing,
+    );
     service.dispose();
     pairingService.dispose();
     await engine.dispose();
@@ -221,6 +319,7 @@ void main() {
       tester,
       const Size(390, 844),
       SynchronizationScreen(service: service, pairingService: pairingService),
+      platform: TargetPlatform.android,
     );
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
@@ -247,6 +346,77 @@ void main() {
     expect(find.text('222222'), findsOneWidget);
     expect(find.text('El código venció.'), findsNothing);
     expect(find.text('No se pudo completar la vinculación.'), findsNothing);
+
+    await tester.tap(find.byTooltip('Cerrar'));
+    await tester.pumpAndSettle();
+    service.dispose();
+    pairingService.dispose();
+    await engine.dispose();
+    await connectivity.dispose();
+  });
+
+  testWidgets('Android pairing error keeps retry beside its status', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final connectivity = ConnectivityService(
+      initialStatus: ConnectivityStatus.online,
+    );
+    final queue = PersistentSyncQueue(storageKey: 'test.pairing.error.queue');
+    final engine = SyncEngine(
+      queue: queue,
+      connectivity: connectivity,
+      logger: SyncLogger(sink: (_) {}),
+    );
+    final service = SynchronizationService(
+      engine: engine,
+      connectivity: connectivity,
+      queue: queue,
+      synchronizeAction: () async => true,
+      backendConfigured: () => true,
+      backendConnected: () => true,
+      deviceDetailsLoader: () async => const SynchronizationDeviceDetails(
+        name: 'Dispositivo de prueba',
+        uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        appVersion: '1.0.1',
+        platform: 'Android',
+      ),
+    );
+    final backend = _FakePairingBackend()
+      ..createSessionError = const DevicePairingException(
+        'No se pudo completar la vinculación.',
+      );
+    final pairingService = _pairingService(backend: backend);
+
+    await _pumpAtSize(
+      tester,
+      const Size(390, 844),
+      SynchronizationScreen(service: service, pairingService: pairingService),
+      platform: TargetPlatform.android,
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Agregar dispositivo'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Agregar dispositivo'));
+    await tester.pumpAndSettle();
+
+    final message = tester.getRect(
+      find.text('No se pudo completar la vinculación.'),
+    );
+    final retry = tester.getRect(
+      find.widgetWithText(FilledButton, 'Reintentar'),
+    );
+    expect(retry.top - message.bottom, lessThan(32));
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey('android-phone-pairing-sheet')))
+          .height,
+      closeTo(844 * 0.74, 1),
+    );
+    expect(tester.takeException(), isNull);
 
     await tester.tap(find.byTooltip('Cerrar'));
     await tester.pumpAndSettle();
@@ -580,22 +750,36 @@ class _FakePairingBackend implements DevicePairingBackend {
       isCurrentDevice: true,
     ),
   ];
+  Object? createSessionError;
+  Completer<PairingSession>? createSessionCompleter;
+  int claimCalls = 0;
+  String? claimedCode;
 
   @override
   Future<PairingClaimResult> claimPairingToken({
     required PairingDeviceRegistration registration,
     String? token,
     String? pairingCode,
-  }) async => PairingClaimResult(group: _group, devices: devices);
+  }) async {
+    claimCalls++;
+    claimedCode = pairingCode;
+    return PairingClaimResult(group: _group, devices: devices);
+  }
 
   @override
   Future<PairingSession> createPairingSession(
     PairingDeviceRegistration registration,
-  ) async => PairingSession(
-    token: 'secure-one-time-token',
-    pairingCode: '482913',
-    expiresAt: DateTime.now().add(const Duration(minutes: 5)),
-  );
+  ) async {
+    final error = createSessionError;
+    if (error != null) throw error;
+    final completer = createSessionCompleter;
+    if (completer != null) return completer.future;
+    return PairingSession(
+      token: 'secure-one-time-token',
+      pairingCode: '482913',
+      expiresAt: DateTime.now().add(const Duration(minutes: 5)),
+    );
+  }
 
   @override
   Future<List<PairedDevice>> listDevices(String currentDeviceUuid) async =>
@@ -652,10 +836,21 @@ class _ExpiringPairingBackend extends _FakePairingBackend {
   }
 }
 
-Future<void> _pumpAtSize(WidgetTester tester, Size size, Widget screen) async {
+Future<void> _pumpAtSize(
+  WidgetTester tester,
+  Size size,
+  Widget screen, {
+  TargetPlatform? platform,
+}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
-  await tester.pumpWidget(MaterialApp(theme: AppTheme.light(), home: screen));
+  final theme = AppTheme.light();
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: platform == null ? theme : theme.copyWith(platform: platform),
+      home: screen,
+    ),
+  );
 }

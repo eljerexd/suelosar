@@ -428,6 +428,10 @@ Future<bool> openLocalPdfViewer(
   required String assetPath,
   required String unavailableMessage,
 }) async {
+  if (isSuelosArCompactAndroidPortrait(context)) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+  }
   final availableAssets = await _bundledAssetPaths;
   if (!availableAssets.contains(assetPath)) {
     if (context.mounted) {

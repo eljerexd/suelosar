@@ -78,6 +78,7 @@ class GisMapScreen extends StatefulWidget {
 class _GisMapScreenState extends State<GisMapScreen>
     with TickerProviderStateMixin {
   static const double _mapOcclusionThreshold = 0.9;
+  static const double _androidLandscapeToolClearance = 64;
   static const LatLng _buenosAiresCenter = LatLng(-36.5, -60);
   static const double _minimumMapZoom = 7;
   static const double _initialZoom = _minimumMapZoom;
@@ -340,6 +341,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     final mediaQuery = MediaQuery.of(context);
     final desktopLayout = isSuelosArDesktopPlatform(context);
     final compactLayout = !desktopLayout && mediaQuery.size.width < 600;
+    final androidPhoneLandscape = isSuelosArAndroidPhoneLandscape(context);
     final portraitMobile =
         compactLayout && mediaQuery.orientation == Orientation.portrait;
     return Scaffold(
@@ -353,6 +355,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 context,
                 showsMeasurement,
                 portraitMobile: portraitMobile,
+                androidPhoneLandscape: androidPhoneLandscape,
               )
             : SafeArea(
                 minimum: const EdgeInsets.fromLTRB(14, 10, 14, 0),
@@ -383,101 +386,108 @@ class _GisMapScreenState extends State<GisMapScreen>
                   ),
                   actions: [
                     if (!desktopLayout)
-                      _MapTopBarCard(
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _MapChromeIconButton(
-                              tooltip: 'Abrir marcadores personales',
-                              icon: const Icon(Icons.bookmarks),
-                              onPressed: _openPersonalMarkers,
-                            ),
-                            _MapChromeIconButton(
-                              tooltip: 'Abrir mediciones',
-                              icon: const Icon(Icons.history),
-                              onPressed: _openMeasurements,
-                            ),
-                            _AnimatedMapHeaderItem(
-                              visible:
-                                  showsMeasurement &&
-                                  _activeSavedMeasurementId == null,
-                              child: _MapChromeIconButton(
-                                tooltip: 'Deshacer último punto',
-                                icon: const Icon(AppIcons.undo),
-                                onPressed: _undoMeasurementPoint,
+                      Padding(
+                        padding: EdgeInsets.only(
+                          right: androidPhoneLandscape
+                              ? _androidLandscapeToolClearance
+                              : 0,
+                        ),
+                        child: _MapTopBarCard(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _MapChromeIconButton(
+                                tooltip: 'Abrir marcadores personales',
+                                icon: const Icon(Icons.bookmarks),
+                                onPressed: _openPersonalMarkers,
                               ),
-                            ),
-                            _AnimatedMapHeaderItem(
-                              visible: showsMeasurement,
-                              child: _MapChromeIconButton(
-                                tooltip: 'Limpiar medición',
-                                icon: const Icon(AppIcons.delete),
-                                onPressed: _clearMeasurement,
+                              _MapChromeIconButton(
+                                tooltip: 'Abrir mediciones',
+                                icon: const Icon(Icons.history),
+                                onPressed: _openMeasurements,
                               ),
-                            ),
-                            SearchAnchor(
-                              viewBuilder: _buildSearchView,
-                              viewOnOpen: _handleSearchViewOpen,
-                              viewOnClose: _handleSearchViewClose,
-                              viewHintText:
-                                  'Buscar localidad, unidad o serie...',
-                              viewBackgroundColor: Theme.of(
-                                context,
-                              ).colorScheme.surfaceContainerLow,
-                              viewSurfaceTintColor: Colors.transparent,
-                              viewElevation: 8,
-                              viewShape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(24),
+                              _AnimatedMapHeaderItem(
+                                visible:
+                                    showsMeasurement &&
+                                    _activeSavedMeasurementId == null,
+                                child: _MapChromeIconButton(
+                                  tooltip: 'Deshacer último punto',
+                                  icon: const Icon(AppIcons.undo),
+                                  onPressed: _undoMeasurementPoint,
+                                ),
                               ),
-                              viewSide: BorderSide(
-                                color: Theme.of(context)
+                              _AnimatedMapHeaderItem(
+                                visible: showsMeasurement,
+                                child: _MapChromeIconButton(
+                                  tooltip: 'Limpiar medición',
+                                  icon: const Icon(AppIcons.delete),
+                                  onPressed: _clearMeasurement,
+                                ),
+                              ),
+                              SearchAnchor(
+                                viewBuilder: _buildSearchView,
+                                viewOnOpen: _handleSearchViewOpen,
+                                viewOnClose: _handleSearchViewClose,
+                                viewHintText:
+                                    'Buscar localidad, unidad o serie...',
+                                viewBackgroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerLow,
+                                viewSurfaceTintColor: Colors.transparent,
+                                viewElevation: 8,
+                                viewShape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(24),
+                                ),
+                                viewSide: BorderSide(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outlineVariant
+                                      .withValues(alpha: 0.55),
+                                ),
+                                viewBarPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
+                                headerHeight: 64,
+                                headerTextStyle: Theme.of(context)
+                                    .textTheme
+                                    .bodyLarge
+                                    ?.copyWith(fontWeight: FontWeight.w500),
+                                headerHintStyle: Theme.of(context)
+                                    .textTheme
+                                    .bodyLarge
+                                    ?.copyWith(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onSurfaceVariant,
+                                    ),
+                                dividerColor: Theme.of(context)
                                     .colorScheme
                                     .outlineVariant
-                                    .withValues(alpha: 0.55),
+                                    .withValues(alpha: 0.45),
+                                viewConstraints: const BoxConstraints(
+                                  minWidth: 420,
+                                  maxWidth: 680,
+                                  maxHeight: 620,
+                                ),
+                                viewPadding: const EdgeInsets.fromLTRB(
+                                  8,
+                                  8,
+                                  8,
+                                  16,
+                                ),
+                                builder: (context, controller) {
+                                  return _MapChromeIconButton(
+                                    tooltip: 'Buscar',
+                                    icon: const Icon(AppIcons.search),
+                                    onPressed: () {
+                                      controller.openView();
+                                    },
+                                  );
+                                },
+                                suggestionsBuilder: _buildSearchSuggestions,
                               ),
-                              viewBarPadding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                              ),
-                              headerHeight: 64,
-                              headerTextStyle: Theme.of(context)
-                                  .textTheme
-                                  .bodyLarge
-                                  ?.copyWith(fontWeight: FontWeight.w500),
-                              headerHintStyle: Theme.of(context)
-                                  .textTheme
-                                  .bodyLarge
-                                  ?.copyWith(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
-                                  ),
-                              dividerColor: Theme.of(context)
-                                  .colorScheme
-                                  .outlineVariant
-                                  .withValues(alpha: 0.45),
-                              viewConstraints: const BoxConstraints(
-                                minWidth: 420,
-                                maxWidth: 680,
-                                maxHeight: 620,
-                              ),
-                              viewPadding: const EdgeInsets.fromLTRB(
-                                8,
-                                8,
-                                8,
-                                16,
-                              ),
-                              builder: (context, controller) {
-                                return _MapChromeIconButton(
-                                  tooltip: 'Buscar',
-                                  icon: const Icon(AppIcons.search),
-                                  onPressed: () {
-                                    controller.openView();
-                                  },
-                                );
-                              },
-                              suggestionsBuilder: _buildSearchSuggestions,
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                   ],
@@ -897,6 +907,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     BuildContext context,
     bool showsMeasurement, {
     required bool portraitMobile,
+    required bool androidPhoneLandscape,
   }) {
     final collapseTitle =
         portraitMobile &&
@@ -991,11 +1002,24 @@ class _GisMapScreenState extends State<GisMapScreen>
             ],
           ),
         );
+        final positionedActionCard = androidPhoneLandscape
+            ? Padding(
+                padding: const EdgeInsets.only(
+                  right: _androidLandscapeToolClearance,
+                ),
+                child: actionCard,
+              )
+            : actionCard;
         return SafeArea(
-          minimum: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          minimum: EdgeInsets.fromLTRB(
+            androidPhoneLandscape ? 8 : 12,
+            8,
+            12,
+            0,
+          ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [titleCard, const Spacer(), actionCard],
+            children: [titleCard, const Spacer(), positionedActionCard],
           ),
         );
       },
@@ -1105,6 +1129,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     final measurementMode = _measurementMode;
     final renderedMeasurementMode = measurementMode ?? _retainedMeasurementMode;
     final compactLayout = MediaQuery.sizeOf(context).width < 600;
+    final androidPhoneLandscape = isSuelosArAndroidPhoneLandscape(context);
     final topControlOffset = compactLayout ? 154.0 : 96.0;
     final selectedSavedMeasurement = _savedMeasurements
         .where(
@@ -1341,6 +1366,7 @@ class _GisMapScreenState extends State<GisMapScreen>
           _buildRightControlRail(
             topInset: topControlOffset,
             showLayers: !desktopShell,
+            alignLeft: androidPhoneLandscape,
           ),
         if (!_mapVisualsPaused)
           _MapToolHintOverlay(type: _activeToolHint, top: topControlOffset),
@@ -1386,12 +1412,18 @@ class _GisMapScreenState extends State<GisMapScreen>
   Widget _buildRightControlRail({
     required double topInset,
     bool showLayers = true,
+    bool alignLeft = false,
   }) {
     return Positioned.fill(
       child: SafeArea(
-        minimum: EdgeInsets.fromLTRB(0, topInset, 16, 16),
+        minimum: EdgeInsets.fromLTRB(
+          alignLeft ? 16 : 0,
+          topInset,
+          alignLeft ? 0 : 16,
+          16,
+        ),
         child: Align(
-          alignment: Alignment.topRight,
+          alignment: alignLeft ? Alignment.topLeft : Alignment.topRight,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [

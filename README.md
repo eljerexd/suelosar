@@ -55,3 +55,98 @@ Conclusiones verificadas:
 ✅ Restaurar el painter oficial de flutter_map eliminando la instrumentación dio una mejora aproximada del 40 %.
 ✅ useAltRendering fue probado y descartado porque empeoró el rendimiento.
 ✅ No se justifica seguir haciendo auditorías generales sobre este tema sin un cambio importante en la arquitectura.
+
+*FEATURES 19/07/2026
+
+✅ 1. Optimización de UI (implementada)
+
+Se mejoró el rendimiento interno de las pantallas (excepto GIS):
+
+ValueNotifier + ValueListenableBuilder para búsquedas.
+Índices de búsqueda precalculados.
+Favoritos usando Set.
+Eliminación de AutomaticKeepAlive innecesarios.
+Menos asignaciones en listas.
+TweenAnimationBuilder optimizado en Home.
+
+Resultado:
+
+Código más eficiente.
+Las búsquedas son más rápidas.
+La sensación general de scroll prácticamente no cambió.
+✅ 2. Auditoría de robustez (implementada)
+
+Se corrigieron problemas reales:
+
+Sincronización O(n²) → operaciones por lote.
+Favoritos virtualizados (SliverList).
+Eliminación del polling de sincronización.
+Smoke test de Windows actualizado.
+
+Además se agregaron pruebas de estrés:
+
+10.000 marcadores.
+5.000 mediciones.
+5.000 favoritos.
+10.000 operaciones de sincronización.
+Escrituras concurrentes.
+Redimensionado.
+Montaje/desmontaje repetido.
+
+Resultado:
+
+141 tests pasando.
+✅ 3. Migración del visor PDF (implementada)
+
+Ya quedó completamente terminada.
+
+Se migró de:
+
+Syncfusion
+
+a:
+
+pdfrx
+
+Incluyendo:
+
+zoom 25–500%
+Fit Width
+Fit Page
+scrollbar escritorio
+pinch correcto Android
+páginas centradas
+eliminación del fork de Syncfusion
+✅ 4. Auditoría GIS (implementada)
+
+No fue una optimización a ciegas.
+
+Se ejecutó un perfil completo en Flutter Profile.
+
+Conclusiones:
+
+LOD funciona correctamente.
+Labels no son el problema.
+Build no reconstruye.
+PMTiles no limita el paneo.
+No hay fugas.
+✅ 5. Mejora real del GIS (implementada)
+
+Durante la auditoría se descubrió algo importante:
+
+Había quedado instrumentación de profiling dentro del painter de flutter_map.
+
+Se restauró el painter oficial.
+
+Resultado:
+
+FPS:
+5.05
+
+↓
+
+7.10
+
+≈40 % de mejora.
+
+Sin cambiar ninguna funcionalidad.

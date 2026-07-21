@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app/app_theme.dart';
 import '../constants/app_icons.dart';
 import '../utils/app_motion.dart';
+import 'responsive_desktop_shell.dart';
 
 class FloatingAppBarCard extends StatelessWidget {
   const FloatingAppBarCard({
@@ -51,16 +52,24 @@ class FloatingHeaderScaffold extends StatelessWidget {
     required this.header,
     required this.body,
     this.bottomPadding = 0,
+    this.collapseHeaderForAndroidPhoneLandscapeKeyboard = false,
     super.key,
   });
 
   final Widget header;
   final Widget body;
   final double bottomPadding;
+  final bool collapseHeaderForAndroidPhoneLandscapeKeyboard;
 
   @override
   Widget build(BuildContext context) {
+    final overlaysKeyboard = isSuelosArCompactAndroidPortrait(context);
+    final collapseHeader =
+        collapseHeaderForAndroidPhoneLandscapeKeyboard &&
+        isSuelosArAndroidPhoneLandscape(context) &&
+        MediaQuery.viewInsetsOf(context).bottom > 0;
     return Scaffold(
+      resizeToAvoidBottomInset: !overlaysKeyboard,
       body: SafeArea(
         child: Padding(
           padding: EdgeInsets.fromLTRB(
@@ -72,11 +81,16 @@ class FloatingHeaderScaffold extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: FloatingAppBarCard(child: header),
+              Offstage(
+                offstage: collapseHeader,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: FloatingAppBarCard(child: header),
+                ),
               ),
-              const SizedBox(height: FloatingAppBarLayout.contentGap),
+              SizedBox(
+                height: collapseHeader ? 0 : FloatingAppBarLayout.contentGap,
+              ),
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(

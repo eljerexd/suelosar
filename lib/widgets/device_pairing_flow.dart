@@ -14,8 +14,17 @@ Future<bool> showDevicePairingFlow(
   BuildContext context,
   DevicePairingService service,
 ) async {
-  final desktop = MediaQuery.sizeOf(context).width >= 700;
-  final content = _DevicePairingFlow(service: service, desktop: desktop);
+  final screenSize = MediaQuery.sizeOf(context);
+  final desktop = screenSize.width >= 700;
+  final androidPhone =
+      !kIsWeb &&
+      Theme.of(context).platform == TargetPlatform.android &&
+      screenSize.shortestSide < 600;
+  final content = _DevicePairingFlow(
+    service: service,
+    desktop: desktop,
+    androidPhone: androidPhone,
+  );
   if (desktop) {
     return await showDialog<bool>(
           context: context,
@@ -38,24 +47,34 @@ Future<bool> showDevicePairingFlow(
         isScrollControlled: true,
         useSafeArea: true,
         backgroundColor: Colors.transparent,
-        builder: (context) => SizedBox(
-          height: MediaQuery.sizeOf(context).height * 0.88,
-          child: Material(
+        builder: (context) {
+          final sheet = Material(
+            key: androidPhone
+                ? const ValueKey('android-phone-pairing-sheet')
+                : null,
             color: Theme.of(context).colorScheme.surface,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
             clipBehavior: Clip.antiAlias,
             child: content,
-          ),
-        ),
+          );
+          final screenHeight = MediaQuery.sizeOf(context).height;
+          final sheetHeight = screenHeight * (androidPhone ? 0.74 : 0.88);
+          return SizedBox(height: sheetHeight, child: sheet);
+        },
       ) ??
       false;
 }
 
 class _DevicePairingFlow extends StatefulWidget {
-  const _DevicePairingFlow({required this.service, required this.desktop});
+  const _DevicePairingFlow({
+    required this.service,
+    required this.desktop,
+    required this.androidPhone,
+  });
 
   final DevicePairingService service;
   final bool desktop;
+  final bool androidPhone;
 
   @override
   State<_DevicePairingFlow> createState() => _DevicePairingFlowState();
@@ -63,6 +82,7 @@ class _DevicePairingFlow extends StatefulWidget {
 
 class _DevicePairingFlowState extends State<_DevicePairingFlow> {
   final _codeController = TextEditingController();
+  final _codeFocusNode = FocusNode();
   PairingSession? _session;
   Timer? _countdown;
   _PairingSessionPhase _sessionPhase = _PairingSessionPhase.loading;
@@ -96,6 +116,7 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
     _countdown?.cancel();
     _countdown = null;
     _session = null;
+    _codeFocusNode.dispose();
     _codeController.dispose();
     super.dispose();
   }
@@ -103,6 +124,21 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final panel = AnimatedSwitcher(
+      duration: AppMotion.duration(context, const Duration(milliseconds: 200)),
+      child: _joining
+          ? widget.androidPhone
+                ? Align(
+                    key: const ValueKey('join'),
+                    alignment: Alignment.topCenter,
+                    child: _buildJoin(key: const ValueKey('join-content')),
+                  )
+                : _buildJoin(key: const ValueKey('join'))
+          : _buildShare(key: const ValueKey('share')),
+    );
+    final responsivePanel = widget.androidPhone
+        ? _AndroidKeyboardInsetViewport(child: panel)
+        : panel;
     return Column(
       children: [
         Padding(
@@ -145,25 +181,11 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
             selected: {_joining},
             onSelectionChanged: _working
                 ? null
-                : (value) => setState(() {
-                    _joining = value.first;
-                    _scanning = false;
-                    _joinError = null;
-                  }),
+                : (value) => _selectJoining(value.first),
           ),
         ),
         const SizedBox(height: 12),
-        Expanded(
-          child: AnimatedSwitcher(
-            duration: AppMotion.duration(
-              context,
-              const Duration(milliseconds: 200),
-            ),
-            child: _joining
-                ? _buildJoin(key: const ValueKey('join'))
-                : _buildShare(key: const ValueKey('share')),
-          ),
-        ),
+        Expanded(child: responsivePanel),
       ],
     );
   }
@@ -182,10 +204,15 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
           ),
           const SizedBox(height: 18),
           if (_sessionPhase == _PairingSessionPhase.loading)
-            const SizedBox(
-              height: 220,
-              child: Center(child: CircularProgressIndicator()),
-            )
+            widget.androidPhone
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: CircularProgressIndicator(),
+                  )
+                : const SizedBox(
+                    height: 220,
+                    child: Center(child: CircularProgressIndicator()),
+                  )
           else if (_sessionPhase == _PairingSessionPhase.active &&
               session != null) ...[
             Semantics(
@@ -247,13 +274,18 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
           ] else ...[
             const Icon(Icons.cloud_off_outlined, size: 44),
             const SizedBox(height: 12),
+            if (widget.androidPhone && _sessionError != null) ...[
+              _InlineError(_sessionError!),
+              const SizedBox(height: 12),
+            ],
             FilledButton.icon(
               onPressed: _working ? null : _generateSession,
               icon: const Icon(Icons.refresh_rounded),
               label: const Text('Reintentar'),
             ),
           ],
-          if (_sessionPhase == _PairingSessionPhase.error &&
+          if (!widget.androidPhone &&
+              _sessionPhase == _PairingSessionPhase.error &&
               _sessionError != null) ...[
             const SizedBox(height: 14),
             _InlineError(_sessionError!),
@@ -280,6 +312,7 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
           const SizedBox(height: 18),
           TextField(
             controller: _codeController,
+            focusNode: _codeFocusNode,
             enabled: !_working,
             autofocus: widget.desktop,
             keyboardType: TextInputType.number,
@@ -439,8 +472,28 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
     });
   }
 
-  Future<void> _submitCode() async {
-    await _complete(() => widget.service.pairWithCode(_codeController.text));
+  void _selectJoining(bool joining) {
+    setState(() {
+      _joining = joining;
+      _scanning = false;
+      _joinError = null;
+    });
+    if (!widget.androidPhone) return;
+    if (joining) {
+      _codeFocusNode.requestFocus();
+    } else {
+      _codeFocusNode.unfocus();
+    }
+  }
+
+  Future<void> _submitCode() {
+    final completion = _complete(
+      () => widget.service.pairWithCode(_codeController.text),
+    );
+    if (widget.androidPhone) {
+      scheduleMicrotask(_codeFocusNode.unfocus);
+    }
+    return completion;
   }
 
   Future<void> _submitToken(String token) async {
@@ -483,6 +536,25 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
 }
 
 enum _PairingSessionPhase { loading, active, expired, error }
+
+class _AndroidKeyboardInsetViewport extends StatelessWidget {
+  const _AndroidKeyboardInsetViewport({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    return MediaQuery.removeViewInsets(
+      context: context,
+      removeBottom: true,
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: child,
+      ),
+    );
+  }
+}
 
 class _InlineError extends StatelessWidget {
   const _InlineError(this.message);

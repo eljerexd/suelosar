@@ -10,6 +10,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:suelosar/gis/gis_feature.dart';
 import 'package:suelosar/models/saved_measurement.dart';
+import 'package:suelosar/models/soil_map.dart';
 import 'package:suelosar/gis/gis_layer.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
 import 'package:suelosar/gis/gis_render_metrics.dart';
@@ -116,6 +117,111 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'soil maps keeps a stable viewport while the Android keyboard animates',
+    (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(320, 568);
+      addTearDown(tester.view.reset);
+      final navigatorObserver = _RecordingNavigatorObserver();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.android),
+          navigatorObservers: [navigatorObserver],
+          home: SoilMapsScreen(
+            soilMapsLoader: () async => const <SoilMap>[
+              SoilMap(name: 'Azul', pdf: 'Azul.pdf'),
+            ],
+          ),
+        ),
+      );
+      for (var attempt = 0; attempt < 250; attempt++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+        if (find.text('Todas las cartas').evaluate().isNotEmpty) break;
+      }
+      expect(find.text('Todas las cartas'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      final scrollable = find.byType(CustomScrollView);
+      final initialHeight = tester.getSize(scrollable).height;
+      await tester.tap(find.byType(SearchBar));
+      await tester.enterText(find.byType(SearchBar), 'Azul');
+
+      for (final inset in <double>[80, 180, 300, 440]) {
+        tester.view.viewInsets = FakeViewPadding(bottom: inset);
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.takeException(), isNull);
+      }
+
+      expect(tester.getSize(scrollable).height, initialHeight);
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('soil-maps-keyboard-clearance')))
+            .height,
+        464,
+      );
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'Azul',
+      );
+
+      await tester.tap(find.widgetWithText(ListTile, 'Azul').first);
+      expect(tester.testTextInput.isVisible, isFalse);
+      for (var attempt = 0; attempt < 20; attempt++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        if (navigatorObserver.pushCount == 2) break;
+      }
+      expect(navigatorObserver.pushCount, 2);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'soil maps fits the Android landscape keyboard without overflow',
+    (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(568, 320);
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.android),
+          home: SoilMapsScreen(
+            soilMapsLoader: () async => const <SoilMap>[
+              SoilMap(name: 'Azul', pdf: 'Azul.pdf'),
+            ],
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(SearchBar));
+
+      for (final inset in <double>[80, 140, 180]) {
+        tester.view.viewInsets = FakeViewPadding(bottom: inset);
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(find.byType(SearchBar), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      }
+      expect(
+        tester.getSize(find.byType(CustomScrollView)).height,
+        greaterThan(0),
+      );
+
+      tester.view.viewInsets = FakeViewPadding.zero;
+      await tester.pump();
+      expect(find.text('Memorias descriptivas'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('area measurement panel fits a narrow phone', (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     tester.view.devicePixelRatio = 1;
@@ -152,6 +258,97 @@ void main() {
     expect(find.byKey(const ValueKey('measurement-area')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Android phone landscape moves only the upper GIS controls to the left',
+    (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(568, 320);
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.android),
+          home: const GisMapScreen(repository: _EmptyGisRepository()),
+        ),
+      );
+      await tester.pump(const Duration(seconds: 1));
+
+      final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
+      map.mapController!.rotate(15);
+      await tester.pump();
+
+      final landscapeLayers = tester.getRect(find.byTooltip('Capas'));
+      final landscapeCompass = tester.getRect(
+        find.byTooltip('Restablecer norte'),
+      );
+      final landscapeTools = tester.getRect(find.byTooltip('Herramientas'));
+      final landscapeGps = tester.getRect(find.byTooltip('Mi ubicación'));
+      expect(landscapeLayers.center.dx, lessThan(100));
+      expect(landscapeCompass.center.dx, lessThan(100));
+      expect(landscapeTools.center.dx, greaterThan(468));
+      expect(landscapeGps.center.dx, greaterThan(468));
+
+      await tester.tap(find.byTooltip('Herramientas'));
+      await tester.pumpAndSettle();
+      final topSearchAction = tester.getRect(find.byTooltip('Buscar'));
+      for (final tooltip in const <String>[
+        'Medir distancia',
+        'Medir área',
+        'Marcadores',
+        'Favoritos',
+      ]) {
+        final toolRect = tester.getRect(find.byTooltip(tooltip));
+        expect(
+          topSearchAction.overlaps(toolRect),
+          isFalse,
+          reason: '$tooltip overlaps: $topSearchAction / $toolRect',
+        );
+      }
+      expect(tester.takeException(), isNull);
+
+      tester.view.physicalSize = const Size(720, 360);
+      await tester.pump();
+      final wideLandscapeLayers = tester.getRect(find.byTooltip('Capas'));
+      final wideLandscapeCompass = tester.getRect(
+        find.byTooltip('Restablecer norte'),
+      );
+      final wideLandscapeSearch = tester.getRect(find.byTooltip('Buscar'));
+      expect(wideLandscapeLayers.center.dx, lessThan(100));
+      expect(wideLandscapeCompass.center.dx, lessThan(100));
+      for (final tooltip in const <String>[
+        'Medir distancia',
+        'Medir área',
+        'Marcadores',
+        'Favoritos',
+      ]) {
+        expect(
+          wideLandscapeSearch.overlaps(tester.getRect(find.byTooltip(tooltip))),
+          isFalse,
+        );
+      }
+      expect(tester.takeException(), isNull);
+
+      tester.view.physicalSize = const Size(360, 720);
+      await tester.pump();
+      final portraitLayers = tester.getRect(find.byTooltip('Capas'));
+      final portraitCompass = tester.getRect(
+        find.byTooltip('Restablecer norte'),
+      );
+      expect(portraitLayers.center.dx, greaterThan(260));
+      expect(portraitCompass.center.dx, greaterThan(260));
+      expect(tester.takeException(), isNull);
+
+      tester.view.physicalSize = const Size(960, 640);
+      await tester.pump();
+      final tabletLayers = tester.getRect(find.byTooltip('Capas'));
+      final tabletCompass = tester.getRect(find.byTooltip('Restablecer norte'));
+      expect(tabletLayers.center.dx, greaterThan(860));
+      expect(tabletCompass.center.dx, greaterThan(860));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('shared floating header stays below the top safe inset', (
     tester,
@@ -1155,6 +1352,16 @@ void main() {
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
+}
+
+class _RecordingNavigatorObserver extends NavigatorObserver {
+  int pushCount = 0;
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    pushCount++;
+    super.didPush(route, previousRoute);
+  }
 }
 
 void _expectRenderBoxesLaidOut(WidgetTester tester, Finder finder) {
