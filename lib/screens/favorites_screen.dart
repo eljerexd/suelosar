@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../analytics/analytics_actions.dart';
 import '../constants/app_icons.dart';
 import '../models/pdf_soil_sheet_favorite.dart';
 import '../repositories/pdf_series_repository.dart';
@@ -56,6 +57,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
             hintText: 'Buscar favorito...',
             leading: const Icon(AppIcons.search),
             onChanged: (value) => _searchQuery.value = value,
+            onSubmitted: logSubmittedSearch,
           ),
           const SizedBox(height: 12),
           Expanded(

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "976835148942",
+    "project_id": "suelosar-cb5fe",
+    "storage_bucket": "suelosar-cb5fe.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:976835148942:android:d161b17a09a246d00c1ddf",
+        "android_client_info": {
+          "package_name": "ar.com.suelosar"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDtl8v17VNAGv0zhBzWvTmmUe_CJIpcbZg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

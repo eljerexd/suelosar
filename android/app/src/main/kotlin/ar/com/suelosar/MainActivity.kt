@@ -1,4 +1,4 @@
-package com.example.suelosar
+package ar.com.suelosar
 
 import com.baseflow.geolocator.GeolocatorPlugin
 import io.flutter.embedding.android.FlutterActivity

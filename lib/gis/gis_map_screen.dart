@@ -14,6 +14,8 @@ import 'package:flutter/services.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../analytics/analytics_actions.dart';
+import '../analytics/analytics_service.dart';
 import '../app/app_theme.dart';
 import '../app/instant_pop_material_page_route.dart';
 import '../constants/asset_paths.dart';
@@ -150,6 +152,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   GisArchiveInfo _archiveInfo = _defaultArchiveInfo;
   bool _isMapReady = false;
   bool _isLocating = false;
+  bool _gpsEnabledLogged = false;
   bool _showSoilPolygons = true;
   bool _showReferenceBasemap = true;
   _InteractionMode _interactionMode = _InteractionMode.none;
@@ -249,6 +252,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   @override
   void initState() {
     super.initState();
+    unawaited(AnalyticsService.instance.logMapOpened());
     _ownsRenderMetrics = widget.renderMetrics == null;
     _renderMetrics = widget.renderMetrics ?? GisRenderMetrics.disabled();
     _desktopWindowService =
@@ -600,7 +604,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                   onAddMarker: _togglePersonalMarkerMode,
                   onLocate: _isLocating || _disableGeolocatorForDiagnostic
                       ? null
-                      : _centerMapOnCurrentLocation,
+                      : _centerMapOnCurrentLocationFromUser,
                 ),
               );
             },
@@ -1474,7 +1478,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 tooltip: 'Mi ubicación',
                 onPressed: _isLocating || _disableGeolocatorForDiagnostic
                     ? null
-                    : _centerMapOnCurrentLocation,
+                    : _centerMapOnCurrentLocationFromUser,
                 icon: _isLocating
                     ? const SizedBox(
                         width: 18,
@@ -1989,6 +1993,13 @@ class _GisMapScreenState extends State<GisMapScreen>
       existing[existingIndex] = measurement;
     }
     await SyncAwareLocalRepository.instance.saveMeasurements(existing);
+    if (existingIndex == -1) {
+      unawaited(
+        mode == _MeasurementMode.area
+            ? AnalyticsService.instance.logMeasureArea()
+            : AnalyticsService.instance.logMeasureDistance(),
+      );
+    }
     if (!mounted) return;
     setState(() {
       final renderedIndex = _savedMeasurements.indexWhere(
@@ -2721,7 +2732,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     }).key;
   }
 
-  Future<void> _centerMapOnCurrentLocation() async {
+  Future<void> _centerMapOnCurrentLocation({VoidCallback? onLocated}) async {
     if (_disableGeolocatorForDiagnostic) {
       debugPrint('GIS diagnostic: Geolocator disabled.');
       return;
@@ -2743,6 +2754,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _startLocationUpdates();
       _moveMapToLocation(location);
       _storeCurrentLocationFeatureIfVisible(location.point);
+      onLocated?.call();
     } on GisLocationException catch (error) {
       if (!mounted) {
         return;
@@ -2776,6 +2788,16 @@ class _GisMapScreenState extends State<GisMapScreen>
         });
       }
     }
+  }
+
+  Future<void> _centerMapOnCurrentLocationFromUser() async {
+    await _centerMapOnCurrentLocation(
+      onLocated: () {
+        if (_gpsEnabledLogged) return;
+        _gpsEnabledLogged = true;
+        unawaited(AnalyticsService.instance.logGpsEnabled());
+      },
+    );
   }
 
   void _startLocationUpdates() {
@@ -3167,6 +3189,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                   ),
                 ),
                 onTap: () {
+                  if (query.isNotEmpty) {
+                    logSubmittedSearch(query);
+                  }
                   controller.closeView(entry.name);
                   if (entry.type == _MapSearchEntryType.soilSeries) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -4026,6 +4051,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _personalMarkers.add(marker);
     });
     await _persistPersonalMarkers();
+    unawaited(AnalyticsService.instance.logMarkerCreated());
     if (!mounted) return;
     _exitPersonalMarkerPlacement();
   }
@@ -4494,7 +4520,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       );
     }
 
-    unawaited(_saveFavorites());
+    unawaited(_saveFavorites(logAdded: removedFavorite == null));
   }
 
   bool _removeFavoriteFromDesktopPanel(FavoriteSoilFeature favorite) {
@@ -4503,8 +4529,11 @@ class _GisMapScreenState extends State<GisMapScreen>
     return true;
   }
 
-  Future<void> _saveFavorites() async {
+  Future<void> _saveFavorites({bool logAdded = false}) async {
     await _gisFavoritesService.save(_favoriteFeatures.values);
+    if (logAdded) {
+      unawaited(AnalyticsService.instance.logFavoriteAdded());
+    }
   }
 
   String? _readOptionalPdfIdentifier(GisFeature feature) {
@@ -6016,7 +6045,10 @@ class _DesktopSearchPanelState extends State<_DesktopSearchPanel> {
           return _DesktopSearchResultRow(
             entry: entry,
             selected: selected,
-            onTap: () => widget.onSelect(entry),
+            onTap: () {
+              logSubmittedSearch(_controller.text);
+              widget.onSelect(entry);
+            },
           );
         }),
       );
@@ -6071,6 +6103,7 @@ class _DesktopPanelSearchField extends StatelessWidget {
     required this.hintText,
     this.focusNode,
     this.autofocus = false,
+    this.onSubmitted,
   });
 
   final Key fieldKey;
@@ -6079,6 +6112,7 @@ class _DesktopPanelSearchField extends StatelessWidget {
   final ValueChanged<String> onChanged;
   final String hintText;
   final bool autofocus;
+  final ValueChanged<String>? onSubmitted;
 
   @override
   Widget build(BuildContext context) {
@@ -6089,6 +6123,7 @@ class _DesktopPanelSearchField extends StatelessWidget {
       autofocus: autofocus,
       textInputAction: TextInputAction.search,
       onChanged: onChanged,
+      onSubmitted: onSubmitted,
       decoration: InputDecoration(
         hintText: hintText,
         prefixIcon: const Icon(AppIcons.search, size: 20),
@@ -6407,6 +6442,7 @@ class _DesktopCollectionPanelState<T>
               controller: _controller,
               focusNode: _focusNode,
               onChanged: (_) => setState(() {}),
+              onSubmitted: logSubmittedSearch,
               hintText: widget.searchHint,
             ),
             const SizedBox(height: 12),

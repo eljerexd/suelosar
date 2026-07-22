@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../analytics/analytics_service.dart';
 import '../app/instant_pop_material_page_route.dart';
 import '../constants/app_icons.dart';
 import '../services/settings_service.dart';
@@ -405,6 +408,13 @@ class _ReduceAnimationsSetting extends StatelessWidget {
 class _FollowLocationSetting extends StatelessWidget {
   const _FollowLocationSetting();
 
+  Future<void> _setEnabled(SettingsService settings, bool value) async {
+    await settings.setFollowLocationAutomatically(value);
+    if (value) {
+      unawaited(AnalyticsService.instance.logGpsEnabled());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = SettingsService.instance;
@@ -414,7 +424,7 @@ class _FollowLocationSetting extends StatelessWidget {
         title: 'Seguir mi ubicación automáticamente',
         trailing: Switch(
           value: settings.followLocationAutomatically,
-          onChanged: settings.setFollowLocationAutomatically,
+          onChanged: (value) => unawaited(_setEnabled(settings, value)),
         ),
       ),
     );
@@ -710,7 +720,10 @@ Información adicional:
 
   try {
     final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (launched) return;
+    if (launched) {
+      unawaited(AnalyticsService.instance.logFeedbackOpened());
+      return;
+    }
   } catch (_) {}
   if (!context.mounted) return;
   AppNotification.show(

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../analytics/analytics_actions.dart';
 import '../constants/app_icons.dart';
 import '../models/personal_marker.dart';
 import '../repositories/sync_aware_local_repository.dart';
@@ -56,6 +57,7 @@ class _PersonalMarkersScreenState extends State<PersonalMarkersScreen> {
             padding: EdgeInsets.zero,
             child: SearchBar(
               onChanged: (value) => _searchQuery.value = value,
+              onSubmitted: logSubmittedSearch,
               hintText: 'Buscar marcador...',
               leading: const Icon(AppIcons.search),
               elevation: const WidgetStatePropertyAll(0),

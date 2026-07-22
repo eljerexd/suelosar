@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../analytics/analytics_actions.dart';
+import '../analytics/analytics_service.dart';
 import '../constants/app_icons.dart';
 import '../models/pdf_soil_sheet_favorite.dart';
 import '../models/soil_map.dart';
@@ -86,6 +90,7 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                     padding: EdgeInsets.zero,
                     child: SearchBar(
                       onChanged: _updateSearchQuery,
+                      onSubmitted: logSubmittedSearch,
                       hintText: 'Buscar carta de suelo...',
                       leading: const Icon(AppIcons.search),
                       elevation: const WidgetStatePropertyAll(0),
@@ -301,15 +306,20 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
   }
 
   Future<void> _toggleFavorite(SoilMap soilMap) async {
+    final wasFavorite = _isFavorite(soilMap);
     final updated = await _favoritesService.toggle(
       _favorites,
       title: soilMap.name,
       pdfIdentifier: soilMap.pdf,
     );
+    final updatedIdentifiers = _favoriteIdentifiers(updated);
+    if (!wasFavorite && updatedIdentifiers.contains(soilMap.pdf.trim())) {
+      unawaited(AnalyticsService.instance.logFavoriteAdded());
+    }
     if (mounted) {
       setState(() {
         _favorites = updated;
-        _favoritePdfIdentifiers = _favoriteIdentifiers(updated);
+        _favoritePdfIdentifiers = updatedIdentifiers;
       });
     }
   }

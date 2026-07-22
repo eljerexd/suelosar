@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import '../analytics/analytics_service.dart';
 import '../app/instant_pop_material_page_route.dart';
 import '../utils/app_motion.dart';
 import '../widgets/app_notification.dart';
@@ -40,6 +41,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   final ValueNotifier<bool> _mobileScrollbarVisible = ValueNotifier<bool>(
     false,
   );
+  bool _pdfOpenLogged = false;
   Timer? _mobileScrollbarHideTimer;
 
   @override
@@ -71,6 +73,13 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         if (mounted) _mobileScrollbarVisible.value = false;
       });
     }
+  }
+
+  void _handleViewerReady() {
+    _handleControllerChanged();
+    if (_pdfOpenLogged) return;
+    _pdfOpenLogged = true;
+    unawaited(AnalyticsService.instance.logPdfOpened());
   }
 
   bool get _usesAutoHideScrollbar =>
@@ -160,7 +169,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
         sizeDelegateProvider: _SuelosArPdfSizeDelegateProvider(
           desktop: desktop,
         ),
-        onViewerReady: (_, _) => _handleControllerChanged(),
+        onViewerReady: (_, _) => _handleViewerReady(),
         viewerOverlayBuilder: showScrollThumb
             ? (context, _, _) => [
                 PdfViewerScrollThumb(

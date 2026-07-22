@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:suelosar/analytics/analytics_service.dart';
 import 'package:suelosar/models/personal_marker.dart';
 import 'package:suelosar/repositories/sync_aware_local_repository.dart';
 import 'package:suelosar/services/connectivity_service.dart';
@@ -12,6 +13,8 @@ import 'package:suelosar/sync/sync_coordinator.dart';
 import 'package:suelosar/sync/sync_engine.dart';
 import 'package:suelosar/sync/sync_logger.dart';
 import 'package:suelosar/sync/sync_state.dart';
+
+import 'support/recording_analytics_service.dart';
 
 void main() {
   test('queued marker changes wake the coordinator immediately', () async {
@@ -63,6 +66,8 @@ void main() {
   test(
     'polling uploads queued changes and merges the newest remote record',
     () async {
+      final analytics = RecordingAnalyticsService();
+      AnalyticsService.register(analytics);
       SharedPreferences.setMockInitialValues(<String, Object>{});
       await SettingsService.instance.initialize();
       final connectivity = ConnectivityService();
@@ -134,6 +139,9 @@ void main() {
         preferences.getString(SyncCoordinator.cursorStorageKey),
         backend.downloadBatch.nextCursor,
       );
+      expect(analytics.count('sync_started'), 1);
+      expect(analytics.count('sync_completed'), 1);
+      expect(analytics.count('sync_failed'), 0);
 
       await coordinator.dispose();
       await engine.dispose();
@@ -144,6 +152,8 @@ void main() {
   test(
     'failed backend calls keep operations queued and schedule retry',
     () async {
+      final analytics = RecordingAnalyticsService();
+      AnalyticsService.register(analytics);
       SharedPreferences.setMockInitialValues(<String, Object>{});
       final connectivity = ConnectivityService();
       final queue = PersistentSyncQueue(storageKey: 'test.phase3.retry.queue');
@@ -182,6 +192,9 @@ void main() {
       expect(queued, hasLength(1));
       expect(queued.single.retryCount, 1);
       expect(connectivity.status, ConnectivityStatus.offline);
+      expect(analytics.count('sync_started'), 1);
+      expect(analytics.count('sync_completed'), 0);
+      expect(analytics.count('sync_failed'), 1);
 
       await coordinator.dispose();
       await engine.dispose();

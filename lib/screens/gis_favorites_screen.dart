@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../analytics/analytics_actions.dart';
 import '../constants/app_icons.dart';
 import '../models/favorite_soil_feature.dart';
 import '../services/gis_favorites_service.dart';
@@ -52,6 +53,7 @@ class _GisFavoritesScreenState extends State<GisFavoritesScreen> {
             hintText: 'Buscar favorito...',
             leading: const Icon(AppIcons.search),
             onChanged: (value) => _searchQuery.value = value,
+            onSubmitted: logSubmittedSearch,
           ),
           const SizedBox(height: 12),
           Expanded(

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../analytics/analytics_actions.dart';
 import '../constants/app_icons.dart';
 import '../export/measurement_export.dart';
 import '../models/saved_measurement.dart';
@@ -60,6 +61,7 @@ class _MeasurementsScreenState extends State<MeasurementsScreen> {
             padding: EdgeInsets.zero,
             child: SearchBar(
               onChanged: (value) => _searchQuery.value = value,
+              onSubmitted: logSubmittedSearch,
               hintText: 'Buscar medición...',
               leading: const Icon(AppIcons.search),
               elevation: const WidgetStatePropertyAll(0),

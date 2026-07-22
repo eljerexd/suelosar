@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../analytics/analytics_service.dart';
 import '../services/connectivity_service.dart';
 import 'initial_history_sync.dart';
 import 'sync_backend_adapter.dart';
@@ -83,6 +84,8 @@ class SyncCoordinator {
   }
 
   Future<void> _synchronize() async {
+    final stopwatch = Stopwatch()..start();
+    unawaited(AnalyticsService.instance.logSyncStarted());
     List<PreparedSyncUpload> batch = const [];
     try {
       await initialHistorySync.prepareIfNeeded();
@@ -122,13 +125,19 @@ class SyncCoordinator {
         await initialHistorySync.completeIfQueueEmpty();
       }
       engine.status.value = SyncStatus.completed;
+      stopwatch.stop();
+      unawaited(AnalyticsService.instance.logSyncCompleted(stopwatch.elapsed));
     } on SyncAuthenticationRequiredException catch (error) {
+      stopwatch.stop();
+      unawaited(AnalyticsService.instance.logSyncFailed('authentication'));
       engine.status.value = SyncStatus.waitingConnection;
       await _storeLastError(error);
       _logger.log('Synchronization waiting for authentication', {
         'error': error.toString(),
       });
     } catch (error) {
+      stopwatch.stop();
+      unawaited(AnalyticsService.instance.logSyncFailed(error.toString()));
       engine.connectivity.update(ConnectivityStatus.offline);
       for (final item in batch) {
         await engine.scheduleRetry(item.operation.operationId);
