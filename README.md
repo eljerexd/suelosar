@@ -16,9 +16,7 @@ For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
 
-flutter run -d windows
 
-PARA COMPILAR = flutter build windows --release --dart-define-from-file=.vscode/supabase.env.json
 
 Hoy SuelosAR ya tiene:
 
@@ -150,3 +148,10 @@ FPS:
 ≈40 % de mejora.
 
 Sin cambiar ninguna funcionalidad.
+
+
+🟢  flutter build apk --release
+
+flutter run -d windows
+
+🔴  PARA COMPILAR = flutter build windows --release --dart-define-from-file=.vscode/supabase.env.json

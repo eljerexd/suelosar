@@ -238,6 +238,9 @@ void main() {
     final editableText = tester.widget<EditableText>(
       find.descendant(of: codeField, matching: find.byType(EditableText)),
     );
+    expect(editableText.focusNode.hasFocus, isFalse);
+    await tester.tap(codeField);
+    await tester.pump();
     expect(editableText.focusNode.hasFocus, isTrue);
     final segmentedBeforeKeyboard = tester.widget<SegmentedButton<bool>>(
       find.byType(SegmentedButton<bool>),

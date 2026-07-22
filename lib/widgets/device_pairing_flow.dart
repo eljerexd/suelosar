@@ -314,7 +314,6 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
             controller: _codeController,
             focusNode: _codeFocusNode,
             enabled: !_working,
-            autofocus: widget.desktop,
             keyboardType: TextInputType.number,
             textInputAction: TextInputAction.done,
             inputFormatters: [
@@ -478,10 +477,7 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
       _scanning = false;
       _joinError = null;
     });
-    if (!widget.androidPhone) return;
-    if (joining) {
-      _codeFocusNode.requestFocus();
-    } else {
+    if (!joining) {
       _codeFocusNode.unfocus();
     }
   }
