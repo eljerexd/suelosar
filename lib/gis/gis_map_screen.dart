@@ -46,10 +46,14 @@ import '../widgets/measurement_color_selector.dart';
 import '../widgets/personal_marker_category_icon.dart';
 import '../widgets/responsive_desktop_shell.dart';
 import '../widgets/saved_measurement_overflow_menu.dart';
+import 'engine/flutter_map_engine.dart';
+import 'engine/maplibre_engine.dart';
+import 'engine/soil_map_engine.dart';
 import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_location_service.dart';
 import 'gis_map_occlusion_observer.dart';
+import 'measurement_math.dart';
 import 'offline_reference_map_layer.dart';
 import 'gis_render_metrics.dart';
 import 'gis_repository.dart';
@@ -65,6 +69,7 @@ class GisMapScreen extends StatefulWidget {
     this.renderMetrics,
     this.locationService,
     this.desktopWindowService,
+    this.engine,
   });
 
   final GisRepository? repository;
@@ -72,6 +77,11 @@ class GisMapScreen extends StatefulWidget {
   final GisRenderMetrics? renderMetrics;
   final GisLocationService? locationService;
   final DesktopWindowService? desktopWindowService;
+
+  /// Overrides the default [SoilMapEngine] (flutter_map). Used to evaluate
+  /// [MapLibreEngine] in parallel (Etapa 3) without changing the app's
+  /// default engine — production code never passes this.
+  final SoilMapEngine? engine;
 
   @override
   State<GisMapScreen> createState() => _GisMapScreenState();
@@ -101,7 +111,12 @@ class _GisMapScreenState extends State<GisMapScreen>
     'DISABLE_GEOLOCATOR',
   );
 
-  final MapController _mapController = MapController();
+  static const bool _useMapLibreEngineForDiagnostic = bool.fromEnvironment(
+    'USE_MAPLIBRE_ENGINE',
+  );
+
+  late final SoilMapEngine _mapEngine;
+  bool get _usesMapLibreEngine => _mapEngine is MapLibreEngine;
   final GlobalKey _mapKey = GlobalKey();
 
   late final GisRepository _repository;
@@ -253,6 +268,11 @@ class _GisMapScreenState extends State<GisMapScreen>
   void initState() {
     super.initState();
     unawaited(AnalyticsService.instance.logMapOpened());
+    _mapEngine =
+        widget.engine ??
+        (_useMapLibreEngineForDiagnostic
+            ? MapLibreEngine()
+            : FlutterMapEngine());
     _ownsRenderMetrics = widget.renderMetrics == null;
     _renderMetrics = widget.renderMetrics ?? GisRenderMetrics.disabled();
     _desktopWindowService =
@@ -335,6 +355,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _renderMetrics.dispose();
     }
     unawaited(_repository.close());
+    _mapEngine.dispose();
     super.dispose();
   }
 
@@ -1112,9 +1133,32 @@ class _GisMapScreenState extends State<GisMapScreen>
         _archiveInfo = archiveInfo;
       });
 
-      if (_isMapReady) {
-        unawaited(_loadVisibleTiles(_mapController.camera, archiveInfo));
+      if (_isMapReady && !_usesMapLibreEngine) {
+        unawaited(
+          _loadVisibleTiles(
+            (_mapEngine as FlutterMapEngine).controller.camera,
+            archiveInfo,
+          ),
+        );
       }
+
+      // No-op for FlutterMapEngine (its polygons keep rendering through the
+      // existing tile pipeline above). For MapLibreEngine this prepares the
+      // real PMTiles archive + local tile server and loads the vector
+      // style, using the app's real theme colors (matches
+      // _GisPolygonStyle.fromColorScheme below) — the trailing setState
+      // rebuilds the map surface with it.
+      final colorScheme = Theme.of(context).colorScheme;
+      await _mapEngine.loadSoilPolygonsLayer(
+        archiveInfo: archiveInfo,
+        layerName: AssetPaths.gisLayerName,
+        normalFillColor: colorScheme.primary,
+        selectedFillColor: colorScheme.tertiary,
+      );
+      if (!mounted) return;
+      await _mapEngine.loadReferenceBasemap();
+      if (!mounted) return;
+      setState(() {});
     } catch (_) {
       if (!mounted) {
         return;
@@ -1125,6 +1169,160 @@ class _GisMapScreenState extends State<GisMapScreen>
         error: 'No se pudo cargar la información geográfica.',
       );
     }
+  }
+
+  /// MapLibre-only measurement readout/action panel.
+  ///
+  /// `_MeasurementLayer` (and its `_MeasurementPanel`) is passed through
+  /// `buildMapSurface`'s `children`, which MapLibreEngine always receives as
+  /// an empty list — it renders vertices/lines/fill natively instead (see
+  /// `setMeasurementGeometry`). Without this method MapLibre would show the
+  /// numbered vertices and geometry but no distance/area readout, save,
+  /// undo/clear, color selector, or exit controls at all.
+  ///
+  /// Placed as a screen-anchored sibling in `_buildMap`'s outer `Stack`
+  /// (not inside `buildMapSurface`'s `children`, which for FlutterMapEngine
+  /// must stay `flutter_map`-specific layer widgets) so it works without a
+  /// `FlutterMap` ancestor. Mirrors `_MeasurementLayer._buildDistance`/
+  /// `_buildArea`'s panel construction — same actions, same text, same
+  /// shared `measurement_math.dart` calculations — but does not reuse that
+  /// code directly since it also builds geographic-anchored `flutter_map`
+  /// layers (`PolylineLayer`/`MarkerLayer`/`PolygonLayer`) that only work
+  /// under a `FlutterMap` ancestor. `FlutterMapEngine` is unaffected: this
+  /// returns null whenever `_usesMapLibreEngine` is false.
+  ///
+  /// One documented difference: FlutterMapEngine shows the in-progress
+  /// distance value as a floating marker anchored at the path midpoint
+  /// (geographic position, follows the map). Here it is a text row inside
+  /// the bottom panel instead, since a geographic-anchored overlay would
+  /// need synchronous screen<->geo projection, which MapLibre's plugin only
+  /// exposes asynchronously (see the Etapa 3 measurement architecture note).
+  Widget? _buildMeasurementPanelForMapLibre(BuildContext context) {
+    if (!_usesMapLibreEngine) return null;
+    final mode = _measurementMode ?? _retainedMeasurementMode;
+    if (mode == null || !_hasMeasurementPoints) return null;
+    final isEditing = _measurementMode != null;
+    final isArea = mode == _MeasurementMode.area;
+    final points = isArea ? _areaMeasurementPoints : _distanceMeasurementPoints;
+    if (isArea ? points.length < 3 : points.isEmpty) return null;
+    if (!isArea && !isEditing) return null;
+    final isSaved = _activeSavedMeasurementId != null;
+
+    final actions = <Widget>[
+      if (isEditing) ...[
+        _MeasurementSaveButton(
+          highlighted: _measurementHasUnsavedChanges,
+          onPressed: _isCurrentMeasurementComplete
+              ? _saveCurrentMeasurement
+              : null,
+        ),
+        if (!isArea && points.length >= 2)
+          _MeasurementExportButton(onPressed: _exportCurrentMeasurementPdf),
+        if (isSaved) ...[
+          IconButton(
+            tooltip: 'Ocultar',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(AppIcons.visibilityOff, size: 18),
+            onPressed: _hideCurrentSavedMeasurement,
+          ),
+          IconButton(
+            tooltip: 'Eliminar medición',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(AppIcons.delete, size: 18),
+            onPressed: _deleteCurrentSavedMeasurement,
+          ),
+        ] else ...[
+          IconButton(
+            tooltip: 'Deshacer',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(AppIcons.undo, size: 18),
+            onPressed: _undoMeasurementPoint,
+          ),
+          IconButton(
+            tooltip: 'Limpiar',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(AppIcons.delete, size: 18),
+            onPressed: _clearMeasurement,
+          ),
+        ],
+        IconButton(
+          tooltip: 'Salir',
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(AppIcons.close, size: 18),
+          onPressed: _exitMeasurement,
+        ),
+      ] else if (isArea)
+        _MeasurementExportButton(onPressed: _exportCurrentMeasurementPdf),
+    ];
+
+    final panelChildren = <Widget>[
+      if (isArea) ...[
+        Text(
+          'Área: ${formatMeasurementArea(calculateMeasurementArea(points))}',
+          key: const ValueKey('measurement-area'),
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w600,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          'Perímetro: '
+          '${formatMeasurementDistance(calculateMeasurementPerimeter(points))}',
+          key: const ValueKey('measurement-perimeter'),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+        if (isEditing) ...[
+          const SizedBox(height: 8),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              FilledButton.tonalIcon(
+                key: const ValueKey('analyze-parcel'),
+                icon: const Icon(AppIcons.analytics, size: 18),
+                label: const Text('Analizar lote'),
+                onPressed: () {
+                  _showParcelAnalysis(
+                    ParcelAnalysis(
+                      totalAreaSquareMeters: calculateMeasurementArea(points),
+                      perimeterMeters: calculateMeasurementPerimeter(points),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
+      ] else
+        Text(
+          formatMeasurementDistance(calculateMeasurementPathDistance(points)),
+          key: const ValueKey('measurement-distance'),
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+    ];
+
+    return Positioned(
+      left: 16,
+      right: 16,
+      bottom: 16.0 + MediaQuery.paddingOf(context).bottom,
+      child: Center(
+        child: _MeasurementPanel(
+          selectedColor: _measurementColor,
+          onColorChanged: _setMeasurementColor,
+          showColorSelector: isEditing,
+          actions: actions,
+          children: panelChildren,
+        ),
+      ),
+    );
   }
 
   Widget _buildMap(GisArchiveInfo archiveInfo, {bool desktopShell = false}) {
@@ -1148,55 +1346,89 @@ class _GisMapScreenState extends State<GisMapScreen>
       null => false,
     };
 
+    // No-op for FlutterMapEngine (rendered via its `children` widgets
+    // below instead). For MapLibreEngine these keep its own annotations in
+    // sync with the same state on every rebuild; each setter no-ops
+    // internally when nothing actually changed.
+    if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused) {
+      _mapEngine.setPersonalMarkers(
+        [
+          for (final marker in _personalMarkers)
+            SoilMapMarkerPin(
+              id: marker.id,
+              point: LatLng(marker.latitude, marker.longitude),
+            ),
+        ],
+        onMarkerTap: (id) {
+          final marker = _personalMarkers
+              .where((candidate) => candidate.id == id)
+              .firstOrNull;
+          if (marker != null) _handlePersonalMarkerTap(marker);
+        },
+      );
+      final location = _currentLocation;
+      _mapEngine.setCurrentLocationMarker(
+        point: location?.point,
+        accuracyMeters: location?.accuracyMeters,
+        showAccuracyCircle: SettingsService.instance.showGpsAccuracyCircle,
+      );
+      final showsMeasurement =
+          renderedMeasurementMode != null && _hasMeasurementPoints;
+      _mapEngine.setMeasurementGeometry(
+        distancePoints: showsMeasurement ? _distanceMeasurementPoints : const [],
+        areaPoints: showsMeasurement ? _areaMeasurementPoints : const [],
+        color: _measurementColor.color,
+        onVertexTap: _showVertexMenu,
+        onVertexDragStart: (index) => _startAreaVertexDrag(index, Offset.zero),
+        onVertexDragUpdate: _moveAreaVertexTo,
+        onVertexDragEnd: (index) => _endAreaVertexDrag(),
+      );
+    }
+
     return Stack(
       fit: StackFit.expand,
       children: [
-        FlutterMap(
+        _mapEngine.buildMapSurface(
           key: _mapKey,
-          mapController: _mapController,
-          options: MapOptions(
-            initialCenter: _buenosAiresCenter,
-            initialZoom: _initialZoom,
-            minZoom: math.max(_minimumMapZoom, archiveInfo.minZoom.toDouble()),
-            maxZoom: archiveInfo.maxZoom + 2,
-            backgroundColor: colorScheme.surfaceContainerLowest,
-            interactionOptions: InteractionOptions(
-              flags: _draggedAreaVertexIndex == null
-                  ? InteractiveFlag.all
-                  : InteractiveFlag.all &
-                        ~InteractiveFlag.drag &
-                        ~InteractiveFlag.flingAnimation &
-                        ~InteractiveFlag.pinchMove,
-            ),
-            onMapReady: () {
-              _isMapReady = true;
-              _updateMapViewportState(_mapController.camera);
-              if (!_disableGisTilePipelineForDiagnostic) {
-                unawaited(
-                  _loadVisibleTiles(_mapController.camera, archiveInfo),
-                );
-              }
-              if (!_disableGeolocatorForDiagnostic &&
-                  _isFollowingLocation &&
-                  _currentLocation != null) {
-                _moveMapToLocation(_currentLocation!);
-              }
-            },
-            onPositionChanged: (camera, hasGesture) {
-              if (hasGesture) {
-                _isFollowingLocation = false;
-              }
-              _updateMapViewportState(camera);
-              if (!_disableGisTilePipelineForDiagnostic) {
-                _scheduleTileLoad(camera, archiveInfo);
-              }
-            },
-            onMapEvent: (event) {
-              _updateMapViewportState(event.camera);
-            },
-            onTap: _disableGisTilePipelineForDiagnostic ? null : _handleMapTap,
-          ),
-          children: [
+          initialCenter: _buenosAiresCenter,
+          initialZoom: _initialZoom,
+          minZoom: math.max(_minimumMapZoom, archiveInfo.minZoom.toDouble()),
+          maxZoom: archiveInfo.maxZoom + 2,
+          backgroundColor: colorScheme.surfaceContainerLowest,
+          gesturesEnabled: _draggedAreaVertexIndex == null,
+          onReady: () {
+            _isMapReady = true;
+            _updateMapViewportState(_mapEngine.camera);
+            if (!_disableGisTilePipelineForDiagnostic && !_usesMapLibreEngine) {
+              unawaited(
+                _loadVisibleTiles(
+                  (_mapEngine as FlutterMapEngine).controller.camera,
+                  archiveInfo,
+                ),
+              );
+            }
+            if (!_disableGeolocatorForDiagnostic &&
+                _isFollowingLocation &&
+                _currentLocation != null) {
+              _moveMapToLocation(_currentLocation!);
+            }
+          },
+          onPositionChanged: (camera, {required hasGesture}) {
+            if (hasGesture) {
+              _isFollowingLocation = false;
+            }
+            _updateMapViewportState(camera);
+            if (!_disableGisTilePipelineForDiagnostic && !_usesMapLibreEngine) {
+              _scheduleTileLoad(
+                (_mapEngine as FlutterMapEngine).controller.camera,
+                archiveInfo,
+              );
+            }
+          },
+          onTap: _disableGisTilePipelineForDiagnostic ? null : _handleMapTap,
+          children: _usesMapLibreEngine
+              ? const <Widget>[]
+              : [
             if (!_mapVisualsPaused && _showReferenceBasemap)
               const Positioned.fill(child: OfflineReferenceMapLayer()),
             if (!_disableGisTilePipelineForDiagnostic &&
@@ -1311,7 +1543,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 onStartAreaVertexDrag: _startAreaVertexDrag,
                 onMoveAreaVertex: _moveAreaVertex,
                 onEndAreaVertexDrag: _endAreaVertexDrag,
-                onDeleteAreaVertex: _deleteAreaVertex,
+                onVertexTap: _showVertexMenu,
                 onColorChanged: _setMeasurementColor,
                 onSave: _saveCurrentMeasurement,
                 isSavedMeasurement: _activeSavedMeasurementId != null,
@@ -1327,6 +1559,7 @@ class _GisMapScreenState extends State<GisMapScreen>
               ),
           ],
         ),
+        ?_buildMeasurementPanelForMapLibre(context),
         if (!_mapVisualsPaused)
           Positioned.fill(
             child: ValueListenableBuilder<_MapOverlayState>(
@@ -1541,6 +1774,8 @@ class _GisMapScreenState extends State<GisMapScreen>
           isVisible = _showReferenceBasemap;
       }
     });
+    _mapEngine.setSoilPolygonsVisible(_showSoilPolygons);
+    _mapEngine.setReferenceBasemapVisible(_showReferenceBasemap);
     _desktopLayersOverlay?.markNeedsBuild();
     unawaited(_persistMapDisplayPreference(preferenceKey, isVisible));
   }
@@ -1556,6 +1791,8 @@ class _GisMapScreenState extends State<GisMapScreen>
       _showSoilPolygons = showSoilPolygons;
       _showReferenceBasemap = showReferenceBasemap;
     });
+    _mapEngine.setSoilPolygonsVisible(_showSoilPolygons);
+    _mapEngine.setReferenceBasemapVisible(_showReferenceBasemap);
   }
 
   Future<void> _persistMapDisplayPreference(String key, bool value) async {
@@ -2291,8 +2528,8 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _moveAreaVertex(int index, Offset globalPosition) {
     _suppressNextMapTap = false;
-    final camera = _mapController.camera;
-    if (!_isFiniteCamera(camera) || !_isFiniteOffset(globalPosition)) {
+    final camera = _mapEngine.camera;
+    if (!_isFiniteCameraState(camera) || !_isFiniteOffset(globalPosition)) {
       return;
     }
     final mapContext = _mapKey.currentContext;
@@ -2305,7 +2542,19 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
     final localPosition = renderBox.globalToLocal(globalPosition);
     if (!_isFiniteOffset(localPosition)) return;
-    final point = camera.screenOffsetToLatLng(localPosition);
+    final point = _mapEngine.screenOffsetToLatLng(localPosition);
+    if (point == null) {
+      return;
+    }
+    _moveAreaVertexTo(index, point);
+  }
+
+  /// Same vertex-move logic as [_moveAreaVertex], but taking the new
+  /// geographic point directly instead of a screen offset — used by
+  /// MapLibreEngine's native drag callback, which already delivers the
+  /// dragged [LatLng] and needs no screen<->geo projection.
+  void _moveAreaVertexTo(int index, LatLng point) {
+    _suppressNextMapTap = false;
     if (!_isFiniteLatLng(point)) {
       return;
     }
@@ -2348,6 +2597,108 @@ class _GisMapScreenState extends State<GisMapScreen>
       if (isArea) _invalidateParcelAnalysis();
       points.removeAt(index);
     });
+  }
+
+  /// Shows the delete/cancel popup for vertex [index] at screen [position].
+  ///
+  /// Extracted from `_MeasurementLayer` (which owned this for
+  /// FlutterMapEngine's `_AreaVertexHandle.onTap`) so MapLibreEngine's
+  /// `onFeatureTapped`-driven vertex tap (see `setMeasurementGeometry`'s
+  /// `onVertexTap`) can reuse the exact same menu — identical text, styling
+  /// and delete behavior on both engines.
+  Future<void> _showVertexMenu(int index, Offset position) async {
+    final isArea = _measurementMode == _MeasurementMode.area;
+    final points = isArea ? _areaMeasurementPoints : _distanceMeasurementPoints;
+    final pointCount = points.length;
+    final minimumPointCount = isArea ? 3 : 1;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) {
+      return;
+    }
+    final desktop = isSuelosArDesktopPlatform(context);
+    final colorScheme = Theme.of(context).colorScheme;
+    var deleted = false;
+    final selection = await showMenu<_VertexMenuOption>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      elevation: desktop ? 8 : null,
+      color: desktop ? colorScheme.surfaceContainerLow : null,
+      surfaceTintColor: desktop ? Colors.transparent : null,
+      shadowColor: desktop ? colorScheme.shadow.withValues(alpha: 0.2) : null,
+      shape: desktop
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                color: colorScheme.outlineVariant.withValues(alpha: 0.65),
+              ),
+            )
+          : null,
+      menuPadding: desktop ? const EdgeInsets.symmetric(vertical: 8) : null,
+      items: desktop
+          ? [
+              PopupMenuItem(
+                key: const ValueKey('delete-area-vertex'),
+                value: _VertexMenuOption.delete,
+                enabled: pointCount > minimumPointCount,
+                height: 48,
+                onTap: pointCount > minimumPointCount
+                    ? () {
+                        deleted = true;
+                        _deleteAreaVertex(index);
+                      }
+                    : null,
+                child: Row(
+                  children: [
+                    Icon(
+                      AppIcons.delete,
+                      size: 19,
+                      color: pointCount > minimumPointCount
+                          ? colorScheme.error
+                          : colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 12),
+                    const Flexible(child: Text('Eliminar vértice')),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: _VertexMenuOption.cancel,
+                height: 48,
+                child: Row(
+                  children: [
+                    Icon(AppIcons.close, size: 19),
+                    SizedBox(width: 12),
+                    Flexible(child: Text('Cancelar')),
+                  ],
+                ),
+              ),
+            ]
+          : [
+              PopupMenuItem(
+                key: const ValueKey('delete-area-vertex'),
+                value: _VertexMenuOption.delete,
+                enabled: pointCount > minimumPointCount,
+                onTap: pointCount > minimumPointCount
+                    ? () {
+                        deleted = true;
+                        _deleteAreaVertex(index);
+                      }
+                    : null,
+                child: const Text('Eliminar vértice'),
+              ),
+              const PopupMenuItem(
+                value: _VertexMenuOption.cancel,
+                child: Text('Cancelar'),
+              ),
+            ],
+    );
+    if (!deleted && selection == _VertexMenuOption.delete) {
+      _deleteAreaVertex(index);
+    }
   }
 
   void _invalidateParcelAnalysis() {
@@ -2836,9 +3187,9 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _moveMapToLocation(GisLocation location) {
     if (!_isMapReady) return;
-    final zoom = _mapController.camera.zoom;
+    final zoom = _mapEngine.camera.zoom;
     if (!_isFiniteLatLng(location.point) || !_isFiniteNumber(zoom)) return;
-    _mapController.move(location.point, zoom);
+    _mapEngine.move(location.point, zoom);
   }
 
   GisFeature? _storeCurrentLocationFeatureIfVisible(LatLng point) {
@@ -2855,8 +3206,8 @@ class _GisMapScreenState extends State<GisMapScreen>
     return feature;
   }
 
-  void _updateMapViewportState(MapCamera camera) {
-    if (!_isFiniteCamera(camera)) {
+  void _updateMapViewportState(SoilMapCameraState camera) {
+    if (!_isFiniteCameraState(camera)) {
       return;
     }
     final nextState = _MapViewportState(
@@ -2872,7 +3223,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _animateMapToNorth() {
-    final startRotation = _mapController.camera.rotation;
+    final startRotation = _mapEngine.camera.rotation;
     if (startRotation.abs() < 0.01) return;
 
     _northRotationAnimation?.dispose();
@@ -2886,7 +3237,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       end: 0,
     ).animate(CurvedAnimation(parent: controller, curve: Curves.easeOutCubic));
     controller.addListener(() {
-      if (mounted) _mapController.rotate(animation.value);
+      if (mounted) _mapEngine.rotate(animation.value);
     });
     controller.addStatusListener((status) {
       if (status == AnimationStatus.completed &&
@@ -3374,9 +3725,9 @@ class _GisMapScreenState extends State<GisMapScreen>
       selectedMarker.latitude,
       selectedMarker.longitude,
     );
-    final zoom = _mapController.camera.zoom;
+    final zoom = _mapEngine.camera.zoom;
     if (markerPoint != null && _isFiniteNumber(zoom)) {
-      _mapController.move(markerPoint, zoom);
+      _mapEngine.move(markerPoint, zoom);
     }
     await _showPersonalMarkerDetails(selectedMarker);
   }
@@ -3401,11 +3752,11 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _focusSavedMeasurement(SavedMeasurement measurement) {
     if (measurement.geometry.isEmpty) return;
-    final targetCamera = CameraFit.coordinates(
-      coordinates: measurement.geometry,
+    final targetCamera = _mapEngine.fitBounds(
+      measurement.geometry,
       padding: const EdgeInsets.all(72),
       maxZoom: 16,
-    ).fit(_mapController.camera);
+    );
     _animateMapToPosition(targetCamera.center, targetCamera.zoom);
     setState(() {
       _closeDesktopPanel();
@@ -3417,9 +3768,9 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _focusPersonalMarker(PersonalMarker marker) {
     final markerPoint = _safeLatLng(marker.latitude, marker.longitude);
-    final zoom = _mapController.camera.zoom;
+    final zoom = _mapEngine.camera.zoom;
     if (markerPoint != null && _isFiniteNumber(zoom)) {
-      _mapController.move(markerPoint, zoom);
+      _mapEngine.move(markerPoint, zoom);
     }
     setState(() {
       _closeDesktopPanel();
@@ -3462,7 +3813,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _animateMapToPosition(LatLng targetCenter, double targetZoom) {
-    final startCamera = _mapController.camera;
+    final startCamera = _mapEngine.camera;
     final startCenter = startCamera.center;
     final startZoom = startCamera.zoom;
     if (!_isFiniteLatLng(startCenter) ||
@@ -3488,7 +3839,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       if (center == null || !_isFiniteNumber(zoom)) {
         return;
       }
-      _mapController.move(center, zoom);
+      _mapEngine.move(center, zoom);
     });
     animation.addStatusListener((status) {
       if (status != AnimationStatus.completed &&
@@ -3596,7 +3947,7 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _animateMapToSearchResult(_SoilSeriesSearchEntry entry) {
     final targetCenter = entry.center;
-    final startCamera = _mapController.camera;
+    final startCamera = _mapEngine.camera;
     final startCenter = startCamera.center;
     final startZoom = startCamera.zoom;
     final targetZoom = startZoom < 12 ? 12.0 : startZoom;
@@ -3626,7 +3977,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       if (center == null || !_isFiniteNumber(zoom)) {
         return;
       }
-      _mapController.move(center, zoom);
+      _mapEngine.move(center, zoom);
     });
     animation.addStatusListener((status) {
       if (status == AnimationStatus.completed ||
@@ -3785,14 +4136,14 @@ class _GisMapScreenState extends State<GisMapScreen>
     return double.tryParse(value?.toString() ?? '');
   }
 
-  void _handleMapTap(TapPosition tapPosition, LatLng point) {
+  Future<void> _handleMapTap(SoilMapTapDetails details) async {
+    final tapOffset = details.screenOffset;
+    final point = details.point;
     if (_suppressNextMapTap) {
       _suppressNextMapTap = false;
       return;
     }
-    final savedMeasurement = _findSavedMeasurementAt(
-      tapPosition.relative ?? tapPosition.global,
-    );
+    final savedMeasurement = _findSavedMeasurementAt(tapOffset);
     if (savedMeasurement != null) {
       if (savedMeasurement.id != _activeSavedMeasurementId) {
         unawaited(_requestSelectSavedMeasurement(savedMeasurement));
@@ -3803,8 +4154,9 @@ class _GisMapScreenState extends State<GisMapScreen>
       _dismissActiveToolHint();
       if (_measurementMode == _MeasurementMode.area) {
         final candidate = List<LatLng>.of(_areaMeasurementPoints);
-        final edgeIndex = _nearestMeasurementEdgeIndex(
-          tapPosition.relative,
+        final edgeIndex = _nearestEdgeIndexForMeasurementTap(
+          tapOffset,
+          point,
           _areaMeasurementPoints,
           closed: true,
         );
@@ -3825,8 +4177,9 @@ class _GisMapScreenState extends State<GisMapScreen>
         });
       } else {
         setState(() {
-          final edgeIndex = _nearestMeasurementEdgeIndex(
-            tapPosition.relative,
+          final edgeIndex = _nearestEdgeIndexForMeasurementTap(
+            tapOffset,
+            point,
             _distanceMeasurementPoints,
             closed: false,
           );
@@ -3852,7 +4205,10 @@ class _GisMapScreenState extends State<GisMapScreen>
       return;
     }
 
-    final feature = _findFeatureAt(point);
+    final feature = _usesMapLibreEngine
+        ? await _mapEngine.hitTestSoilFeature(tapOffset)
+        : _findFeatureAt(point);
+    if (!mounted) return;
     if (feature == null) {
       _selectionPreview.value = null;
       if (_highlightedSavedMeasurementId != null) {
@@ -3883,6 +4239,11 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   SavedMeasurement? _findSavedMeasurementAt(Offset tapOffset) {
+    // MapLibreEngine does not expose synchronous screen<->geo projection
+    // (see the Etapa 3 report's measurement architecture note) — tapping
+    // directly on a saved measurement's line to select it is not available
+    // under that engine yet.
+    if (_usesMapLibreEngine) return null;
     for (final measurement in _savedMeasurements.reversed) {
       if (!measurement.isVisible) continue;
       final points = measurement.geometry;
@@ -3891,10 +4252,10 @@ class _GisMapScreenState extends State<GisMapScreen>
           ? points.length
           : points.length - 1;
       for (var index = 0; index < segmentCount; index++) {
-        final start = _mapController.camera.latLngToScreenOffset(points[index]);
-        final end = _mapController.camera.latLngToScreenOffset(
+        final start = _mapEngine.latLngToScreenOffset(points[index])!;
+        final end = _mapEngine.latLngToScreenOffset(
           points[(index + 1) % points.length],
-        );
+        )!;
         if (_distanceToSegment(tapOffset, start, end) <= 10) {
           return measurement;
         }
@@ -4285,17 +4646,20 @@ class _GisMapScreenState extends State<GisMapScreen>
     List<LatLng> points, {
     required bool closed,
   }) {
-    if (tapOffset == null || points.length < 2) {
+    if (tapOffset == null || points.length < 2 || _usesMapLibreEngine) {
+      // MapLibreEngine has no synchronous screen<->geo projection yet — new
+      // measurement points are appended at the end instead of inserted at
+      // the nearest edge under that engine. See the Etapa 3 report.
       return null;
     }
     var nearestDistance = 14.0;
     int? nearestIndex;
     final segmentCount = closed ? points.length : points.length - 1;
     for (var index = 0; index < segmentCount; index++) {
-      final start = _mapController.camera.latLngToScreenOffset(points[index]);
-      final end = _mapController.camera.latLngToScreenOffset(
+      final start = _mapEngine.latLngToScreenOffset(points[index])!;
+      final end = _mapEngine.latLngToScreenOffset(
         points[(index + 1) % points.length],
-      );
+      )!;
       final distance = _distanceToSegment(tapOffset, start, end);
       if (distance < nearestDistance) {
         nearestDistance = distance;
@@ -4303,6 +4667,31 @@ class _GisMapScreenState extends State<GisMapScreen>
       }
     }
     return nearestIndex;
+  }
+
+  /// Resolves the segment nearest a measurement tap, engine-agnostic.
+  ///
+  /// FlutterMapEngine uses [_nearestMeasurementEdgeIndex] (screen-pixel
+  /// distance, via synchronous projection). MapLibreEngine has no
+  /// synchronous screen<->geo projection, so it uses the geographic
+  /// equivalent [nearestMeasurementEdgeIndex] (measurement_math.dart)
+  /// instead, computed directly from the tapped [LatLng] and the current
+  /// camera zoom — same ~14px hit-test radius, converted to meters.
+  int? _nearestEdgeIndexForMeasurementTap(
+    Offset? tapOffset,
+    LatLng tapPoint,
+    List<LatLng> points, {
+    required bool closed,
+  }) {
+    if (_usesMapLibreEngine) {
+      return nearestMeasurementEdgeIndex(
+        tapPoint: tapPoint,
+        points: points,
+        closed: closed,
+        zoom: _mapEngine.camera.zoom,
+      );
+    }
+    return _nearestMeasurementEdgeIndex(tapOffset, points, closed: closed);
   }
 
   GisFeature? _findFeatureAt(LatLng point) {
@@ -4328,6 +4717,7 @@ class _GisMapScreenState extends State<GisMapScreen>
         tile.updateSelection(feature.id);
       }
     }
+    _mapEngine.setSelectedSoilFeature(feature.id);
   }
 
   Future<void> _showFeatureAttributes(GisFeature feature) {
@@ -7657,7 +8047,7 @@ class _MeasurementLayer extends StatelessWidget {
     required this.onStartAreaVertexDrag,
     required this.onMoveAreaVertex,
     required this.onEndAreaVertexDrag,
-    required this.onDeleteAreaVertex,
+    required this.onVertexTap,
     required this.onColorChanged,
     required this.onSave,
     required this.isSavedMeasurement,
@@ -7672,9 +8062,6 @@ class _MeasurementLayer extends StatelessWidget {
     required this.onExport,
   });
 
-  static const Distance _distance = Distance(roundResult: false);
-  static const double _wgs84AuthalicRadius = 6371007.1809;
-
   final _MeasurementMode mode;
   final bool isEditing;
   final List<LatLng> distancePoints;
@@ -7684,7 +8071,7 @@ class _MeasurementLayer extends StatelessWidget {
   final void Function(int index, Offset globalPosition) onStartAreaVertexDrag;
   final void Function(int index, Offset globalPosition) onMoveAreaVertex;
   final VoidCallback onEndAreaVertexDrag;
-  final ValueChanged<int> onDeleteAreaVertex;
+  final void Function(int index, Offset position) onVertexTap;
   final ValueChanged<MeasurementColorOption> onColorChanged;
   final VoidCallback onSave;
   final bool isSavedMeasurement;
@@ -8023,164 +8410,23 @@ class _MeasurementLayer extends StatelessWidget {
         onDragStart: (position) => onStartAreaVertexDrag(index, position),
         onDragUpdate: (position) => onMoveAreaVertex(index, position),
         onDragEnd: onEndAreaVertexDrag,
-        onTap: (position) => _showVertexMenu(
-          context,
-          index,
-          position,
-          pointCount: keyPrefix == 'area'
-              ? areaPoints.length
-              : distancePoints.length,
-          minimumPointCount: keyPrefix == 'area' ? 3 : 1,
-        ),
+        onTap: (position) => onVertexTap(index, position),
       ),
     );
   }
 
-  Future<void> _showVertexMenu(
-    BuildContext context,
-    int index,
-    Offset position, {
-    required int pointCount,
-    required int minimumPointCount,
-  }) async {
-    final overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox?;
-    if (overlay == null) {
-      return;
-    }
-    final desktop = isSuelosArDesktopPlatform(context);
-    final colorScheme = Theme.of(context).colorScheme;
-    var deleted = false;
-    final selection = await showMenu<_VertexMenuOption>(
-      context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromLTWH(position.dx, position.dy, 1, 1),
-        Offset.zero & overlay.size,
-      ),
-      elevation: desktop ? 8 : null,
-      color: desktop ? colorScheme.surfaceContainerLow : null,
-      surfaceTintColor: desktop ? Colors.transparent : null,
-      shadowColor: desktop ? colorScheme.shadow.withValues(alpha: 0.2) : null,
-      shape: desktop
-          ? RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(
-                color: colorScheme.outlineVariant.withValues(alpha: 0.65),
-              ),
-            )
-          : null,
-      menuPadding: desktop ? const EdgeInsets.symmetric(vertical: 8) : null,
-      items: desktop
-          ? [
-              PopupMenuItem(
-                key: const ValueKey('delete-area-vertex'),
-                value: _VertexMenuOption.delete,
-                enabled: pointCount > minimumPointCount,
-                height: 48,
-                onTap: pointCount > minimumPointCount
-                    ? () {
-                        deleted = true;
-                        onDeleteAreaVertex(index);
-                      }
-                    : null,
-                child: Row(
-                  children: [
-                    Icon(
-                      AppIcons.delete,
-                      size: 19,
-                      color: pointCount > minimumPointCount
-                          ? colorScheme.error
-                          : colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 12),
-                    const Flexible(child: Text('Eliminar vértice')),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: _VertexMenuOption.cancel,
-                height: 48,
-                child: Row(
-                  children: [
-                    Icon(AppIcons.close, size: 19),
-                    SizedBox(width: 12),
-                    Flexible(child: Text('Cancelar')),
-                  ],
-                ),
-              ),
-            ]
-          : [
-              PopupMenuItem(
-                key: const ValueKey('delete-area-vertex'),
-                value: _VertexMenuOption.delete,
-                enabled: pointCount > minimumPointCount,
-                onTap: pointCount > minimumPointCount
-                    ? () {
-                        deleted = true;
-                        onDeleteAreaVertex(index);
-                      }
-                    : null,
-                child: const Text('Eliminar vértice'),
-              ),
-              const PopupMenuItem(
-                value: _VertexMenuOption.cancel,
-                child: Text('Cancelar'),
-              ),
-            ],
-    );
-    if (!deleted && selection == _VertexMenuOption.delete) {
-      onDeleteAreaVertex(index);
-    }
-  }
+  static String _formatDistance(double meters) => formatMeasurementDistance(meters);
 
-  static String _formatDistance(double meters) {
-    if (meters < 1000) {
-      return '${meters.round()} m';
-    }
-    return '${(meters / 1000).toStringAsFixed(1)} km';
-  }
+  static String _formatArea(double squareMeters) => formatMeasurementArea(squareMeters);
 
-  static String _formatArea(double squareMeters) {
-    if (squareMeters < 10000) {
-      return '${squareMeters.round()} m²';
-    }
-    return '${(squareMeters / 10000).toStringAsFixed(1)} ha';
-  }
+  static double _calculatePerimeter(List<LatLng> points) =>
+      calculateMeasurementPerimeter(points);
 
-  static double _calculatePerimeter(List<LatLng> points) {
-    var perimeter = 0.0;
-    for (var index = 0; index < points.length; index++) {
-      perimeter += _distance(
-        points[index],
-        points[(index + 1) % points.length],
-      );
-    }
-    return perimeter;
-  }
+  static double _calculatePathDistance(List<LatLng> points) =>
+      calculateMeasurementPathDistance(points);
 
-  static double _calculatePathDistance(List<LatLng> points) {
-    var distance = 0.0;
-    for (var index = 1; index < points.length; index++) {
-      distance += _distance(points[index - 1], points[index]);
-    }
-    return distance;
-  }
-
-  static double _calculateArea(List<LatLng> points) {
-    var sum = 0.0;
-    for (var index = 0; index < points.length; index++) {
-      final current = points[index];
-      final next = points[(index + 1) % points.length];
-      sum +=
-          _toRadians(next.longitude - current.longitude) *
-          (2 +
-              math.sin(_toRadians(current.latitude)) +
-              math.sin(_toRadians(next.latitude)));
-    }
-    return (sum * _wgs84AuthalicRadius * _wgs84AuthalicRadius / 2).abs();
-  }
-
-  static double _toRadians(double degrees) => degrees * math.pi / 180;
+  static double _calculateArea(List<LatLng> points) =>
+      calculateMeasurementArea(points);
 }
 
 class _MeasurementPanel extends StatelessWidget {
@@ -8642,6 +8888,12 @@ bool _isFiniteCoordinateValues(double latitude, double longitude) {
 }
 
 bool _isFiniteCamera(MapCamera camera) {
+  return _isFiniteLatLng(camera.center) &&
+      _isFiniteNumber(camera.zoom) &&
+      _isFiniteNumber(camera.rotation);
+}
+
+bool _isFiniteCameraState(SoilMapCameraState camera) {
   return _isFiniteLatLng(camera.center) &&
       _isFiniteNumber(camera.zoom) &&
       _isFiniteNumber(camera.rotation);

@@ -52,6 +52,12 @@ dependencies:
   firebase_core: 4.12.1
   firebase_analytics: 12.4.5
   firebase_crashlytics: 5.2.6
+  # Pinned (not ^0.27.0): 0.27.0's Android build.gradle skips applying the
+  # Kotlin Gradle plugin on AGP >= 9 assuming AGP provides the `kotlin{}`
+  # extension itself — that assumption fails with this project's AGP 9.0.1 +
+  # Kotlin 2.3.20, breaking the build ("Could not find method kotlin()").
+  # 0.26.2 applies kotlin-android unconditionally and doesn't hit this.
+  maplibre_gl: 0.26.2
 
 dev_dependencies:
   flutter_test:

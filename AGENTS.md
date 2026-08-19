@@ -48,6 +48,87 @@ These systems should be considered production-ready.
 
 ---
 
+# GIS Engine Migration Status
+
+The project has started evaluating a migration of the GIS rendering
+engine away from flutter_map (migration candidate: MapLibre). This is a
+staged, reversible process — not a decision that flutter_map will
+definitely be replaced on any fixed timeline.
+
+Until this section says otherwise:
+
+- flutter_map must NOT be assumed to be the permanent rendering engine.
+  Do not write new code, tests, or documentation that assumes flutter_map
+  is a long-term architectural decision.
+- flutter_map must also NOT be removed or replaced outside of the staged
+  plan below. It remains the production engine until an alternative is
+  fully validated.
+- `gis_repository.dart` remains fully protected under the Core Rule
+  below. It is the data layer (PMTiles + MVT decoding + cache) and is
+  already independent of the rendering engine, which is exactly why it
+  does not need to change for this migration.
+- Any GIS architecture change must go through the stages listed here, in
+  order, without skipping stages.
+- Before modifying the rendering engine, the current migration plan must
+  be respected. Do not start engine-replacement work without explicitly
+  being in Stage 3 or later.
+- Each stage must be safe and reversible: it must be possible to abandon
+  a stage and return to the previous known-good state without data loss
+  or broken functionality.
+- The current engine must keep working end-to-end until a validated
+  alternative exists. No stage may leave the app without a functional
+  map.
+
+## Migration Stages
+
+**ETAPA 0 — Contexto**
+Update agent-facing documentation (this file and CLAUDE.md) so agents
+stop assuming flutter_map is permanent, and record the staged plan. No
+application code changes.
+
+**ETAPA 1 — Investigación técnica y validación experimental, cero cambios en la app**
+Research the candidate engine and validate it practically in an isolated
+Flutter project, separate from the SuelosAR project, using the real
+SuelosAR PMTiles file (`assets/maps/soil_polygons.pmtiles`). This stage
+must verify:
+
+- loading of the real PMTiles file;
+- MVT support;
+- performance with the real data volume;
+- `queryRenderedFeatures` or an equivalent hit-testing/query mechanism;
+- attribute retrieval;
+- feasibility of reproducing per-series polygon coloring;
+- support for the target platforms.
+
+No dependencies are added to the SuelosAR project, and no code in the
+SuelosAR project is touched. The isolated experimental project is
+separate from SuelosAR.
+
+**ETAPA 2 — Separar UI del motor**
+Introduce an abstraction boundary between the GIS screen's UI/business
+logic and the concrete rendering engine (flutter_map today), so the
+engine becomes swappable behind an interface. This stage touches
+`gis_map_screen.dart` and related UI files, but keeps flutter_map as the
+only implementation behind the new interface — behavior must not change.
+
+**ETAPA 3 — Implementación paralela**
+Build an alternative engine implementation behind the interface from
+Etapa 2, without wiring it up as the default. Both implementations exist
+side by side; the app keeps shipping with flutter_map by default.
+
+**ETAPA 4 — Comparación y migración de hit-testing/atributos**
+Validate the alternative implementation against the current one:
+rendering fidelity, hit-testing/selection behavior, attribute/metadata
+handling, performance. Port hit-testing and attribute handling to the
+new engine only once parity is demonstrated.
+
+**ETAPA 5 — Corte**
+Switch the default engine over, only after Etapa 4 validation is
+complete and explicitly approved. Keep a rollback path until the new
+engine has proven itself in production use.
+
+---
+
 # Core Rule
 
 Do NOT modify the GIS engine unless absolutely necessary.
@@ -64,6 +145,11 @@ The following components are considered stable:
 - Docker pipeline
 
 New features should integrate around the engine, not rewrite it.
+
+Note: this rule is being revisited specifically for the rendering engine
+under the staged GIS Engine Migration plan above. `gis_repository.dart`,
+tile cache, PMTiles loading, MVT decoding, and the Docker pipeline remain
+fully stable and protected regardless of migration stage.
 
 ---
 

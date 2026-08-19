@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Allows cleartext (plain HTTP) traffic only to the device loopback address.
+
+  Needed exclusively by MapLibreEngine (lib/gis/engine/maplibre_engine.dart,
+  Etapa 3 — evaluation engine, not active by default): it bridges the real,
+  local soil_polygons.pmtiles archive to MapLibre's vector tile source via a
+  loopback-only HTTP server (127.0.0.1). Android blocks cleartext traffic by
+  default; this scopes the exception to loopback instead of enabling it
+  globally.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
