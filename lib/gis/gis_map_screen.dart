@@ -1325,6 +1325,33 @@ class _GisMapScreenState extends State<GisMapScreen>
     );
   }
 
+  /// Pushes the current measurement geometry to `_mapEngine`. No-op for
+  /// FlutterMapEngine (it ignores every argument here — see
+  /// `SoilMapEngine.setMeasurementGeometry`'s doc comment).
+  ///
+  /// Called from `_buildMap` on every rebuild (unchanged), and also called
+  /// directly, synchronously, from [_handleMapLibreVertexDragUpdate] on
+  /// every drag event — bypassing the wait for a Flutter rebuild entirely
+  /// for that path. See that method's doc comment for why: routing the
+  /// fill/line update through a `setState`-triggered rebuild gave it a
+  /// different timing than MapLibre's own internal update of the dragged
+  /// vertex's Symbol, which visibly desynced the two.
+  void _pushMeasurementGeometryToEngine() {
+    final renderedMeasurementMode = _measurementMode ?? _retainedMeasurementMode;
+    final showsMeasurement =
+        renderedMeasurementMode != null && _hasMeasurementPoints;
+    _mapEngine.setMeasurementGeometry(
+      distancePoints: showsMeasurement ? _distanceMeasurementPoints : const [],
+      areaPoints: showsMeasurement ? _areaMeasurementPoints : const [],
+      color: _measurementColor.color,
+      onVertexTap: _showVertexMenu,
+      onVertexDragStart: (index) => _startAreaVertexDrag(index, Offset.zero),
+      onVertexDragUpdate: _handleMapLibreVertexDragUpdate,
+      onVertexDragEnd: (index) => _endAreaVertexDrag(),
+      draggedVertexIndex: _draggedAreaVertexIndex,
+    );
+  }
+
   Widget _buildMap(GisArchiveInfo archiveInfo, {bool desktopShell = false}) {
     _renderMetrics.mapBuildCount++;
     final colorScheme = Theme.of(context).colorScheme;
@@ -1357,6 +1384,7 @@ class _GisMapScreenState extends State<GisMapScreen>
             SoilMapMarkerPin(
               id: marker.id,
               point: LatLng(marker.latitude, marker.longitude),
+              icon: personalMarkerCategoryIcon(marker.category),
             ),
         ],
         onMarkerTap: (id) {
@@ -1372,17 +1400,7 @@ class _GisMapScreenState extends State<GisMapScreen>
         accuracyMeters: location?.accuracyMeters,
         showAccuracyCircle: SettingsService.instance.showGpsAccuracyCircle,
       );
-      final showsMeasurement =
-          renderedMeasurementMode != null && _hasMeasurementPoints;
-      _mapEngine.setMeasurementGeometry(
-        distancePoints: showsMeasurement ? _distanceMeasurementPoints : const [],
-        areaPoints: showsMeasurement ? _areaMeasurementPoints : const [],
-        color: _measurementColor.color,
-        onVertexTap: _showVertexMenu,
-        onVertexDragStart: (index) => _startAreaVertexDrag(index, Offset.zero),
-        onVertexDragUpdate: _moveAreaVertexTo,
-        onVertexDragEnd: (index) => _endAreaVertexDrag(),
-      );
+      _pushMeasurementGeometryToEngine();
     }
 
     return Stack(
@@ -2553,28 +2571,111 @@ class _GisMapScreenState extends State<GisMapScreen>
   /// geographic point directly instead of a screen offset — used by
   /// MapLibreEngine's native drag callback, which already delivers the
   /// dragged [LatLng] and needs no screen<->geo projection.
+  ///
+  /// This wraps [_tryMoveAreaVertex] in an immediate `setState`, exactly as
+  /// this method always has — kept unchanged for FlutterMapEngine (reached
+  /// only via [_moveAreaVertex]). MapLibreEngine's drag path uses
+  /// [_handleMapLibreVertexDragUpdate] instead, which coalesces many rapid
+  /// native drag events into at most one `setState` per rendered frame —
+  /// see that method's doc comment for why.
   void _moveAreaVertexTo(int index, LatLng point) {
     _suppressNextMapTap = false;
-    if (!_isFiniteLatLng(point)) {
-      return;
-    }
+    if (!_pointIsInRange(index, point)) return;
+    setState(() {
+      _tryMoveAreaVertex(index, point);
+    });
+  }
+
+  bool _pointIsInRange(int index, LatLng point) {
+    if (!_isFiniteLatLng(point)) return false;
     final points = _measurementMode == _MeasurementMode.distance
         ? _distanceMeasurementPoints
         : _areaMeasurementPoints;
-    if (index >= points.length) return;
+    return index < points.length;
+  }
+
+  /// Validates and applies moving vertex [index] to [point], mutating the
+  /// active point list in place — but does **not** call `setState` itself,
+  /// so callers control exactly when/how often a rebuild happens. Returns
+  /// false (no mutation) if the move is invalid: out of range, non-finite,
+  /// or — in area mode — would make the polygon self-intersect, in which
+  /// case [_showInvalidMeasurementMessage] fires exactly as before.
+  bool _tryMoveAreaVertex(int index, LatLng point) {
+    if (!_pointIsInRange(index, point)) return false;
+    final points = _measurementMode == _MeasurementMode.distance
+        ? _distanceMeasurementPoints
+        : _areaMeasurementPoints;
     final candidate = List<LatLng>.of(points);
     candidate[index] = point;
     if (_measurementMode == _MeasurementMode.area &&
         _isSelfIntersecting(candidate)) {
       _showInvalidMeasurementMessage();
-      return;
+      return false;
     }
-    setState(() {
-      if (_measurementMode == _MeasurementMode.area) {
-        _invalidateParcelAnalysis();
-      }
-      points[index] = point;
+    if (_measurementMode == _MeasurementMode.area) {
+      _invalidateParcelAnalysis();
+    }
+    points[index] = point;
+    return true;
+  }
+
+  bool _mapLibreDragFrameScheduled = false;
+
+  /// `onVertexDragUpdate` for MapLibreEngine's `setMeasurementGeometry` (see
+  /// `_buildMap`/[_pushMeasurementGeometryToEngine]).
+  ///
+  /// Two rounds of investigation went into this (Etapa 3 reports):
+  ///
+  /// 1. Wrapping every single native `onFeatureDrag` "drag" event in its own
+  ///    `setState` made the geometry lag behind the finger overall — a real
+  ///    device can deliver drag events faster than a full `GisMapScreen`
+  ///    rebuild (a large widget tree) can drain, so rebuilds queued up.
+  /// 2. Fixing that by coalescing to at most one `setState` per rendered
+  ///    frame (via `addPostFrameCallback`) then caused a *different*,
+  ///    visually worse problem: the dragged vertex's own on-screen icon
+  ///    isn't moved by this code at all — MapLibre's `SymbolManager` moves
+  ///    it internally, on every single raw drag event, entirely inside the
+  ///    plugin, with no dependency on Flutter's widget tree or frame
+  ///    scheduling. Once the fill/line update here was coalesced to "once
+  ///    per rendered frame" while the vertex's own update kept firing on
+  ///    every raw event, the two were driven by two different, differently
+  ///    paced pipelines — visibly desyncing the boundary from the vertex it
+  ///    is supposed to touch, worse than before.
+  ///
+  /// Fix: split the two concerns. Validate + mutate the point list
+  /// immediately ([_tryMoveAreaVertex] — cheap, in-memory, no rebuild), then
+  /// push the accepted geometry to the engine *synchronously, in this same
+  /// call* via [_pushMeasurementGeometryToEngine] — the exact same
+  /// synchronous turn in which `MapLibreEngine._handleFeatureDrag` is
+  /// already running (it and `SymbolManager`'s own internal drag handler are
+  /// both plain listeners on the same `onFeatureDrag` event stream, invoked
+  /// back-to-back for the same native event). That keeps the fill/line
+  /// update on the identical cadence as the vertex's own native move, so
+  /// they can no longer drift apart. The coalesced `setState` is kept, but
+  /// now only for what actually needs a Flutter rebuild — the live
+  /// area/perimeter panel text — which was never the desynced part.
+  void _handleMapLibreVertexDragUpdate(int index, LatLng point) {
+    _suppressNextMapTap = false;
+    if (_tryMoveAreaVertex(index, point) &&
+        !_disableGisTilePipelineForDiagnostic &&
+        !_mapVisualsPaused) {
+      _pushMeasurementGeometryToEngine();
+    }
+    _scheduleMapLibreDragFrame();
+  }
+
+  void _scheduleMapLibreDragFrame() {
+    if (_mapLibreDragFrameScheduled || !mounted) return;
+    _mapLibreDragFrameScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _mapLibreDragFrameScheduled = false;
+      if (mounted) setState(() {});
     });
+    // A drag gesture between two touch-move events doesn't otherwise have
+    // anything scheduling a new frame (no independent animation is
+    // running), so the post-frame callback above needs one requested
+    // explicitly or it would never fire.
+    WidgetsBinding.instance.scheduleFrame();
   }
 
   void _endAreaVertexDrag() {

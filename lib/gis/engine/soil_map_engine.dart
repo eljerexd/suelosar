@@ -55,10 +55,23 @@ typedef SoilMapTapCallback = void Function(SoilMapTapDetails details);
 /// A personal-marker pin, independent of the concrete rendering engine.
 @immutable
 class SoilMapMarkerPin {
-  const SoilMapMarkerPin({required this.id, required this.point});
+  const SoilMapMarkerPin({
+    required this.id,
+    required this.point,
+    required this.icon,
+  });
 
   final String id;
   final LatLng point;
+
+  /// The category icon `GisMapScreen` already resolves via
+  /// `personalMarkerCategoryIcon` — passed through so engines that render
+  /// markers independently of a `children` widget (MapLibreEngine) can
+  /// match the personal-marker icon/category visual FlutterMapEngine
+  /// already shows via its own `Icon(personalMarkerCategoryIcon(...))`.
+  /// FlutterMapEngine itself ignores this (its markers come from
+  /// `children`, unaffected by this field).
+  final IconData icon;
 }
 
 /// Abstraction over the concrete map-rendering engine used by
@@ -199,6 +212,13 @@ abstract interface class SoilMapEngine {
   /// No-op for FlutterMapEngine, which renders measurements via
   /// `_MeasurementLayer` as a `children` widget and ignores every callback
   /// here (its own gesture handling in `_AreaVertexHandle` is unchanged).
+  ///
+  /// [draggedVertexIndex] is the index currently being dragged (matching
+  /// `GisMapScreen._draggedAreaVertexIndex`), or null when no vertex is
+  /// being dragged — mirrors `_AreaVertexHandle`'s `isDragged` visual state
+  /// (44x44, error-colored) for engines that render vertices themselves.
+  /// No-op for FlutterMapEngine, whose `_AreaVertexHandle` already reads
+  /// `_draggedAreaVertexIndex` directly.
   void setMeasurementGeometry({
     required List<LatLng> distancePoints,
     required List<LatLng> areaPoints,
@@ -207,6 +227,7 @@ abstract interface class SoilMapEngine {
     required void Function(int index) onVertexDragStart,
     required void Function(int index, LatLng newPoint) onVertexDragUpdate,
     required void Function(int index) onVertexDragEnd,
+    int? draggedVertexIndex,
   });
 
   void dispose();

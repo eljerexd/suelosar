@@ -197,6 +197,7 @@ class FlutterMapEngine implements SoilMapEngine {
     required void Function(int index) onVertexDragStart,
     required void Function(int index, LatLng newPoint) onVertexDragUpdate,
     required void Function(int index) onVertexDragEnd,
+    int? draggedVertexIndex,
   }) {
     // No-op: rendered via a `children` _MeasurementLayer widget, whose own
     // _AreaVertexHandle gesture handling is unchanged by this engine layer.
