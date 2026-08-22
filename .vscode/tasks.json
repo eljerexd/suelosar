@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "invalidate-beta-debug-build-cache",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-File",
+        "scripts/invalidate_debug_build_cache.ps1",
+        "-Flavor",
+        "beta"
+      ],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

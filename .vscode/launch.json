@@ -22,6 +22,7 @@
       "program": "${workspaceFolder}/lib/main.dart",
       "cwd": "${workspaceFolder}",
       "templateFor": "",
+      "preLaunchTask": "invalidate-beta-debug-build-cache",
       "flutterMode": "debug",
       "toolArgs": [
         "--flavor",

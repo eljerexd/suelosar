@@ -111,9 +111,24 @@ class _GisMapScreenState extends State<GisMapScreen>
     'DISABLE_GEOLOCATOR',
   );
 
-  static const bool _useMapLibreEngineForDiagnostic = bool.fromEnvironment(
+  static const String _useMapLibreEngineOverride = String.fromEnvironment(
     'USE_MAPLIBRE_ENGINE',
   );
+
+  /// Etapa 5 — corte controlado: sin override explícito, MapLibre es el
+  /// motor por defecto en Android y FlutterMap en el resto (Windows
+  /// incluido). `--dart-define=USE_MAPLIBRE_ENGINE=true|false` sigue
+  /// forzando el motor en cualquier plataforma, igual que antes.
+  bool get _useMapLibreEngineForDiagnostic {
+    switch (_useMapLibreEngineOverride) {
+      case 'true':
+        return true;
+      case 'false':
+        return false;
+      default:
+        return !kIsWeb && Platform.isAndroid;
+    }
+  }
 
   late final SoilMapEngine _mapEngine;
   bool get _usesMapLibreEngine => _mapEngine is MapLibreEngine;
@@ -164,6 +179,9 @@ class _GisMapScreenState extends State<GisMapScreen>
   AnimationController? _northRotationAnimation;
   StreamSubscription<GisLocation>? _locationSubscription;
   Timer? _tileLoadDebounce;
+  Timer? _searchIndexDebounce;
+  final Set<GisTileCoordinates> _indexedSearchTileCoordinates =
+      <GisTileCoordinates>{};
   GisArchiveInfo _archiveInfo = _defaultArchiveInfo;
   bool _isMapReady = false;
   bool _isLocating = false;
@@ -339,6 +357,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       GisMapOcclusionObserver.instance.unregister(registeredRoute);
     }
     _tileLoadDebounce?.cancel();
+    _searchIndexDebounce?.cancel();
     unawaited(_locationSubscription?.cancel());
     _searchCameraAnimation?.dispose();
     _northRotationAnimation?.dispose();
@@ -1140,6 +1159,8 @@ class _GisMapScreenState extends State<GisMapScreen>
             archiveInfo,
           ),
         );
+      } else if (_isMapReady && _usesMapLibreEngine) {
+        unawaited(_indexSearchTilesAroundCamera(_mapEngine.camera, archiveInfo));
       }
 
       // No-op for FlutterMapEngine (its polygons keep rendering through the
@@ -1378,6 +1399,17 @@ class _GisMapScreenState extends State<GisMapScreen>
     // sync with the same state on every rebuild; each setter no-ops
     // internally when nothing actually changed.
     if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused) {
+      // MapLibreEngine-only: matches _AreaVertexHandle's normal-vertex
+      // border (colorScheme.surface) — see setVertexBadgeSurfaceColor's doc
+      // comment for why this isn't part of SoilMapEngine.
+      if (_mapEngine case final MapLibreEngine mapLibreEngine) {
+        mapLibreEngine.setVertexBadgeSurfaceColor(colorScheme.surface);
+        // Only actively editing (_measurementMode != null) should leave
+        // vertices draggable — a measurement shown solely via
+        // _retainedMeasurementMode (closed with X) matches
+        // FlutterMapEngine's non-interactive _SavedMeasurementsLayer.
+        mapLibreEngine.setMeasurementInteractive(_measurementMode != null);
+      }
       _mapEngine.setPersonalMarkers(
         [
           for (final marker in _personalMarkers)
@@ -1424,6 +1456,10 @@ class _GisMapScreenState extends State<GisMapScreen>
                   archiveInfo,
                 ),
               );
+            } else if (!_disableGisTilePipelineForDiagnostic) {
+              unawaited(
+                _indexSearchTilesAroundCamera(_mapEngine.camera, archiveInfo),
+              );
             }
             if (!_disableGeolocatorForDiagnostic &&
                 _isFollowingLocation &&
@@ -1441,6 +1477,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                 (_mapEngine as FlutterMapEngine).controller.camera,
                 archiveInfo,
               );
+            } else if (!_disableGisTilePipelineForDiagnostic) {
+              _scheduleSearchIndexUpdate(camera, archiveInfo);
             }
           },
           onTap: _disableGisTilePipelineForDiagnostic ? null : _handleMapTap,
@@ -2080,7 +2118,6 @@ class _GisMapScreenState extends State<GisMapScreen>
       return;
     }
     final mode = _measurementMode!;
-    final wasSavedMeasurement = _activeSavedMeasurementId != null;
     if (_measurementHasUnsavedChanges) {
       final decision = await _showMeasurementDecisionDialog(
         '¿Querés guardar esta medición antes de salir?',
@@ -2094,14 +2131,38 @@ class _GisMapScreenState extends State<GisMapScreen>
         if (!mounted) return;
       }
     }
+    // Checked *after* the possible `_persistMeasurement` above (which sets
+    // `_activeSavedMeasurementId`), not before — otherwise saving a brand
+    // new measurement from the exit dialog was indistinguishable from
+    // discarding one.
+    final isSaved = _activeSavedMeasurementId != null;
     setState(() {
       _setInteractionMode(_InteractionMode.none);
       _draggedAreaVertexIndex = null;
       _suppressNextMapTap = false;
       _activeToolHint = null;
-      if (wasSavedMeasurement) {
-        _distanceMeasurementPoints.clear();
-        _areaMeasurementPoints.clear();
+      if (isSaved) {
+        // FlutterMapEngine keeps a saved measurement on screen after X
+        // through `_SavedMeasurementsLayer`, an always-on layer independent
+        // of these editing-only point arrays — closing the editor there
+        // never made the shape disappear. MapLibreEngine has no equivalent
+        // separate layer; `setMeasurementGeometry` (driven by
+        // `_pushMeasurementGeometryToEngine`) is its only way to show
+        // measurement geometry at all. Clearing the points here previously
+        // made a just-saved/just-closed measurement vanish on MapLibre.
+        // Keeping them, with `_retainedMeasurementMode` set, reuses the
+        // exact mechanism `_activateMeasurementMode`'s `resumesSavedMeasurement`
+        // already relies on to keep a non-actively-edited measurement
+        // rendered — `_pushMeasurementGeometryToEngine`'s `showsMeasurement`
+        // only checks `_retainedMeasurementMode`/the points, not
+        // `_activeSavedMeasurementId`.
+        //
+        // `_activeSavedMeasurementId` itself still gets cleared below, same
+        // as before: `_SavedMeasurementLabels` (a FlutterMap-only overlay)
+        // renders whenever it's non-null, *in addition to*
+        // `_SavedMeasurementsLayer`'s own always-on labels — leaving it set
+        // duplicated every saved-measurement label on FlutterMap.
+        _retainedMeasurementMode = mode;
         _activeSavedMeasurementId = null;
         _savedMeasurementGeometrySignature = null;
         _savedMeasurementColorId = null;
@@ -3360,6 +3421,87 @@ class _GisMapScreenState extends State<GisMapScreen>
       const Duration(milliseconds: 150),
       () => _loadVisibleTiles(camera, archiveInfo),
     );
+  }
+
+  /// MapLibre renders soil polygons natively and never calls
+  /// [_loadVisibleTiles] (see the `!_usesMapLibreEngine` guards around its
+  /// call sites) — so `_soilSeriesSearchIndex`, which [_loadVisibleTiles]
+  /// populates as a side effect of decoding each tile for FlutterMap's
+  /// CustomPainter, was staying permanently empty under MapLibre and the
+  /// GIS search stopped finding anything. This decodes the same tiles via
+  /// the same repository purely to feed the search index — no rendering,
+  /// no `_visibleTiles`/`_RenderedGisTile` cache involved, so it can't
+  /// affect FlutterMapEngine's pipeline.
+  ///
+  /// [SoilMapCameraState] doesn't expose a viewport (only center/zoom), so
+  /// unlike [_tileCoordinatesForViewport] this can't intersect exact
+  /// geographic bounds — instead it derives a tile radius from the actual
+  /// screen size (`MediaQuery.sizeOf(context)`) and the current zoom, the
+  /// same relationship flutter_map's own tile math relies on: at any zoom,
+  /// a tile is 256 logical px on screen, so `screenExtent / 2 / 256` tiles
+  /// cover half the visible viewport in that direction — the zoom terms
+  /// cancel out (world size and tile size grow together), so this needs no
+  /// zoom-dependent formula. A fixed radius (previously 2) under-covered
+  /// wide/short viewports at low zoom, leaving visible features unindexed.
+  void _scheduleSearchIndexUpdate(
+    SoilMapCameraState camera,
+    GisArchiveInfo archiveInfo,
+  ) {
+    if (_disableGisTilePipelineForDiagnostic) return;
+    if (!camera.zoom.isFinite ||
+        !camera.center.latitude.isFinite ||
+        !camera.center.longitude.isFinite) {
+      return;
+    }
+    _searchIndexDebounce?.cancel();
+    _searchIndexDebounce = Timer(
+      const Duration(milliseconds: 150),
+      () => unawaited(_indexSearchTilesAroundCamera(camera, archiveInfo)),
+    );
+  }
+
+  Future<void> _indexSearchTilesAroundCamera(
+    SoilMapCameraState camera,
+    GisArchiveInfo archiveInfo,
+  ) async {
+    final zoom = camera.zoom.floor().clamp(
+      archiveInfo.minZoom,
+      archiveInfo.maxZoom,
+    );
+    final tilesAtZoom = 1 << zoom;
+    final centerX = _longitudeToTileX(camera.center.longitude, zoom);
+    final centerY = _latitudeToTileY(camera.center.latitude, zoom);
+    // +1 tile of padding beyond half the viewport, matching
+    // _tileCoordinatesForViewport's own `padding: 1` prefetch margin.
+    final screenSize = mounted ? MediaQuery.sizeOf(context) : Size.zero;
+    final radiusX = (screenSize.width / 2 / 256).ceil() + 1;
+    final radiusY = (screenSize.height / 2 / 256).ceil() + 1;
+    final minX = (centerX - radiusX).clamp(0, tilesAtZoom - 1);
+    final maxX = (centerX + radiusX).clamp(0, tilesAtZoom - 1);
+    final minY = (centerY - radiusY).clamp(0, tilesAtZoom - 1);
+    final maxY = (centerY + radiusY).clamp(0, tilesAtZoom - 1);
+
+    final coordinates = <GisTileCoordinates>[
+      for (var x = minX; x <= maxX; x++)
+        for (var y = minY; y <= maxY; y++)
+          if (!_indexedSearchTileCoordinates.contains(
+            GisTileCoordinates(zoom: zoom, x: x, y: y),
+          ))
+            GisTileCoordinates(zoom: zoom, x: x, y: y),
+    ];
+    if (coordinates.isEmpty || !mounted) return;
+
+    try {
+      final layers = await Future.wait(coordinates.map(_repository.loadTile));
+      if (!mounted) return;
+      for (var index = 0; index < coordinates.length; index++) {
+        _indexedSearchTileCoordinates.add(coordinates[index]);
+        _indexSoilSeries(_buildRenderedPolygons(layers[index]));
+      }
+    } catch (_) {
+      // Best-effort: a failed tile fetch just leaves that area unsearchable
+      // until the next pan/zoom retries it, same as the FlutterMap path.
+    }
   }
 
   Future<void> _loadVisibleTiles(

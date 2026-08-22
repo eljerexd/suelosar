@@ -54,6 +54,7 @@ class MapLibreEngine implements SoilMapEngine {
   static const String _refProvincialRoadsId = 'ref-provincial-roads';
   static const String _refCityCirclesId = 'ref-city-circles';
   static const String _refCityLabelsId = 'ref-city-labels';
+  static const String _refCityLabelsSecondaryId = 'ref-city-labels-secondary';
   static const String _refSourceId = 'reference-basemap';
   static const List<String> _referenceLayerIds = [
     _refProvincialBoundariesId,
@@ -66,6 +67,7 @@ class MapLibreEngine implements SoilMapEngine {
     _refProvincialRoadsId,
     _refCityCirclesId,
     _refCityLabelsId,
+    _refCityLabelsSecondaryId,
   ];
 
   // Measurement geometry (vertex badges + boundary line/fill) lives in a
@@ -94,6 +96,7 @@ class MapLibreEngine implements SoilMapEngine {
   List<({String name, bool isPrimary})> _referenceCities = const [];
   final Set<String> _registeredCityLabelImages = <String>{};
   bool _cityLabelsLayerAdded = false;
+  bool _cityLabelsSecondaryLayerAdded = false;
 
   ValueChanged<String>? _onMarkerTap;
   final List<maplibre.Symbol> _markerSymbols = <maplibre.Symbol>[];
@@ -180,14 +183,33 @@ class MapLibreEngine implements SoilMapEngine {
       styleString: _buildStyle(),
       initialCameraPosition: maplibre.CameraPosition(
         target: _toMaplibreLatLng(initialCenter),
-        zoom: initialZoom,
+        zoom: _toEngineZoom(initialZoom),
       ),
-      minMaxZoomPreference: maplibre.MinMaxZoomPreference(minZoom, maxZoom),
+      minMaxZoomPreference: maplibre.MinMaxZoomPreference(
+        _toEngineZoom(minZoom),
+        _toEngineZoom(maxZoom),
+      ),
       scrollGesturesEnabled: gesturesEnabled,
       zoomGesturesEnabled: gesturesEnabled,
       rotateGesturesEnabled: gesturesEnabled,
       tiltGesturesEnabled: gesturesEnabled,
       dragEnabled: gesturesEnabled,
+      // Default is [line, symbol, circle, fill] (bottom to top — see the
+      // plugin's own doc comment on MapLibreMap.annotationOrder). That
+      // stacks the GPS dot (circle, from _locationCircle) above personal
+      // markers (symbol, from setPersonalMarkers) — FlutterMapEngine draws
+      // markers above the GPS layer instead (see GisMapScreen._buildMap's
+      // `children` Stack order: _CurrentLocationLayer, then personal
+      // markers). It also puts the accuracy circle's translucent fill above
+      // its own center dot. Reordered so symbol (markers) is topmost and
+      // fill sits right after its line border, below the dot — matching
+      // FlutterMapEngine's stacking without touching anything else.
+      annotationOrder: const [
+        maplibre.AnnotationType.line,
+        maplibre.AnnotationType.fill,
+        maplibre.AnnotationType.circle,
+        maplibre.AnnotationType.symbol,
+      ],
       // Fill and Line annotations (the measurement area's translucent
       // polygon and its boundary line) are deliberately excluded here. The
       // plugin resolves a tap to exactly one annotation type, and both the
@@ -227,11 +249,20 @@ class MapLibreEngine implements SoilMapEngine {
       },
       onCameraMove: (position) {
         _lastCamera = _toState(position);
-        // MapLibre's onCameraMove does not distinguish gesture vs
-        // programmatic moves the way flutter_map's onPositionChanged does.
-        // Treated as `hasGesture: true`; the only current consumer clears
-        // GPS "follow me" mode — harmless if cleared a little more eagerly.
-        onPositionChanged(_lastCamera, hasGesture: true);
+        // MapLibre's onCameraMove doesn't carry a reason the way
+        // flutter_map's onPositionChanged does (gesture vs
+        // controller.move()/.rotate()). [_programmaticCameraUpdateDepth] is
+        // this engine's own bookkeeping of that: >0 exactly while a
+        // move()/rotate() call of ours is in flight, so any onCameraMove
+        // seen then is our own programmatic update, not a real gesture. See
+        // [_runProgrammaticCameraUpdate] for why a depth counter instead of
+        // a bool — GisMapScreen's "resume following location" flow moves
+        // the camera every fresh GPS fix, matching flutter_map's own
+        // `hasGesture: false` for that same programmatic move.
+        onPositionChanged(
+          _lastCamera,
+          hasGesture: _programmaticCameraUpdateDepth == 0,
+        );
       },
       onMapClick: onTap == null
           ? null
@@ -309,18 +340,74 @@ class MapLibreEngine implements SoilMapEngine {
   @override
   SoilMapCameraState get camera => _lastCamera;
 
+  // >0 exactly while a move()/rotate() call below is awaiting its
+  // moveCamera — see the onCameraMove doc comment in buildMapSurface for
+  // why this exists. A counter, not a bool: _animateNorthRotation calls
+  // rotate() once per animation frame, so overlapping in-flight calls are
+  // the normal case, not an edge case — a bool would let the first call's
+  // completion clear the flag while a second one is still in flight.
+  int _programmaticCameraUpdateDepth = 0;
+
+  Future<void> _runProgrammaticCameraUpdate(
+    Future<void>? Function() startUpdate,
+  ) async {
+    _programmaticCameraUpdateDepth++;
+    try {
+      await startUpdate();
+    } finally {
+      _programmaticCameraUpdateDepth--;
+    }
+  }
+
   @override
   void move(app_geo.LatLng center, double zoom) {
     unawaited(
-      _controller?.moveCamera(
-        maplibre.CameraUpdate.newLatLngZoom(_toMaplibreLatLng(center), zoom),
+      _runProgrammaticCameraUpdate(
+        () => _controller?.moveCamera(
+          maplibre.CameraUpdate.newLatLngZoom(
+            _toMaplibreLatLng(center),
+            _toEngineZoom(zoom),
+          ),
+        ),
       ),
     );
   }
 
+  // MapLibre GL (like Mapbox GL) sizes vector tiles for a 512px-per-tile
+  // camera-zoom convention, while flutter_map (and this app's own zoom
+  // math — GisArchiveInfo.minZoom/maxZoom, _tileCoordinatesForViewport,
+  // the "zoom 7" reference used throughout GisMapScreen) uses the classic
+  // 256px-per-tile convention. The same numeric zoom therefore shows twice
+  // as much screen detail (a visibly closer frame) in MapLibre than in
+  // flutter_map unless corrected — MapLibre's camera zoom is always one
+  // level "ahead" of the app's logical zoom for an equivalent framing.
+  static const double _zoomConventionOffset = 1;
+
+  double _toEngineZoom(double logicalZoom) =>
+      logicalZoom - _zoomConventionOffset;
+
+  double _toLogicalZoom(double engineZoom) =>
+      engineZoom + _zoomConventionOffset;
+
   @override
   void rotate(double degrees) {
-    unawaited(_controller?.moveCamera(maplibre.CameraUpdate.bearingTo(degrees)));
+    // [degrees] arrives in flutter_map's `camera.rotation` convention (the
+    // map *content*'s on-screen rotation, clockwise-positive — see
+    // flutter_map's mobile_layer_transformer.dart, which applies it as
+    // `Transform.rotate(angle: camera.rotationRad, ...)` directly to the
+    // content). MapLibre's `bearing` is the opposite quantity — the
+    // direction the *camera* faces — so content and bearing rotate in
+    // opposite directions for the same value. Negating here (and in
+    // [_toState]) keeps both engines' `camera.rotation` meaning identical,
+    // which is what the north-reset animation and the compass control
+    // (both engine-agnostic, in gis_map_screen.dart) rely on.
+    unawaited(
+      _runProgrammaticCameraUpdate(
+        () => _controller?.moveCamera(
+          maplibre.CameraUpdate.bearingTo(-degrees),
+        ),
+      ),
+    );
   }
 
   @override
@@ -531,7 +618,67 @@ class MapLibreEngine implements SoilMapEngine {
     ];
   }
 
-  static const List<Object?> _cityLabelsFilter = ['==', '\$type', 'Point'];
+  // Only city features carry `labelImage` (line features' `properties` is
+  // empty — see _buildReferenceGeoJson), so this selects exactly the city
+  // rows without depending on the `$type` meta-filter being supported
+  // identically through this addLayer path as it is when a filter is
+  // parsed directly out of a full style JSON document (used elsewhere in
+  // this engine, e.g. _refCityCirclesId's raw-JSON `_pushStyle` path).
+  static const List<Object?> _cityLabelsFilter = ['has', 'labelImage'];
+
+  // Split into two filters/layers (primary vs. secondary) rather than one
+  // layer with a combined `case`/`*` iconOpacity expression: labels stopped
+  // rendering entirely under the combined expression (city *circles*, which
+  // use the same expression through the raw style-JSON `_pushStyle` path
+  // instead of this Dart `addLayer`/SymbolLayerProperties path, kept
+  // working) — filter + a plain per-layer interpolate is the same
+  // mechanism already proven to work for every other reference-basemap
+  // layer in this file (minzoom-gated department boundaries/provincial
+  // roads), so it's the lower-risk way to keep "primary cities always
+  // visible, secondary cities fade in 7.7→9.4".
+  static const List<Object?> _cityLabelsPrimaryFilter = [
+    'all',
+    _cityLabelsFilter,
+    ['==', ['get', 'isPrimary'], true],
+  ];
+  static const List<Object?> _cityLabelsSecondaryFilter = [
+    'all',
+    _cityLabelsFilter,
+    ['==', ['get', 'isPrimary'], false],
+  ];
+  // Every numeric zoom value in this file's style expressions is stated in
+  // *logical* zoom (flutter_map's/GisArchiveInfo's 256px-tile convention,
+  // matching FlutterMapEngine's _AgronomicReferencePainter constants
+  // exactly) minus [_zoomConventionOffset] (1) — MapLibre's `['zoom']`
+  // expression operand always evaluates against the *native* camera zoom
+  // (512px-tile convention, see [_toEngineZoom]), so a threshold meant to
+  // read as "logical zoom 7.7" must be written as 6.7 here. Without this,
+  // every zoom-gated reference layer (department boundaries, provincial
+  // roads, secondary city labels, city circle/label opacity) appeared one
+  // full logical zoom level later than FlutterMapEngine.
+  static const List<Object?> _cityLabelsPrimaryOpacity = [
+    'interpolate', ['linear'], ['zoom'], 4.0, 0.78, 6.5, 0.96,
+  ];
+  static const List<Object?> _cityLabelsSecondaryOpacity = [
+    'interpolate', ['linear'], ['zoom'], 6.7, 0.0, 8.4, 0.96,
+  ];
+
+  // Matches _AgronomicReferencePainter: cityOpacity = _labelOpacity(zoom) *
+  // _cityVisibility(city), where primary cities (La Plata, Mar del Plata,
+  // Bahía Blanca) are always fully visible and the rest fade in between
+  // zoom 7.7 and 9.4 (logical — 6.7/8.4 native, see the offset note above).
+  // Reused by both the city circles and the city label icons so they never
+  // appear/disappear independently of each other.
+  static const List<Object?> _cityOpacityExpression = [
+    '*',
+    ['interpolate', ['linear'], ['zoom'], 4.0, 0.78, 6.5, 0.96],
+    [
+      'case',
+      ['get', 'isPrimary'],
+      1.0,
+      ['interpolate', ['linear'], ['zoom'], 6.7, 0.0, 8.4, 1.0],
+    ],
+  ];
 
   /// Renders (via [_renderCityLabelBadge]) and registers via `addImage` any
   /// city-name label not already cached, then (re)creates the
@@ -588,8 +735,8 @@ class MapLibreEngine implements SoilMapEngine {
         await controller.addLayer(
           _refSourceId,
           _refCityLabelsId,
-          const maplibre.SymbolLayerProperties(
-            iconImage: [maplibre.Expressions.get, 'labelImage'],
+          maplibre.SymbolLayerProperties(
+            iconImage: const [maplibre.Expressions.get, 'labelImage'],
             // Matches _drawCityLabels' `offset.dx + 5, offset.dy -
             // height/2` positioning — 'left' anchors vertically centered
             // at the point, and the 5px gap is baked into the bitmap's
@@ -598,25 +745,12 @@ class MapLibreEngine implements SoilMapEngine {
             iconAnchor: 'left',
             iconAllowOverlap: true,
             iconIgnorePlacement: true,
-            // Matches _labelOpacity(zoom): 0.78 at zoom 5, ramping
-            // linearly to 0.96 by zoom 7.5 and holding there.
-            iconOpacity: [
-              'interpolate', ['linear'], ['zoom'], 5.0, 0.78, 7.5, 0.96,
-            ],
+            // Primary cities (La Plata, Mar del Plata, Bahía Blanca):
+            // always visible from zoom 5, matching _labelOpacity(zoom).
+            iconOpacity: _cityLabelsPrimaryOpacity,
           ),
           enableInteraction: false,
-          // `['has', 'labelImage']` instead of `['==', '$type', 'Point']`:
-          // only city features carry that property (line features'
-          // `properties` is empty — see _buildReferenceGeoJson), so this
-          // selects the same rows, without depending on the `$type`
-          // meta-filter being supported identically through this
-          // addLayer/jsonEncode(filter) path as it is when a filter is
-          // parsed directly out of a full style JSON document (used
-          // elsewhere in this engine, e.g. _refCityCirclesId) — that
-          // difference was never actually confirmed as the cause, but
-          // `has` is simpler and just as correct, so there's no reason to
-          // keep the riskier option.
-          filter: _cityLabelsFilter,
+          filter: _cityLabelsPrimaryFilter,
         );
         unawaited(
           controller.setLayerVisibility(
@@ -632,6 +766,52 @@ class MapLibreEngine implements SoilMapEngine {
         // genuinely isn't there yet; reset so the next call retries.
         if (!e.toString().contains('already exists')) {
           _cityLabelsLayerAdded = false;
+        }
+      }
+    }
+    if (!_cityLabelsSecondaryLayerAdded && _registeredCityLabelImages.isNotEmpty) {
+      _cityLabelsSecondaryLayerAdded = true;
+      try {
+        await controller.addLayer(
+          _refSourceId,
+          _refCityLabelsSecondaryId,
+          maplibre.SymbolLayerProperties(
+            iconImage: const [maplibre.Expressions.get, 'labelImage'],
+            iconAnchor: 'left',
+            // FlutterMapEngine's _drawCityLabels keeps an `occupiedLabels`
+            // list and skips any label whose bounds overlap one already
+            // placed (cities processed primary-first, so secondary names
+            // never cover each other or a primary one). MapLibre's default
+            // collision (allowOverlap/ignorePlacement both false) is the
+            // native equivalent for this layer — first-placed symbol wins,
+            // later overlapping ones are hidden — and this layer is added
+            // *after* the primary layer below, so primary icons already
+            // occupy their space by the time secondary placement runs.
+            // (Primary itself stays allowOverlap:true — it must never be
+            // hidden, and with only 3 fixed, spread-out cities it never
+            // needs to be.)
+            iconAllowOverlap: false,
+            iconIgnorePlacement: false,
+            // Secondary cities: hidden below zoom 7.7, fading in through
+            // 9.4 — matches _cityVisibility's non-primary branch. A
+            // separate layer + plain interpolate (rather than one shared
+            // layer with a `case`/isPrimary-branching expression) so this
+            // can't fail as a unit with the always-visible primary layer.
+            iconOpacity: _cityLabelsSecondaryOpacity,
+          ),
+          enableInteraction: false,
+          minzoom: 6.7,
+          filter: _cityLabelsSecondaryFilter,
+        );
+        unawaited(
+          controller.setLayerVisibility(
+            _refCityLabelsSecondaryId,
+            _referenceBasemapVisible,
+          ),
+        );
+      } catch (e) {
+        if (!e.toString().contains('already exists')) {
+          _cityLabelsSecondaryLayerAdded = false;
         }
       }
     }
@@ -693,13 +873,20 @@ class MapLibreEngine implements SoilMapEngine {
   }
 
   Map<String, Object?> _buildReferenceGeoJson(Map<String, dynamic> layers) {
+    // `category` is what each line layer's filter below matches on. Without
+    // it every line feature (boundaries, rivers, roads) is indistinguishable
+    // once merged into this single source, so a layer filtered only by
+    // `$type == LineString` draws *all* categories — e.g. national-roads
+    // (drawn last, opaque brown) painting directly over the river lines
+    // underneath it, making rivers look missing even though the geometry is
+    // there.
     List<Object?> lineFeatures(String key) {
       final lines = (layers[key] as List<dynamic>? ?? const []);
       return [
         for (final line in lines)
           {
             'type': 'Feature',
-            'properties': const <String, Object?>{},
+            'properties': {'category': key},
             'geometry': {'type': 'LineString', 'coordinates': line},
           },
       ];
@@ -786,15 +973,44 @@ class MapLibreEngine implements SoilMapEngine {
     }
   }
 
+  List<SoilMapMarkerPin> _lastPushedMarkers = const <SoilMapMarkerPin>[];
+
+  bool _sameMarkers(List<SoilMapMarkerPin> a, List<SoilMapMarkerPin> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      final markerA = a[i];
+      final markerB = b[i];
+      if (markerA.id != markerB.id ||
+          markerA.point.latitude != markerB.point.latitude ||
+          markerA.point.longitude != markerB.point.longitude ||
+          markerA.icon != markerB.icon) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   Future<void> _replaceMarkerSymbolsUnsafe(
     maplibre.MapLibreMapController controller,
     List<SoilMapMarkerPin> markers,
   ) async {
+    // GisMapScreen calls setPersonalMarkers on every rebuild (see
+    // setPersonalMarkers' doc comment), which previously meant every
+    // rebuild — selecting a marker, opening/closing a sheet, anything —
+    // removed every symbol and re-added them all, with a visible blank gap
+    // in between (two native round-trips). FlutterMapEngine's markers are
+    // plain Flutter widgets rebuilt in place, so it never had this. Skipping
+    // when nothing actually changed removes the flicker without touching
+    // how a real add/move/remove is applied.
+    if (_sameMarkers(_lastPushedMarkers, markers)) return;
     if (_markerSymbols.isNotEmpty) {
       await controller.removeSymbols(_markerSymbols);
       _markerSymbols.clear();
     }
-    if (markers.isEmpty) return;
+    if (markers.isEmpty) {
+      _lastPushedMarkers = const <SoilMapMarkerPin>[];
+      return;
+    }
     for (final marker in markers) {
       final imageName = _markerBadgeImageName(marker.icon);
       if (_registeredMarkerBadgeImages.add(imageName)) {
@@ -814,6 +1030,11 @@ class MapLibreEngine implements SoilMapEngine {
       [for (final marker in markers) {'type': 'marker', 'markerId': marker.id}],
     );
     _markerSymbols.addAll(added);
+    // Only recorded once `addSymbols` actually succeeds — if it throws
+    // (style not ready yet, see the try/catch in _replaceMarkerSymbols),
+    // _lastPushedMarkers must stay behind so the next rebuild's identical
+    // call isn't skipped by _sameMarkers and retries instead.
+    _lastPushedMarkers = List<SoilMapMarkerPin>.unmodifiable(markers);
   }
 
   String _markerBadgeImageName(IconData icon) =>
@@ -824,8 +1045,21 @@ class MapLibreEngine implements SoilMapEngine {
   static const double _markerCircleCenterY = 22;
 
   Future<Uint8List> _renderMarkerBadge(IconData icon) async {
+    // Matches [_renderVertexBadge]/[_renderCityLabelBadge]: `addImage` has
+    // no `pixelRatio` parameter, so MapLibre falls back to the device's
+    // actual screen density when interpreting these bytes — a bitmap
+    // rasterized at exactly `_markerBoxSize` raw pixels (no DPR scaling)
+    // was read back as `_markerBoxSize / density` dp, which is why these
+    // markers rendered visibly smaller than FlutterMapEngine's 44×44dp
+    // `MarkerLayer` widget on any device denser than 1x.
+    final pixelRatio = WidgetsBinding
+        .instance
+        .platformDispatcher
+        .views
+        .first
+        .devicePixelRatio;
     final recorder = ui.PictureRecorder();
-    final canvas = ui.Canvas(recorder);
+    final canvas = ui.Canvas(recorder)..scale(pixelRatio);
     const center = Offset(_markerBoxSize / 2, _markerCircleCenterY);
 
     // Soft drop shadow approximating the Material `elevation: 2` +
@@ -864,10 +1098,8 @@ class MapLibreEngine implements SoilMapEngine {
     );
 
     final picture = recorder.endRecording();
-    final image = await picture.toImage(
-      _markerBoxSize.toInt(),
-      _markerBoxSize.toInt(),
-    );
+    final physicalBoxSize = (_markerBoxSize * pixelRatio).round();
+    final image = await picture.toImage(physicalBoxSize, physicalBoxSize);
     final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
     return byteData!.buffer.asUint8List();
   }
@@ -1007,6 +1239,23 @@ class MapLibreEngine implements SoilMapEngine {
           return maplibre.LatLng(lat2 * 180 / math.pi, lng2 * 180 / math.pi);
         }(),
     ];
+  }
+
+  /// MapLibre-only (not part of [SoilMapEngine], same reasoning as
+  /// [setVertexBadgeSurfaceColor]): whether the vertices [setMeasurementGeometry]
+  /// pushes should be draggable. FlutterMapEngine's equivalent for a
+  /// non-actively-edited measurement is `_SavedMeasurementsLayer`, a
+  /// separate `IgnorePointer`-wrapped static layer with no vertex handles
+  /// at all — MapLibre instead reuses [setMeasurementGeometry] to keep
+  /// showing a just-closed measurement (see `_finishMeasurement`'s doc
+  /// comment in gis_map_screen.dart), so without this its vertices stayed
+  /// draggable even though there's no editor UI open to reflect the drag.
+  /// Defaults to `true` (today's behavior) until GisMapScreen says
+  /// otherwise.
+  bool _measurementInteractive = true;
+
+  void setMeasurementInteractive(bool interactive) {
+    _measurementInteractive = interactive;
   }
 
   @override
@@ -1205,7 +1454,7 @@ class MapLibreEngine implements SoilMapEngine {
         'properties': {
           'kind': 'vertex',
           'index': i,
-          'draggable': true,
+          'draggable': _measurementInteractive,
           'badge': _vertexBadgeImageName(i + 1, hex, dragged: dragged),
           // Matches _buildEditableVertexMarker's exact widget sizes
           // (isDragged ? 44 : (isFirst ? 38 : 30)) relative to the badge
@@ -1313,6 +1562,27 @@ class MapLibreEngine implements SoilMapEngine {
   static const Color _draggedVertexColor = Color(0xFFB3261E);
   static const Color _draggedVertexBorderColor = Color(0xFFFFFFFF);
 
+  /// Normal (non-dragged) vertex badge border — matches
+  /// `_AreaVertexHandle`'s `colorScheme.surface`, which needs the app's
+  /// actual theme and so can't be a fixed constant like
+  /// [_draggedVertexColor] above. Not part of [SoilMapEngine] — GisMapScreen
+  /// calls this directly on the concrete `MapLibreEngine` (same pattern as
+  /// its `(_mapEngine as FlutterMapEngine).controller` casts elsewhere)
+  /// rather than threading a new theme parameter through the shared
+  /// interface just for this one color.
+  Color _vertexBadgeBorderColor = const Color(0xFFFFFFFF);
+
+  void setVertexBadgeSurfaceColor(Color color) {
+    if (_vertexBadgeBorderColor == color) return;
+    _vertexBadgeBorderColor = color;
+    // Badge bitmaps are cached per number+color+drag-state (see
+    // _registeredBadgeImages below) and don't encode the border color in
+    // that cache key, so every already-registered badge now has the wrong
+    // border baked in — clear them so the next push re-renders with the
+    // new one.
+    _registeredBadgeImages.clear();
+  }
+
   String _vertexBadgeImageName(
     int number,
     String colorHex, {
@@ -1344,7 +1614,7 @@ class MapLibreEngine implements SoilMapEngine {
       backgroundPaint,
     );
     final borderPaint = ui.Paint()
-      ..color = dragged ? _draggedVertexBorderColor : const Color(0xFFFFFFFF)
+      ..color = dragged ? _draggedVertexBorderColor : _vertexBadgeBorderColor
       ..style = ui.PaintingStyle.stroke
       ..strokeWidth = dragged ? 4 : 3;
     canvas.drawCircle(
@@ -1352,10 +1622,23 @@ class MapLibreEngine implements SoilMapEngine {
       diameter / 2 - 2,
       borderPaint,
     );
-    // White text with a dark halo reads on any measurement color (blue,
-    // orange or red), avoiding the need to know which text color pairs
-    // with which background (that pairing — MeasurementColorOption.onColor
-    // — lives in a model this engine intentionally doesn't depend on).
+    // MeasurementColorOption has exactly 3 fixed colors, and only orange
+    // pairs with black text (blue/red both pair with white) — matched by
+    // hex value instead of importing that model, keeping this engine
+    // decoupled from it (see the border-color note above). White text on
+    // orange read poorly compared to FlutterMapEngine's `measurementOnColor`
+    // black.
+    // Dragged state always uses colorScheme.onError (white) in
+    // FlutterMapEngine, regardless of measurement color — only the
+    // non-dragged case follows measurementOnColor.
+    final isOrangeMeasurementColor =
+        !dragged && _toHexColor(color) == '#ff9800';
+    final textColor = isOrangeMeasurementColor
+        ? const Color(0xFF000000)
+        : const Color(0xFFFFFFFF);
+    final haloColor = isOrangeMeasurementColor
+        ? const Color(0x99FFFFFF)
+        : const Color(0x99000000);
     final haloPainter = TextPainter(
       text: TextSpan(
         text: label,
@@ -1365,7 +1648,7 @@ class MapLibreEngine implements SoilMapEngine {
           foreground: Paint()
             ..style = PaintingStyle.stroke
             ..strokeWidth = 4
-            ..color = const Color(0x99000000),
+            ..color = haloColor,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -1373,10 +1656,10 @@ class MapLibreEngine implements SoilMapEngine {
     final textPainter = TextPainter(
       text: TextSpan(
         text: label,
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 30,
           fontWeight: FontWeight.w800,
-          color: Color(0xFFFFFFFF),
+          color: textColor,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -1473,6 +1756,7 @@ class MapLibreEngine implements SoilMapEngine {
       // there.
       _registeredCityLabelImages.clear();
       _cityLabelsLayerAdded = false;
+      _cityLabelsSecondaryLayerAdded = false;
       await controller.setStyle(_buildStyle());
       await _ensureCityLabelImagesRegistered(controller);
     }
@@ -1496,7 +1780,17 @@ class MapLibreEngine implements SoilMapEngine {
 
     final referenceGeoJson = _referenceGeoJson;
     if (referenceGeoJson != null) {
-      sources[_refSourceId] = {'type': 'geojson', 'data': referenceGeoJson};
+      sources[_refSourceId] = {
+        'type': 'geojson',
+        'data': referenceGeoJson,
+        // FlutterMapEngine's CustomPainter draws every source vertex
+        // unconditionally, at every zoom. MapLibre's GeoJSON source
+        // simplifies geometry per internal tile (default tolerance 0.375),
+        // which at low zoom can collapse short arroyos entirely. tolerance:
+        // 0 disables that simplification so small streams stay visible,
+        // matching FlutterMapEngine.
+        'tolerance': 0,
+      };
       final refVisibility = _referenceBasemapVisible ? 'visible' : 'none';
       // Colors/widths/opacities below are read directly off
       // OfflineReferenceMapLayer's Paint objects (_linePaint calls in
@@ -1508,7 +1802,7 @@ class MapLibreEngine implements SoilMapEngine {
           'id': _refProvincialBoundariesId,
           'type': 'line',
           'source': _refSourceId,
-          'filter': ['==', '\$type', 'LineString'],
+          'filter': ['==', ['get', 'category'], 'provincialBoundaries'],
           'layout': {'visibility': refVisibility},
           'paint': {
             'line-color': '#AEB4AC',
@@ -1517,22 +1811,24 @@ class MapLibreEngine implements SoilMapEngine {
           },
         },
         {
-          // FlutterMapEngine fades this in smoothly between zoom 7.8 and 9
-          // (_zoomOpacity(zoom, 7.8, 9)) rather than popping in at a hard
-          // cutoff — matched with a `line-opacity` ramp instead of relying
-          // on `minzoom` alone for the transition (minzoom is kept too, as
-          // a cheap "don't even evaluate below this" floor).
+          // FlutterMapEngine fades this in smoothly between logical zoom 7.8
+          // and 9 (_zoomOpacity(zoom, 7.8, 9)) rather than popping in at a
+          // hard cutoff — matched with a `line-opacity` ramp instead of
+          // relying on `minzoom` alone for the transition (minzoom is kept
+          // too, as a cheap "don't even evaluate below this" floor). Values
+          // are native zoom (logical - _zoomConventionOffset) — see the note
+          // on _cityLabelsPrimaryOpacity.
           'id': _refDepartmentBoundariesId,
           'type': 'line',
           'source': _refSourceId,
-          'minzoom': 7.8,
-          'filter': ['==', '\$type', 'LineString'],
+          'minzoom': 6.8,
+          'filter': ['==', ['get', 'category'], 'departmentBoundaries'],
           'layout': {'visibility': refVisibility},
           'paint': {
             'line-color': '#CFD3CC',
             'line-width': 0.5,
             'line-opacity': [
-              'interpolate', ['linear'], ['zoom'], 7.8, 0.0, 9.0, 0.56,
+              'interpolate', ['linear'], ['zoom'], 6.8, 0.0, 8.0, 0.56,
             ],
           },
         },
@@ -1544,7 +1840,7 @@ class MapLibreEngine implements SoilMapEngine {
           'id': '$_refRiversId-casing',
           'type': 'line',
           'source': _refSourceId,
-          'filter': ['==', '\$type', 'LineString'],
+          'filter': ['==', ['get', 'category'], 'majorRivers'],
           'layout': {'visibility': refVisibility},
           'paint': {
             'line-color': '#F7FBFC',
@@ -1556,7 +1852,7 @@ class MapLibreEngine implements SoilMapEngine {
           'id': _refRiversId,
           'type': 'line',
           'source': _refSourceId,
-          'filter': ['==', '\$type', 'LineString'],
+          'filter': ['==', ['get', 'category'], 'majorRivers'],
           'layout': {'visibility': refVisibility},
           'paint': {
             'line-color': '#6BA9CC',
@@ -1568,7 +1864,7 @@ class MapLibreEngine implements SoilMapEngine {
           'id': '$_refNationalRoadsId-casing',
           'type': 'line',
           'source': _refSourceId,
-          'filter': ['==', '\$type', 'LineString'],
+          'filter': ['==', ['get', 'category'], 'nationalRoads'],
           'layout': {'visibility': refVisibility},
           'paint': {
             'line-color': '#FFF9F5',
@@ -1580,7 +1876,7 @@ class MapLibreEngine implements SoilMapEngine {
           'id': _refNationalRoadsId,
           'type': 'line',
           'source': _refSourceId,
-          'filter': ['==', '\$type', 'LineString'],
+          'filter': ['==', ['get', 'category'], 'nationalRoads'],
           'layout': {'visibility': refVisibility},
           'paint': {
             'line-color': '#BD5738',
@@ -1589,17 +1885,19 @@ class MapLibreEngine implements SoilMapEngine {
           },
         },
         {
+          // Native zoom (logical - _zoomConventionOffset), same as
+          // _refDepartmentBoundariesId above — logical 8.2/9.5.
           'id': '$_refProvincialRoadsId-casing',
           'type': 'line',
           'source': _refSourceId,
-          'minzoom': 8.2,
-          'filter': ['==', '\$type', 'LineString'],
+          'minzoom': 7.2,
+          'filter': ['==', ['get', 'category'], 'provincialRoads'],
           'layout': {'visibility': refVisibility},
           'paint': {
             'line-color': '#FFF9F5',
             'line-width': 2.65,
             'line-opacity': [
-              'interpolate', ['linear'], ['zoom'], 8.2, 0.0, 9.5, 0.85,
+              'interpolate', ['linear'], ['zoom'], 7.2, 0.0, 8.5, 0.85,
             ],
           },
         },
@@ -1607,30 +1905,25 @@ class MapLibreEngine implements SoilMapEngine {
           'id': _refProvincialRoadsId,
           'type': 'line',
           'source': _refSourceId,
-          'minzoom': 8.2,
-          'filter': ['==', '\$type', 'LineString'],
+          'minzoom': 7.2,
+          'filter': ['==', ['get', 'category'], 'provincialRoads'],
           'layout': {'visibility': refVisibility},
           'paint': {
             'line-color': '#D77A59',
             'line-width': 1.15,
             'line-opacity': [
-              'interpolate', ['linear'], ['zoom'], 8.2, 0.0, 9.5, 0.82,
+              'interpolate', ['linear'], ['zoom'], 7.2, 0.0, 8.5, 0.82,
             ],
           },
         },
-        {
-          'id': _refCityCirclesId,
-          'type': 'circle',
-          'source': _refSourceId,
-          'filter': ['==', '\$type', 'Point'],
-          'layout': {'visibility': refVisibility},
-          'paint': {
-            'circle-color': '#303632',
-            'circle-radius': [
-              'case', ['get', 'isPrimary'], 2.7, 2.3,
-            ],
-          },
-        },
+        // _refCityCirclesId is NOT defined here — FlutterMapEngine draws
+        // city dots in its "foreground" pass, *after* soil polygons (see
+        // _AgronomicReferencePainter.paint's `!foreground`/`else` split and
+        // GisMapScreen._buildMap's `children` order: reference lines, then
+        // soil polygons, then OfflineReferenceMapLayer(foreground: true)).
+        // Defining it in this list would put it before the soil-polygon
+        // layers added below, letting a polygon's fill cover a city dot —
+        // added after them instead, near the end of this method.
         // _refCityLabelsId is NOT defined here — see
         // _ensureCityLabelImagesRegistered/_addCityLabelsLayerIfNeeded for
         // why (a data-driven `icon-image` on a layer embedded in this style
@@ -1718,6 +2011,28 @@ class MapLibreEngine implements SoilMapEngine {
       ]);
     }
 
+    // City dots, added after (so drawn on top of) the soil-polygon layers
+    // above — matches FlutterMapEngine's foreground pass. Same source/
+    // paint as before, just relocated; see the comment left in its old spot.
+    if (referenceGeoJson != null) {
+      layers.add({
+        'id': _refCityCirclesId,
+        'type': 'circle',
+        'source': _refSourceId,
+        'filter': ['==', '\$type', 'Point'],
+        'layout': {
+          'visibility': _referenceBasemapVisible ? 'visible' : 'none',
+        },
+        'paint': {
+          'circle-color': '#303632',
+          'circle-radius': [
+            'case', ['get', 'isPrimary'], 2.7, 2.3,
+          ],
+          'circle-opacity': _cityOpacityExpression,
+        },
+      });
+    }
+
     final built = jsonEncode({'version': 8, 'sources': sources, 'layers': layers});
     _styleCache = built;
     return built;
@@ -1759,8 +2074,12 @@ class MapLibreEngine implements SoilMapEngine {
   SoilMapCameraState _toState(maplibre.CameraPosition position) {
     return SoilMapCameraState(
       center: _toLatLng2(position.target),
-      zoom: position.zoom,
-      rotation: position.bearing,
+      // Converted back to the app's logical (256px-tile) zoom convention —
+      // see [_toEngineZoom]/[_toLogicalZoom].
+      zoom: _toLogicalZoom(position.zoom),
+      // Negated to match flutter_map's content-rotation convention — see
+      // the sign note on [rotate].
+      rotation: -position.bearing,
     );
   }
 
