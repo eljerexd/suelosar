@@ -31,7 +31,7 @@ abstract final class AppIcons {
 
   static const IconData sampling = LucideIcons.flask_conical;
   static const IconData soilPit = LucideIcons.mountain;
-  static const IconData floodArea = LucideIcons.waves;
+  static const IconData floodArea = LucideIcons.waves_horizontal;
   static const IconData observation = LucideIcons.eye;
   static const IconData performance = LucideIcons.gauge;
   static const IconData infrastructure = LucideIcons.warehouse;

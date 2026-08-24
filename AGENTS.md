@@ -127,6 +127,64 @@ Switch the default engine over, only after Etapa 4 validation is
 complete and explicitly approved. Keep a rollback path until the new
 engine has proven itself in production use.
 
+## Current Status (reverted to FlutterMap as default)
+
+MapLibre was briefly wired as the Android default (no-override case of
+`_useMapLibreEngineForDiagnostic` in `gis_map_screen.dart`) during Etapa
+3/4 evaluation, then **reverted** — FlutterMap is the default and
+1:1-reference engine on every platform again, with no explicit
+override needed. `--dart-define=USE_MAPLIBRE_ENGINE=true` still forces
+MapLibre for experimental use (see `.vscode/launch.json`'s "SuelosAR
+Beta (MapLibre)" config, which passes that flag; the plain "SuelosAR"
+config does not, so F5 there runs FlutterMap).
+
+`trackCameraPosition: true` (in `MapLibreEngine.buildMapSurface`'s
+`MapLibreMap` widget) is a confirmed, validated fix — kept regardless of
+which engine is default. Without it, `maplibre_gl`'s native
+`MapLibreMapController.onCameraMove()` discards every camera-move event
+before it reaches Dart, so the zoom badge, scale bar, and any
+zoom-dependent layer visibility never update after the initial camera.
+
+### Open bug: MapLibre localities/labels never render
+
+Confirmed NOT resolved. City-name labels (e.g. "Bahía Blanca") never
+appear on MapLibre, at any zoom, in any session tested — while
+FlutterMap renders them correctly every time. Extensive runtime
+diagnosis (cold-start logcat instrumentation + controlled A/B tests,
+each reverted after use) ruled out, with direct evidence rather than
+code-reading inference:
+
+1. **`iconImage: ['get', 'labelImage']` data-driven expression** — ruled
+   out; a hardcoded fixed `iconImage` (a known-good, already-registered
+   image name) doesn't render either.
+2. **`addImage()` failing** — ruled out; 30/30 cities logged
+   `addImage SUCCESS` in every one of ~9 concurrent registration runs
+   observed during a single cold start.
+3. **`addLayer()` failing** — ruled out; both `_refCityLabelsId` and
+   `_refCityLabelsSecondaryId` logged `addLayer SUCCESS` every time.
+4. **`setStyle()` invalidating a previously-successful registration** —
+   ruled out; a controlled test that added the labels exactly once,
+   guaranteed to run strictly after the last `setStyle()` of the startup
+   sequence (confirmed via logcat: only 2 `setStyle()` calls total, with
+   the label-registration success log lines as the very last events
+   before the screenshot), still did not render "Bahía Blanca".
+
+**Last open hypothesis, not yet investigated:** something in the
+`SymbolLayerProperties` beyond `iconImage` (e.g. `iconSize` defaulting
+to something unusable), the `filter`/`source` combination not actually
+matching the GeoJSON feature at render time (unverified —
+`queryRenderedFeatures`/`querySourceFeatures` at the exact pixel was
+never tried), a z-order/occlusion issue, or a native MapLibre GL
+renderer limitation not surfaced by any Dart-catchable exception.
+
+Relevant code: `lib/gis/engine/maplibre_engine.dart`,
+`_ensureCityLabelImagesRegistered` and the `_refCityLabelsId` /
+`_refCityLabelsSecondaryId` `addLayer` calls (~line 700-825).
+
+Do not re-attempt a fix without picking up from this list — the first
+three "obvious" hypotheses are already conclusively eliminated with
+runtime evidence, not just code review.
+
 ---
 
 # Core Rule

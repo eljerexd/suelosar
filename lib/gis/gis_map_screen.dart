@@ -115,10 +115,14 @@ class _GisMapScreenState extends State<GisMapScreen>
     'USE_MAPLIBRE_ENGINE',
   );
 
-  /// Etapa 5 — corte controlado: sin override explícito, MapLibre es el
-  /// motor por defecto en Android y FlutterMap en el resto (Windows
-  /// incluido). `--dart-define=USE_MAPLIBRE_ENGINE=true|false` sigue
-  /// forzando el motor en cualquier plataforma, igual que antes.
+  /// FlutterMap es el motor principal y de referencia 1:1 en toda
+  /// plataforma sin override explícito — MapLibre queda como
+  /// implementación experimental, solo activa vía
+  /// `--dart-define=USE_MAPLIBRE_ENGINE=true` (ver "SuelosAR Beta
+  /// (MapLibre)" en .vscode/launch.json). El registro de labels de
+  /// localidades en MapLibre sigue sin resolverse (ver diagnóstico en
+  /// AGENTS.md) — no cambiar este default de vuelta hasta que esté
+  /// corregido y validado contra FlutterMap.
   bool get _useMapLibreEngineForDiagnostic {
     switch (_useMapLibreEngineOverride) {
       case 'true':
@@ -126,7 +130,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       case 'false':
         return false;
       default:
-        return !kIsWeb && Platform.isAndroid;
+        return false;
     }
   }
 
@@ -4418,7 +4422,11 @@ class _GisMapScreenState extends State<GisMapScreen>
             ..clear()
             ..addAll(candidate);
         });
-      } else {
+      } else if (_distanceMeasurementPoints.length < 2) {
+        // Distance measurement is a straight line between exactly two
+        // points (A→B), not a polyline — cap at 2 and ignore further taps
+        // once both are placed, matching _MeasurementMode.area's own
+        // shape (a bounded vertex count) instead of growing unbounded.
         setState(() {
           final edgeIndex = _nearestEdgeIndexForMeasurementTap(
             tapOffset,

@@ -194,6 +194,13 @@ class MapLibreEngine implements SoilMapEngine {
       rotateGesturesEnabled: gesturesEnabled,
       tiltGesturesEnabled: gesturesEnabled,
       dragEnabled: gesturesEnabled,
+      // Without this, MapLibreMapController.onCameraMove() (native Android)
+      // discards every camera#onMove event before it reaches Dart — the
+      // plugin defaults trackCameraPosition to false. _lastCamera (and the
+      // onPositionChanged callback driving the zoom badge, scale bar, and
+      // zoom-dependent reference-layer visibility) then never updates past
+      // the initial camera, for any gesture (pan/pinch/double-tap alike).
+      trackCameraPosition: true,
       // Default is [line, symbol, circle, fill] (bottom to top — see the
       // plugin's own doc comment on MapLibreMap.annotationOrder). That
       // stacks the GPS dot (circle, from _locationCircle) above personal
