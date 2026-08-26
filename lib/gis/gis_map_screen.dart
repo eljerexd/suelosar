@@ -18,7 +18,6 @@ import '../analytics/analytics_actions.dart';
 import '../analytics/analytics_service.dart';
 import '../app/app_theme.dart';
 import '../app/instant_pop_material_page_route.dart';
-import '../constants/asset_paths.dart';
 import '../constants/app_icons.dart';
 import '../export/measurement_export.dart';
 import '../models/favorite_soil_feature.dart';
@@ -58,6 +57,10 @@ import 'offline_reference_map_layer.dart';
 import 'gis_render_metrics.dart';
 import 'gis_repository.dart';
 import 'gis_soil_series.dart';
+import 'map_coverage.dart';
+import 'multi_coverage_repository.dart';
+import 'province_config.dart';
+import 'series_resolver.dart';
 import 'widgets/expandable_tools_fab.dart';
 
 /// Interactive offline viewer for the spatial layers available in SuelosAR.
@@ -70,6 +73,9 @@ class GisMapScreen extends StatefulWidget {
     this.locationService,
     this.desktopWindowService,
     this.engine,
+    this.provinceConfig,
+    this.seriesResolver,
+    this.coverages,
   });
 
   final GisRepository? repository;
@@ -77,6 +83,26 @@ class GisMapScreen extends StatefulWidget {
   final GisRenderMetrics? renderMetrics;
   final GisLocationService? locationService;
   final DesktopWindowService? desktopWindowService;
+
+  /// Selects which province's PMTiles/center/reference-map/series-PDF
+  /// wiring to use. Defaults to [ProvinceConfig.buenosAires] — omitting
+  /// this keeps every existing call site's behavior unchanged (Fase 4B).
+  final ProvinceConfig? provinceConfig;
+
+  /// Explicit override for series -> PDF resolution, mainly for tests.
+  /// When null: uses [provinceConfig]'s resolver if one was passed,
+  /// otherwise wraps [pdfSeriesRepository]/[PdfSeriesRepository] exactly as
+  /// this screen always has (so existing tests that only inject
+  /// `pdfSeriesRepository` keep working unmodified).
+  final SeriesResolver? seriesResolver;
+
+  /// Fase 6: the set of provincial map sources shown together as one
+  /// seamless map, selected by geographic position rather than a picker.
+  /// Defaults to [MapCoverage.all] (currently Buenos Aires + Santa Fe).
+  /// Ignored when [provinceConfig] is passed instead — that still forces a
+  /// single coverage, kept for narrow single-province testing/verification
+  /// (Fase 4B/5's pattern) without dragging in every registered province.
+  final List<MapCoverage>? coverages;
 
   /// Overrides the default [SoilMapEngine] (flutter_map). Used to evaluate
   /// [MapLibreEngine] in parallel (Etapa 3) without changing the app's
@@ -141,6 +167,9 @@ class _GisMapScreenState extends State<GisMapScreen>
   late final GisRepository _repository;
   late final GisLocationService _locationService;
   late final PdfSeriesRepository _pdfSeriesRepository;
+  late final List<MapCoverage> _coverages;
+  late final MapCoverage _defaultCoverage;
+  late final SeriesResolver _seriesResolver;
   late final GisRenderMetrics _renderMetrics;
   late final DesktopWindowService _desktopWindowService;
   late final bool _ownsRenderMetrics;
@@ -299,14 +328,46 @@ class _GisMapScreenState extends State<GisMapScreen>
     _renderMetrics = widget.renderMetrics ?? GisRenderMetrics.disabled();
     _desktopWindowService =
         widget.desktopWindowService ?? DesktopWindowService.instance;
+    // widget.provinceConfig still forces a single coverage (Fase 4B/5's
+    // narrow single-province testing pattern) — wrapped with world-covering
+    // bounds so it matches every tile, exactly like there being only one
+    // coverage at all. Otherwise (the real default, no config passed):
+    // every registered coverage is live at once, picked per tile/feature by
+    // real geography — Fase 6, no province selector.
+    final explicitProvinceConfig = widget.provinceConfig;
+    _coverages = explicitProvinceConfig != null
+        ? [
+            MapCoverage(
+              config: explicitProvinceConfig,
+              bounds: GeoBounds.everywhere,
+            ),
+          ]
+        : (widget.coverages ?? MapCoverage.all);
+    _defaultCoverage = _coverages.first;
     _repository =
         widget.repository ??
-        PmTilesGisRepository.fromAsset(
-          assetPath: AssetPaths.gisPmTiles,
-          versionAssetPath: AssetPaths.gisPmTilesVersion,
-          layerName: AssetPaths.gisLayerName,
+        MultiCoverageRepository(
+          coverages: _coverages,
+          defaultCoverageId: _defaultCoverage.id,
         );
     _pdfSeriesRepository = widget.pdfSeriesRepository ?? PdfSeriesRepository();
+    // Precedence: explicit override > explicit provinceConfig's resolver >
+    // wrap whichever _pdfSeriesRepository ends up in play (injected or
+    // default) — the same thing this screen has always done, so a caller
+    // that only passes `pdfSeriesRepository` (existing tests) is unaffected.
+    // This single resolver is only ever used as a fallback for a caller
+    // that replaced `repository` with something that isn't a
+    // MultiCoverageRepository (e.g. a test fake) — see _resolverForFeature.
+    _seriesResolver =
+        widget.seriesResolver ??
+        explicitProvinceConfig?.seriesResolver ??
+        BuenosAiresSeriesResolver(_pdfSeriesRepository);
+    _archiveInfo = _defaultCoverage.config.defaultArchiveInfo;
+    _mapViewportState.value = _MapViewportState(
+      center: _defaultCoverage.config.initialCenter,
+      zoom: _initialZoom,
+      rotation: 0,
+    );
     _locationService =
         widget.locationService ?? const DeviceGisLocationService();
     if (_disableGisTilePipelineForDiagnostic) {
@@ -884,6 +945,7 @@ class _GisMapScreenState extends State<GisMapScreen>
           child: SuelosArFloatingInformationPanel(
             child: _DesktopMapInformationPanel(
               feature: feature,
+              seriesNameResolverForFeature: _seriesNameResolverForFeature,
               measurement: feature == null ? selectedMeasurement : null,
               marker: feature == null && selectedMeasurement == null
                   ? _desktopSelectedMarker
@@ -896,8 +958,9 @@ class _GisMapScreenState extends State<GisMapScreen>
               onToggleFeatureFavorite: feature == null
                   ? null
                   : () {
-                      final series = GisSoilSeries.fromProperties(
-                        feature.properties,
+                      final series = _resolveSeriesDisplayNames(
+                        feature,
+                        GisSoilSeries.fromProperties(feature.properties),
                       );
                       setState(() => _toggleFavorite(feature, series));
                     },
@@ -1146,6 +1209,7 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   Future<void> _initializeArchive() async {
     if (_disableGisTilePipelineForDiagnostic) return;
+    unawaited(_preloadSeriesNamesIfNeeded());
     try {
       final archiveInfo = await _repository.initialize();
       if (!mounted) {
@@ -1176,7 +1240,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       final colorScheme = Theme.of(context).colorScheme;
       await _mapEngine.loadSoilPolygonsLayer(
         archiveInfo: archiveInfo,
-        layerName: AssetPaths.gisLayerName,
+        layerName: _defaultCoverage.config.pmtilesLayerName,
         normalFillColor: colorScheme.primary,
         selectedFillColor: colorScheme.tertiary,
       );
@@ -1195,6 +1259,52 @@ class _GisMapScreenState extends State<GisMapScreen>
       );
     }
   }
+
+  /// Awaits every registered coverage's [ProvinceConfig.preloadSeriesNames]
+  /// (no-op for Buenos Aires' [IdentitySeriesNameResolver]; a small,
+  /// already-cached index for Santa Fe's — Fase 6 Parte 9: never the full
+  /// 213-series PDF, never every province's names, just what each
+  /// coverage's own resolver already needed), then triggers one rebuild so
+  /// any already-visible raw `SERIE1..6` codes resolve to real names. Runs
+  /// alongside — not blocking — the rest of [_initializeArchive].
+  Future<void> _preloadSeriesNamesIfNeeded() async {
+    final preloads = [
+      for (final coverage in _coverages)
+        if (coverage.config.preloadSeriesNames != null)
+          coverage.config.preloadSeriesNames!(),
+    ];
+    if (preloads.isEmpty) return;
+    await Future.wait(preloads);
+    if (mounted) setState(() {});
+  }
+
+  /// Which coverage a feature (as returned by [_repository]) belongs to —
+  /// falls back to [_defaultCoverage] whenever [_repository] isn't a
+  /// [MultiCoverageRepository] (a test fake, or `provinceConfig` forcing a
+  /// single coverage), so every existing single-coverage call site keeps
+  /// resolving exactly the one resolver it always has.
+  MapCoverage _coverageForFeature(GisFeature feature) {
+    final repository = _repository;
+    if (repository is MultiCoverageRepository) {
+      return repository.coverageForFeatureId(feature.id);
+    }
+    return _defaultCoverage;
+  }
+
+  SeriesNameResolver _seriesNameResolverForFeature(GisFeature feature) {
+    return _coverageForFeature(feature).config.seriesNameResolver;
+  }
+
+  /// Every registered coverage's reference-map asset, merged by
+  /// [OfflineReferenceMapLayer] into one basemap — Fase 6 Parte 7: still
+  /// one widget, one painter/style, just fed more than one source. A
+  /// coverage with no reference map yet (none currently) is simply
+  /// skipped, not padded with Buenos Aires' as a fallback.
+  List<String> get _referenceMapAssetPaths => [
+    for (final coverage in _coverages)
+      if (coverage.config.referenceMapAsset != null)
+        coverage.config.referenceMapAsset!,
+  ];
 
   /// MapLibre-only measurement readout/action panel.
   ///
@@ -1444,7 +1554,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       children: [
         _mapEngine.buildMapSurface(
           key: _mapKey,
-          initialCenter: _buenosAiresCenter,
+          initialCenter: _defaultCoverage.config.initialCenter,
           initialZoom: _initialZoom,
           minZoom: math.max(_minimumMapZoom, archiveInfo.minZoom.toDouble()),
           maxZoom: archiveInfo.maxZoom + 2,
@@ -1490,7 +1600,11 @@ class _GisMapScreenState extends State<GisMapScreen>
               ? const <Widget>[]
               : [
             if (!_mapVisualsPaused && _showReferenceBasemap)
-              const Positioned.fill(child: OfflineReferenceMapLayer()),
+              Positioned.fill(
+                child: OfflineReferenceMapLayer(
+                  assetPaths: _referenceMapAssetPaths,
+                ),
+              ),
             if (!_disableGisTilePipelineForDiagnostic &&
                 !_mapVisualsPaused &&
                 _showSoilPolygons)
@@ -1501,8 +1615,11 @@ class _GisMapScreenState extends State<GisMapScreen>
                 ),
               ),
             if (!_mapVisualsPaused && _showReferenceBasemap)
-              const Positioned.fill(
-                child: OfflineReferenceMapLayer(foreground: true),
+              Positioned.fill(
+                child: OfflineReferenceMapLayer(
+                  foreground: true,
+                  assetPaths: _referenceMapAssetPaths,
+                ),
               ),
             if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused)
               if (_currentLocation case final location?)
@@ -1695,6 +1812,7 @@ class _GisMapScreenState extends State<GisMapScreen>
             bottomOffset: compactLayout ? 132 : 72,
             rightInset: compactLayout ? 76 : 16,
             onDismiss: () => _selectionPreview.value = null,
+            seriesNameResolverForFeature: _seriesNameResolverForFeature,
           ),
         if (!_mapVisualsPaused)
           _MapViewportOverlay(
@@ -2146,27 +2264,39 @@ class _GisMapScreenState extends State<GisMapScreen>
       _suppressNextMapTap = false;
       _activeToolHint = null;
       if (isSaved) {
-        // FlutterMapEngine keeps a saved measurement on screen after X
-        // through `_SavedMeasurementsLayer`, an always-on layer independent
-        // of these editing-only point arrays — closing the editor there
-        // never made the shape disappear. MapLibreEngine has no equivalent
-        // separate layer; `setMeasurementGeometry` (driven by
-        // `_pushMeasurementGeometryToEngine`) is its only way to show
-        // measurement geometry at all. Clearing the points here previously
-        // made a just-saved/just-closed measurement vanish on MapLibre.
-        // Keeping them, with `_retainedMeasurementMode` set, reuses the
-        // exact mechanism `_activateMeasurementMode`'s `resumesSavedMeasurement`
-        // already relies on to keep a non-actively-edited measurement
-        // rendered — `_pushMeasurementGeometryToEngine`'s `showsMeasurement`
-        // only checks `_retainedMeasurementMode`/the points, not
-        // `_activeSavedMeasurementId`.
-        //
+        if (_usesMapLibreEngine) {
+          // FlutterMapEngine keeps a saved measurement on screen after X
+          // through `_SavedMeasurementsLayer`, an always-on layer
+          // independent of these editing-only point arrays — closing the
+          // editor there never made the shape disappear. MapLibreEngine has
+          // no equivalent separate layer; `setMeasurementGeometry` (driven
+          // by `_pushMeasurementGeometryToEngine`) is its only way to show
+          // measurement geometry at all. Clearing the points here
+          // previously made a just-saved/just-closed measurement vanish on
+          // MapLibre. Keeping them, with `_retainedMeasurementMode` set,
+          // reuses the exact mechanism `_activateMeasurementMode`'s
+          // `resumesSavedMeasurement` already relies on to keep a
+          // non-actively-edited measurement rendered —
+          // `_pushMeasurementGeometryToEngine`'s `showsMeasurement` only
+          // checks `_retainedMeasurementMode`/the points, not
+          // `_activeSavedMeasurementId`. FlutterMapEngine must not take
+          // this branch: `_MeasurementLayer` keeps rendering (vertices,
+          // color picker, Guardar) for as long as `_retainedMeasurementMode`
+          // is set, on top of `_SavedMeasurementsLayer` already showing the
+          // same just-saved measurement — two overlapping widgets for one
+          // measurement, which is exactly the Fase-6-era regression this
+          // condition fixes back to Stable's behavior.
+          _retainedMeasurementMode = mode;
+        } else {
+          _distanceMeasurementPoints.clear();
+          _areaMeasurementPoints.clear();
+          _retainedMeasurementMode = null;
+        }
         // `_activeSavedMeasurementId` itself still gets cleared below, same
         // as before: `_SavedMeasurementLabels` (a FlutterMap-only overlay)
         // renders whenever it's non-null, *in addition to*
         // `_SavedMeasurementsLayer`'s own always-on labels — leaving it set
         // duplicated every saved-measurement label on FlutterMap.
-        _retainedMeasurementMode = mode;
         _activeSavedMeasurementId = null;
         _savedMeasurementGeometrySignature = null;
         _savedMeasurementColorId = null;
@@ -3151,7 +3281,10 @@ class _GisMapScreenState extends State<GisMapScreen>
           if (intersection.areaSquareMeters <= 0.01) continue;
 
           final feature = polygon.feature;
-          final series = GisSoilSeries.fromProperties(feature.properties);
+          final series = _resolveSeriesDisplayNames(
+            feature,
+            GisSoilSeries.fromProperties(feature.properties),
+          );
           final builder = builders.putIfAbsent(
             feature.id,
             () => _ParcelIntersectionBuilder(
@@ -4149,7 +4282,10 @@ class _GisMapScreenState extends State<GisMapScreen>
         );
       }
 
-      final series = GisSoilSeries.fromProperties(feature.properties);
+      final series = _resolveSeriesDisplayNames(
+        feature,
+        GisSoilSeries.fromProperties(feature.properties),
+      );
       for (final soilSeries in series) {
         final normalizedName = _normalizeSearchText(soilSeries.name);
         final seriesKey = 'series:$normalizedName';
@@ -4422,11 +4558,7 @@ class _GisMapScreenState extends State<GisMapScreen>
             ..clear()
             ..addAll(candidate);
         });
-      } else if (_distanceMeasurementPoints.length < 2) {
-        // Distance measurement is a straight line between exactly two
-        // points (A→B), not a polyline — cap at 2 and ignore further taps
-        // once both are placed, matching _MeasurementMode.area's own
-        // shape (a bounded vertex count) instead of growing unbounded.
+      } else {
         setState(() {
           final edgeIndex = _nearestEdgeIndexForMeasurementTap(
             tapOffset,
@@ -4973,8 +5105,20 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   Future<void> _showFeatureAttributes(GisFeature feature) {
     _selectionPreview.value = null;
-    final series = GisSoilSeries.fromProperties(feature.properties);
-    final matchesFuture = _findSeriesPdfs(series);
+    // PDF resolution needs the raw SERIE* value (e.g. "RSA cc") — Santa
+    // Fe's SantaFeSeriesResolver extracts the series *code* from it.
+    // `series` below is a separate, display-only copy with names already
+    // resolved ("Río Salado") for the title/labels/favorites; resolving
+    // PDFs from that renamed copy instead of `rawSeries` was Fase 6B's
+    // bug: extractSeriesCode("Río Salado") reads "Río" as the code, which
+    // isn't in the index, so the PDF lookup silently came back null ("no
+    // disponible") even though RSA's real code resolves fine. `rawSeries`
+    // and `series` stay the same length/order (one maps onto the other
+    // element-by-element), so `matches[index]` still lines up with
+    // `series[index]` wherever they're both used below.
+    final rawSeries = GisSoilSeries.fromProperties(feature.properties);
+    final series = _resolveSeriesDisplayNames(feature, rawSeries);
+    final matchesFuture = _findSeriesPdfs(feature, rawSeries);
 
     return _showMapBottomSheet<void>(
       isScrollControlled: true,
@@ -5092,7 +5236,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                         child: Text('No hay series disponibles.'),
                       ),
                     if (series.isNotEmpty)
-                      FutureBuilder<List<String?>>(
+                      FutureBuilder<List<SeriesPdfLocation?>>(
                         future: matchesFuture,
                         builder: (context, snapshot) {
                           if (snapshot.connectionState !=
@@ -5105,7 +5249,10 @@ class _GisMapScreenState extends State<GisMapScreen>
 
                           final matches =
                               snapshot.data ??
-                              List<String?>.filled(series.length, null);
+                              List<SeriesPdfLocation?>.filled(
+                                series.length,
+                                null,
+                              );
 
                           return Column(
                             children: [
@@ -5193,31 +5340,59 @@ class _GisMapScreenState extends State<GisMapScreen>
     return value.isEmpty ? 'Sin datos' : value;
   }
 
-  Future<List<String?>> _findSeriesPdfs(List<GisSoilSeries> series) {
+  /// Applies [feature]'s coverage's [ProvinceConfig.seriesNameResolver] to
+  /// every series' raw `SERIE*` value — a no-op for Buenos Aires
+  /// ([IdentitySeriesNameResolver] returns its input unchanged), and for
+  /// Santa Fe turns a raw code like `"CER cc"` into its real name
+  /// (`"Cerrillos"`) once the resolver has preloaded, falling back to the
+  /// raw code until then or if unresolved — never invents a name. See
+  /// Fase 4B report section F point 9, and Fase 6 Parte 6 for why this now
+  /// looks up the resolver per-feature instead of one fixed resolver.
+  List<GisSoilSeries> _resolveSeriesDisplayNames(
+    GisFeature feature,
+    List<GisSoilSeries> series,
+  ) {
+    return _applySeriesNameResolver(
+      series,
+      _seriesNameResolverForFeature(feature),
+    );
+  }
+
+  Future<List<SeriesPdfLocation?>> _findSeriesPdfs(
+    GisFeature feature,
+    List<GisSoilSeries> series,
+  ) {
+    // Real multi-coverage path: resolver picked per the tapped feature's
+    // coverage. Otherwise (a test fake `repository`, or `provinceConfig`
+    // forcing a single coverage): _seriesResolver, which already correctly
+    // wraps whatever `pdfSeriesRepository`/`seriesResolver` was injected —
+    // see initState's precedence comment.
+    final repository = _repository;
+    final resolver = repository is MultiCoverageRepository
+        ? repository.coverageForFeatureId(feature.id).config.seriesResolver
+        : _seriesResolver;
     return Future.wait(
-      series.map(
-        (soilSeries) => _pdfSeriesRepository.findPdfForSeries(soilSeries.name),
-      ),
+      series.map((soilSeries) => resolver.resolve(soilSeries)),
     );
   }
 
   Widget _buildSeriesTile(
     BuildContext bottomSheetContext,
     GisSoilSeries series,
-    String? assetPath,
+    SeriesPdfLocation? location,
   ) {
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: const Icon(AppIcons.pdf),
       title: Text(series.displayLabel),
-      trailing: assetPath == null
+      trailing: location == null
           ? const SizedBox(
               width: 120,
               child: Text('Memoria no disponible', textAlign: TextAlign.end),
             )
           : FilledButton.tonal(
               onPressed: () {
-                _openSeriesPdf(bottomSheetContext, series, assetPath);
+                _openSeriesPdf(bottomSheetContext, series, location);
               },
               child: const Text('Abrir PDF'),
             ),
@@ -5227,7 +5402,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   Future<void> _openSeriesPdf(
     BuildContext bottomSheetContext,
     GisSoilSeries series,
-    String assetPath,
+    SeriesPdfLocation location,
   ) async {
     if (bottomSheetContext.mounted) {
       await Navigator.of(bottomSheetContext).maybePop();
@@ -5239,8 +5414,10 @@ class _GisMapScreenState extends State<GisMapScreen>
     await openLocalPdfViewer(
       context,
       title: series.name,
-      assetPath: assetPath,
+      assetPath: location.assetPath,
       unavailableMessage: 'Serie no disponible.',
+      initialPage: location.startPage,
+      lastPage: location.endPage,
     );
   }
 }
@@ -7339,9 +7516,30 @@ class _DesktopContextPanel extends StatelessWidget {
   }
 }
 
+/// Top-level twin of `_GisMapScreenState._resolveSeriesDisplayNames` — for
+/// the standalone widget classes below that receive a resolver directly
+/// (via a `seriesNameResolverForFeature` callback) instead of reading
+/// coverage state off `_GisMapScreenState`. See that method's doc comment;
+/// the logic must stay identical (a no-op for [IdentitySeriesNameResolver]).
+List<GisSoilSeries> _applySeriesNameResolver(
+  List<GisSoilSeries> series,
+  SeriesNameResolver resolver,
+) {
+  if (resolver is IdentitySeriesNameResolver) return series;
+  return series
+      .map(
+        (soilSeries) => GisSoilSeries(
+          name: resolver.resolve(soilSeries.name),
+          percentage: soilSeries.percentage,
+        ),
+      )
+      .toList(growable: false);
+}
+
 class _DesktopMapInformationPanel extends StatelessWidget {
   const _DesktopMapInformationPanel({
     required this.feature,
+    required this.seriesNameResolverForFeature,
     required this.measurement,
     required this.marker,
     required this.onOpenFeatureDetails,
@@ -7361,6 +7559,8 @@ class _DesktopMapInformationPanel extends StatelessWidget {
   });
 
   final GisFeature? feature;
+  final SeriesNameResolver Function(GisFeature feature)
+  seriesNameResolverForFeature;
   final SavedMeasurement? measurement;
   final PersonalMarker? marker;
   final VoidCallback? onOpenFeatureDetails;
@@ -7384,7 +7584,10 @@ class _DesktopMapInformationPanel extends StatelessWidget {
     final unitSymbol = feature?.properties['SIMBC']?.toString().trim();
     final title = switch ((feature, measurement, marker)) {
       (final GisFeature value, _, _) =>
-        GisSoilSeries.fromProperties(value.properties).firstOrNull?.name ??
+        _applySeriesNameResolver(
+          GisSoilSeries.fromProperties(value.properties),
+          seriesNameResolverForFeature(value),
+        ).firstOrNull?.name ??
             _featureValue(value, 'Nombre_UC'),
       (_, final SavedMeasurement value, _) => value.name,
       (_, _, final PersonalMarker value) => value.name,
@@ -9164,12 +9367,15 @@ class _SelectionPreviewOverlay extends StatelessWidget {
     required this.bottomOffset,
     required this.rightInset,
     required this.onDismiss,
+    required this.seriesNameResolverForFeature,
   });
 
   final ValueListenable<GisFeature?> featureListenable;
   final double bottomOffset;
   final double rightInset;
   final VoidCallback onDismiss;
+  final SeriesNameResolver Function(GisFeature feature)
+  seriesNameResolverForFeature;
 
   @override
   Widget build(BuildContext context) {
@@ -9205,6 +9411,7 @@ class _SelectionPreviewOverlay extends StatelessWidget {
                       key: ValueKey('selection-preview-${feature.id}'),
                       feature: feature,
                       onDismiss: onDismiss,
+                      seriesNameResolverForFeature: seriesNameResolverForFeature,
                     ),
             );
           },
@@ -9284,17 +9491,23 @@ class _SelectionPreviewCard extends StatelessWidget {
   const _SelectionPreviewCard({
     required this.feature,
     required this.onDismiss,
+    required this.seriesNameResolverForFeature,
     super.key,
   });
 
   final GisFeature feature;
   final VoidCallback onDismiss;
+  final SeriesNameResolver Function(GisFeature feature)
+  seriesNameResolverForFeature;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final series = GisSoilSeries.fromProperties(feature.properties);
+    final series = _applySeriesNameResolver(
+      GisSoilSeries.fromProperties(feature.properties),
+      seriesNameResolverForFeature(feature),
+    );
     final seriesName = series.isEmpty ? 'Serie sin datos' : series.first.name;
     final capability = _propertyValue(feature, 'CAP_USO') ?? 'Sin datos';
     final area = _availableArea(feature);

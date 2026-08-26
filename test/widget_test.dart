@@ -1126,6 +1126,19 @@ void main() {
       find.text('¿Querés guardar esta medición antes de salir?'),
       findsNothing,
     );
+    // Regression check: after saving and exiting on FlutterMapEngine, the
+    // editing overlay (_MeasurementLayer's readout/vertices/color picker)
+    // must actually stop rendering — it was left on screen alongside
+    // _SavedMeasurementsLayer's own always-on label for the same
+    // just-saved measurement (two overlapping widgets for one
+    // measurement) until _finishMeasurement kept
+    // distanceMeasurementPoints/areaMeasurementPoints populated
+    // unconditionally instead of only for MapLibreEngine.
+    expect(
+      find.byKey(const ValueKey('measurement-distance')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey('save-measurement')), findsNothing);
 
     await _selectMapTool(tester, 'Measure Area');
     await tapMap(const LatLng(-36.5, -60));
@@ -1140,6 +1153,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('measurement-area')), findsNothing);
+    expect(find.byKey(const ValueKey('measurement-perimeter')), findsNothing);
 
     final preferences = await SharedPreferences.getInstance();
     final encoded =
@@ -2661,23 +2676,73 @@ void main() {
     );
     await tester.tap(find.byKey(const ValueKey('module-soil-maps')));
     await tester.pump();
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 100)),
-    );
-    await tester.pump();
 
-    expect(find.text('Memorias descriptivas'), findsWidgets);
+    // Both Buenos Aires and Santa Fe catalogs are real assets here (no
+    // loader override), so wait for the actual combined load to finish
+    // rather than a fixed delay. Waiting for the spinner to disappear
+    // (rather than a specific sliver's text) avoids depending on how much
+    // of the list happens to be built within this viewport. The bound is
+    // generous because this runs deep into the full suite, where CPU
+    // contention can make a real asset read take noticeably longer than in
+    // isolation.
+    for (var attempt = 0; attempt < 1500; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+      if (find.byType(CircularProgressIndicator).evaluate().isEmpty) break;
+    }
+
+    expect(find.text('Cartas de suelo'), findsWidgets);
     expect(find.byIcon(AppIcons.search), findsOneWidget);
     expect(find.text('Buscar carta de suelo...'), findsOneWidget);
 
-    await tester.enterText(find.byType(SearchBar), 'Jun');
-    await tester.pump(const Duration(milliseconds: 100));
+    // This test predates Santa Fe's integration into the same catalog and
+    // asserts on Buenos-Aires-specific series names ("Junín", "Villa
+    // Cañás") that Santa Fe's own 213-series catalog happens to share some
+    // names with (e.g. both have a "Juncal" and a "Villa Cañás") — scope to
+    // Buenos Aires so those searches stay unambiguous, same as before.
+    await tester.tap(find.text('Buenos Aires').first);
+    // Bounded pumps instead of pumpAndSettle: under full-suite CPU
+    // contention pumpAndSettle can time out waiting for every animation to
+    // fully quiesce even though the filter chip's own transition finishes
+    // quickly.
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
 
+    await tester.enterText(find.byType(SearchBar), 'Jun');
+
+    // Retry the search result itself (not just the earlier spinner check):
+    // robust even if the catalog was still loading when 'Jun' was typed,
+    // since it directly waits for what the test actually needs next.
     final juninTile = find.ancestor(
       of: find.text('Junín'),
       matching: find.byType(ListTile),
     );
+    for (var attempt = 0; attempt < 3000; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+      if (juninTile.evaluate().isNotEmpty) break;
+    }
+    if (juninTile.evaluate().isEmpty) {
+      debugPrint(
+        'DEBUG Junín not found; spinners='
+        '${find.byType(CircularProgressIndicator).evaluate().length}, '
+        'listTiles=${find.byType(ListTile).evaluate().length}, '
+        'texts=${find.byType(Text).evaluate().map((e) => (e.widget as Text).data).toList()}',
+      );
+    }
     expect(juninTile, findsOneWidget);
+    // "Junín" sorts last among the "Jun*" matches, so it can end up
+    // partially below the fold in a small test viewport — scroll it fully
+    // into view before interacting with it (e.g. tapping its star icon).
+    await tester.ensureVisible(juninTile);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
     expect(
       find.descendant(
         of: juninTile,
@@ -2689,6 +2754,24 @@ void main() {
       find.descendant(of: juninTile, matching: find.byIcon(AppIcons.star)),
     );
     await tester.pump();
+    // "Favoritos" is the list's first section, above "Junín" — scrolling
+    // down to reveal Junín can push it out of the built/cached extent, so
+    // scroll back up before checking it. Scoped to the CustomScrollView's
+    // own Scrollable specifically — a bare find.byType(Scrollable).first
+    // (or even scoping only to SoilMapsScreen) is ambiguous here: the
+    // SearchBar's EditableText has its own internal Scrollable too, and
+    // HomeScreen's own Scrollable can still be lingering from the route
+    // transition.
+    await tester.scrollUntilVisible(
+      find.text('Favoritos (1)'),
+      -300,
+      scrollable: find
+          .descendant(
+            of: find.byType(CustomScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     expect(find.text('Favoritos (1)'), findsOneWidget);
     expect(
       find.descendant(

@@ -94,6 +94,11 @@ flutter:
     - assets/maps/soil_polygons.pmtiles.sha256
     - assets/maps/agronomic_reference_map.json
     - assets/pdfs/
+    - assets/data/santa_fe_series_index.json
+    - assets/pdfs_santa_fe/
+    - assets/maps/santa_fe_soil_polygons.pmtiles
+    - assets/maps/santa_fe_soil_polygons.pmtiles.sha256
+    - assets/maps/agronomic_reference_map_santa_fe.json
   # assets:
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg

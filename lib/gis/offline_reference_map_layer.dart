@@ -13,18 +13,48 @@ import '../constants/asset_paths.dart';
 /// The source asset is a compact EPSG:4326 dataset, so flutter_map projects it
 /// with the same camera and CRS used by the soil polygon layer.
 class OfflineReferenceMapLayer extends StatelessWidget {
-  const OfflineReferenceMapLayer({this.foreground = false, super.key});
+  const OfflineReferenceMapLayer({
+    this.foreground = false,
+    this.assetPaths = const [AssetPaths.agronomicReferenceMap],
+    super.key,
+  });
 
   final bool foreground;
 
-  static final Future<_AgronomicReferenceBasemap> _basemap =
-      _AgronomicReferenceBasemap.load();
+  /// Basemap JSON assets to render, merged into one basemap — Fase 6: a
+  /// single map screen spanning several provinces' coverage renders all of
+  /// their reference maps together this way, without a per-province
+  /// widget. Defaults to just Buenos Aires' — existing call sites that
+  /// don't pass this keep loading exactly what they always have. An empty
+  /// list (a coverage with no reference map of its own yet) renders
+  /// nothing rather than falling back to Buenos Aires'.
+  final List<String> assetPaths;
+
+  // Keyed by the joined asset-path list, so two different combinations of
+  // sources (or a single asset alone, used elsewhere) each cache
+  // independently — every individual asset is still only ever read from
+  // disk once per distinct combination requested.
+  static final Map<String, Future<_AgronomicReferenceBasemap>> _basemapCache =
+      <String, Future<_AgronomicReferenceBasemap>>{};
+
+  static Future<_AgronomicReferenceBasemap> _loadCached(
+    List<String> assetPaths,
+  ) {
+    return _basemapCache.putIfAbsent(
+      assetPaths.join('|'),
+      () => _AgronomicReferenceBasemap.loadAll(assetPaths),
+    );
+  }
 
   static const double _maxGeometryZoom = 13;
   static const Color _backgroundColor = Color(0xFFFAFAF8);
 
   @override
   Widget build(BuildContext context) {
+    if (assetPaths.isEmpty) {
+      return const SizedBox.expand();
+    }
+
     final camera = MapCamera.of(context);
     final cameraIsUsable =
         _isFiniteLatLng(camera.center) &&
@@ -34,7 +64,7 @@ class OfflineReferenceMapLayer extends StatelessWidget {
     return IgnorePointer(
       child: RepaintBoundary(
         child: FutureBuilder<_AgronomicReferenceBasemap>(
-          future: _basemap,
+          future: _loadCached(assetPaths),
           builder: (context, snapshot) {
             final basemap = snapshot.data;
 
@@ -309,10 +339,41 @@ class _AgronomicReferenceBasemap {
   final List<List<LatLng>> provincialRoads;
   final List<_ReferenceCity> majorCities;
 
-  static Future<_AgronomicReferenceBasemap> load() async {
-    final rawJson = await rootBundle.loadString(
-      AssetPaths.agronomicReferenceMap,
+  /// Loads every asset in [assetPaths] via [load] and concatenates their
+  /// layers into one basemap — Fase 6: how a multi-coverage map screen
+  /// renders several provinces' reference maps as if they were one. Cities
+  /// are re-sorted by priority after merging, since concatenating two
+  /// already-sorted lists isn't itself sorted.
+  static Future<_AgronomicReferenceBasemap> loadAll(
+    List<String> assetPaths,
+  ) async {
+    final basemaps = await Future.wait(assetPaths.map(load));
+    if (basemaps.length == 1) return basemaps.single;
+
+    final majorCities = [
+      for (final basemap in basemaps) ...basemap.majorCities,
+    ]..sort((first, second) => second.priority.compareTo(first.priority));
+
+    return _AgronomicReferenceBasemap(
+      provincialBoundaries: [
+        for (final basemap in basemaps) ...basemap.provincialBoundaries,
+      ],
+      departmentBoundaries: [
+        for (final basemap in basemaps) ...basemap.departmentBoundaries,
+      ],
+      majorRivers: [for (final basemap in basemaps) ...basemap.majorRivers],
+      nationalRoads: [
+        for (final basemap in basemaps) ...basemap.nationalRoads,
+      ],
+      provincialRoads: [
+        for (final basemap in basemaps) ...basemap.provincialRoads,
+      ],
+      majorCities: majorCities,
     );
+  }
+
+  static Future<_AgronomicReferenceBasemap> load(String assetPath) async {
+    final rawJson = await rootBundle.loadString(assetPath);
     final json = jsonDecode(rawJson) as Map<String, dynamic>;
     final crs = json['crs'] as String?;
 

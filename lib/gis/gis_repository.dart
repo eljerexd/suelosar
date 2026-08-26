@@ -274,9 +274,18 @@ class PmTilesGisRepository implements GisRepository {
     );
     await mapDirectory.create(recursive: true);
 
+    // Derived from assetPath (not hardcoded to "soil_polygons") so two
+    // provinces' archives never collide in the on-disk cache — e.g.
+    // "assets/maps/santa_fe_soil_polygons.pmtiles" and
+    // "assets/maps/soil_polygons.pmtiles" now cache under different
+    // filenames instead of both racing for "soil_polygons-<hash>.pmtiles".
+    final assetStem = assetPath.split('/').last.replaceAll(
+      RegExp(r'\.pmtiles$'),
+      '',
+    );
     final target = File(
       '${mapDirectory.path}${Platform.pathSeparator}'
-      'soil_polygons-$version.pmtiles',
+      '$assetStem-$version.pmtiles',
     );
     if (await target.exists()) {
       if (await target.length() > 127) {
@@ -309,18 +318,27 @@ class PmTilesGisRepository implements GisRepository {
     }
 
     await temporary.rename(target.path);
-    await _removeOldArchives(mapDirectory, target.path);
+    await _removeOldArchives(mapDirectory, assetStem, target.path);
     return target;
   }
 
+  /// Deletes stale cached versions of *this* province's archive only —
+  /// matched by [assetStem] (e.g. "soil_polygons" or
+  /// "santa_fe_soil_polygons") — so caching one province's PMTiles never
+  /// evicts another province's already-cached archive from the same shared
+  /// [mapDirectory].
   static Future<void> _removeOldArchives(
     Directory mapDirectory,
+    String assetStem,
     String currentPath,
   ) async {
+    final stalePrefix = '$assetStem-';
     await for (final entity in mapDirectory.list()) {
+      final filename = entity.path.split(Platform.pathSeparator).last;
       if (entity is! File ||
           entity.path == currentPath ||
-          !entity.path.endsWith('.pmtiles')) {
+          !filename.startsWith(stalePrefix) ||
+          !filename.endsWith('.pmtiles')) {
         continue;
       }
       await entity.delete();

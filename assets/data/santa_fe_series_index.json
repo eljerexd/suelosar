@@ -1,0 +1,1073 @@
+{
+  "province": "Santa Fe",
+  "pdfAsset": "assets/pdfs_santa_fe/mapa_suelos_santa_fe.pdf",
+  "generatedFrom": "INTA_CRsantafe_EEARafaela_Tosolini_R_Mapa_suelos_provincia_SantaFe-Descripcion_de_las_series.pdf",
+  "pageOffset": 12,
+  "series": {
+    "AC": {
+      "name": "Aarón Castellanos",
+      "startPage": 14,
+      "endPage": 16
+    },
+    "ACt": {
+      "name": "Águila Cautiva",
+      "startPage": 17,
+      "endPage": 19
+    },
+    "Ald": {
+      "name": "Alejo Ledesma",
+      "startPage": 20,
+      "endPage": 21
+    },
+    "AMB": {
+      "name": "Ambrosetti",
+      "startPage": 22,
+      "endPage": 25
+    },
+    "Am": {
+      "name": "Amenábar",
+      "startPage": 26,
+      "endPage": 28
+    },
+    "ANG": {
+      "name": "Angeloni",
+      "startPage": 29,
+      "endPage": 31
+    },
+    "ARR": {
+      "name": "Apeadero Arrascaeta",
+      "startPage": 32,
+      "endPage": 33
+    },
+    "AMS": {
+      "name": "Apeadero Mascías",
+      "startPage": 34,
+      "endPage": 35
+    },
+    "Aq": {
+      "name": "Arequito",
+      "startPage": 36,
+      "endPage": 38
+    },
+    "Arm": {
+      "name": "Armstrong",
+      "startPage": 39,
+      "endPage": 41
+    },
+    "ARO": {
+      "name": "Arocena",
+      "startPage": 42,
+      "endPage": 44
+    },
+    "AGR": {
+      "name": "Arroyo Aguiar",
+      "startPage": 45,
+      "endPage": 47
+    },
+    "AJ": {
+      "name": "Arroyo Juárez",
+      "startPage": 48,
+      "endPage": 50
+    },
+    "ASO": {
+      "name": "Arroyo San Antonio",
+      "startPage": 51,
+      "endPage": 53
+    },
+    "ATg": {
+      "name": "Arroyo Tortugas",
+      "startPage": 54,
+      "endPage": 56
+    },
+    "ARF": {
+      "name": "Arrufó",
+      "startPage": 57,
+      "endPage": 60
+    },
+    "ASC": {
+      "name": "Ascochinga",
+      "startPage": 61,
+      "endPage": 63
+    },
+    "AUR": {
+      "name": "Aurelia",
+      "startPage": 64,
+      "endPage": 66
+    },
+    "AVE": {
+      "name": "Avellaneda",
+      "startPage": 67,
+      "endPage": 68
+    },
+    "BAR": {
+      "name": "Barrancas",
+      "startPage": 69,
+      "endPage": 71
+    },
+    "BGd": {
+      "name": "Benjamín Gould",
+      "startPage": 72,
+      "endPage": 74
+    },
+    "BER": {
+      "name": "Berna",
+      "startPage": 75,
+      "endPage": 76
+    },
+    "BDI": {
+      "name": "Bernardo de Irigoyen",
+      "startPage": 77,
+      "endPage": 79
+    },
+    "Bg": {
+      "name": "Bigand",
+      "startPage": 80,
+      "endPage": 82
+    },
+    "Bu": {
+      "name": "Bustinza",
+      "startPage": 83,
+      "endPage": 85
+    },
+    "CAQ": {
+      "name": "Cacique Ariacaiquín",
+      "startPage": 86,
+      "endPage": 88
+    },
+    "Cf": {
+      "name": "Cafferata",
+      "startPage": 89,
+      "endPage": 91
+    },
+    "CAO": {
+      "name": "Campo andino",
+      "startPage": 92,
+      "endPage": 94
+    },
+    "CSA": {
+      "name": "Canal San Antonio",
+      "startPage": 95,
+      "endPage": 97
+    },
+    "CAN": {
+      "name": "Candioti",
+      "startPage": 98,
+      "endPage": 100
+    },
+    "CU": {
+      "name": "Cañada del Ucle",
+      "startPage": 101,
+      "endPage": 103
+    },
+    "CPL": {
+      "name": "Carlos Pellegrini",
+      "startPage": 104,
+      "endPage": 106
+    },
+    "Ca": {
+      "name": "Casilda",
+      "startPage": 107,
+      "endPage": 109
+    },
+    "CAS": {
+      "name": "Castellanos",
+      "startPage": 110,
+      "endPage": 112
+    },
+    "CYT": {
+      "name": "Cayastá",
+      "startPage": 113,
+      "endPage": 114
+    },
+    "CER": {
+      "name": "Cerrillos",
+      "startPage": 115,
+      "endPage": 116
+    },
+    "Chb": {
+      "name": "Chabás",
+      "startPage": 117,
+      "endPage": 119
+    },
+    "CHA": {
+      "name": "Charabones",
+      "startPage": 120,
+      "endPage": 121
+    },
+    "CH": {
+      "name": "Chilcas",
+      "startPage": 122,
+      "endPage": 124
+    },
+    "Cho": {
+      "name": "Chovet",
+      "startPage": 125,
+      "endPage": 127
+    },
+    "CLA": {
+      "name": "Clason",
+      "startPage": 128,
+      "endPage": 131
+    },
+    "CNE": {
+      "name": "Colastiné",
+      "startPage": 132,
+      "endPage": 134
+    },
+    "CAA": {
+      "name": "Colonia Alpina",
+      "startPage": 135,
+      "endPage": 138
+    },
+    "BSI": {
+      "name": "Colonia Bossi",
+      "startPage": 139,
+      "endPage": 142
+    },
+    "CCA": {
+      "name": "Colonia Castelar",
+      "startPage": 143,
+      "endPage": 145
+    },
+    "CES": {
+      "name": "Colonia Esther",
+      "startPage": 146,
+      "endPage": 147
+    },
+    "CMY": {
+      "name": "Colonia Mackinlay",
+      "startPage": 148,
+      "endPage": 151
+    },
+    "CMg": {
+      "name": "Colonia Mendiguren",
+      "startPage": 152,
+      "endPage": 154
+    },
+    "CMo": {
+      "name": "Colonia Moreno",
+      "startPage": 155,
+      "endPage": 157
+    },
+    "CPg": {
+      "name": "Colonia Progreso",
+      "startPage": 158,
+      "endPage": 160
+    },
+    "CRO": {
+      "name": "Colonia Rosa",
+      "startPage": 161,
+      "endPage": 164
+    },
+    "CTE": {
+      "name": "Colonia Teresa",
+      "startPage": 165,
+      "endPage": 166
+    },
+    "CST": {
+      "name": "Constituyentes",
+      "startPage": 167,
+      "endPage": 169
+    },
+    "CDA": {
+      "name": "Coronda",
+      "startPage": 170,
+      "endPage": 172
+    },
+    "Crr": {
+      "name": "Correa",
+      "startPage": 173,
+      "endPage": 175
+    },
+    "CRI": {
+      "name": "Crispi",
+      "startPage": 176,
+      "endPage": 178
+    },
+    "CBO": {
+      "name": "Cuatro Bocas",
+      "startPage": 179,
+      "endPage": 180
+    },
+    "CUL": {
+      "name": "Cululú",
+      "startPage": 181,
+      "endPage": 183
+    },
+    "CRY": {
+      "name": "Curupaytí",
+      "startPage": 184,
+      "endPage": 187
+    },
+    "De": {
+      "name": "Delgado",
+      "startPage": 188,
+      "endPage": 190
+    },
+    "DAZ": {
+      "name": "Díaz",
+      "startPage": 191,
+      "endPage": 193
+    },
+    "DM": {
+      "name": "Divisa de Mayo",
+      "startPage": 194,
+      "endPage": 196
+    },
+    "DPR": {
+      "name": "Dos Provincias",
+      "startPage": 197,
+      "endPage": 200
+    },
+    "Ao": {
+      "name": "El Abolengo",
+      "startPage": 201,
+      "endPage": 203
+    },
+    "Ab": {
+      "name": "El Arbolito",
+      "startPage": 204,
+      "endPage": 206
+    },
+    "ECn": {
+      "name": "El Cantor",
+      "startPage": 207,
+      "endPage": 209
+    },
+    "LAU": {
+      "name": "El Laurel",
+      "startPage": 210,
+      "endPage": 211
+    },
+    "EMT": {
+      "name": "El Mocoretá",
+      "startPage": 212,
+      "endPage": 213
+    },
+    "ENO": {
+      "name": "El Nochero",
+      "startPage": 214,
+      "endPage": 215
+    },
+    "EPe": {
+      "name": "El Pedernal",
+      "startPage": 216,
+      "endPage": 218
+    },
+    "ER": {
+      "name": "El Recuerdo",
+      "startPage": 219,
+      "endPage": 221
+    },
+    "ETB": {
+      "name": "El Trébol",
+      "startPage": 222,
+      "endPage": 224
+    },
+    "ESP": {
+      "name": "Esperanza",
+      "startPage": 225,
+      "endPage": 227
+    },
+    "PIN": {
+      "name": "Estación Pini",
+      "startPage": 228,
+      "endPage": 229
+    },
+    "DFc": {
+      "name": "Estancia Don Francisco",
+      "startPage": 230,
+      "endPage": 232
+    },
+    "Alc": {
+      "name": "Estancia La Alicia",
+      "startPage": 233,
+      "endPage": 235
+    },
+    "SA": {
+      "name": "Estancia Santa Ana",
+      "startPage": 236,
+      "endPage": 238
+    },
+    "EUS": {
+      "name": "Eusebia",
+      "startPage": 239,
+      "endPage": 241
+    },
+    "Fa": {
+      "name": "Faustina",
+      "startPage": 242,
+      "endPage": 244
+    },
+    "FLO": {
+      "name": "Florencia",
+      "startPage": 245,
+      "endPage": 246
+    },
+    "FT": {
+      "name": "Fortín Tiburcio",
+      "startPage": 247,
+      "endPage": 249
+    },
+    "GTO": {
+      "name": "Gaboto",
+      "startPage": 250,
+      "endPage": 252
+    },
+    "Ge": {
+      "name": "Gelly",
+      "startPage": 253,
+      "endPage": 255
+    },
+    "GLE": {
+      "name": "Gessler",
+      "startPage": 256,
+      "endPage": 258
+    },
+    "Gt": {
+      "name": "Guatimozín",
+      "startPage": 259,
+      "endPage": 261
+    },
+    "Ha": {
+      "name": "Hansen",
+      "startPage": 262,
+      "endPage": 264
+    },
+    "HEL": {
+      "name": "Helvecia",
+      "startPage": 265,
+      "endPage": 266
+    },
+    "HER": {
+      "name": "Hersilia",
+      "startPage": 267,
+      "endPage": 270
+    },
+    "Hm": {
+      "name": "Huemul",
+      "startPage": 271,
+      "endPage": 273
+    },
+    "Hu": {
+      "name": "Hughes",
+      "startPage": 274,
+      "endPage": 276
+    },
+    "HUM": {
+      "name": "Humboldt",
+      "startPage": 277,
+      "endPage": 279
+    },
+    "JAZ": {
+      "name": "Jacinto Arauz",
+      "startPage": 280,
+      "endPage": 282
+    },
+    "Jn": {
+      "name": "Juncal",
+      "startPage": 283,
+      "endPage": 285
+    },
+    "LAL": {
+      "name": "La Alpina",
+      "startPage": 286,
+      "endPage": 288
+    },
+    "LCs": {
+      "name": "La Cesira",
+      "startPage": 289,
+      "endPage": 291
+    },
+    "LCR": {
+      "name": "La Curva",
+      "startPage": 292,
+      "endPage": 294
+    },
+    "ENA": {
+      "name": "La Elena",
+      "startPage": 295,
+      "endPage": 296
+    },
+    "ESM": {
+      "name": "La Esmeralda",
+      "startPage": 297,
+      "endPage": 298
+    },
+    "LFl": {
+      "name": "La Florida",
+      "startPage": 299,
+      "endPage": 301
+    },
+    "LGv": {
+      "name": "La Gaviota",
+      "startPage": 302,
+      "endPage": 304
+    },
+    "GDA": {
+      "name": "La Gerda",
+      "startPage": 305,
+      "endPage": 307
+    },
+    "LGE": {
+      "name": "La Germania",
+      "startPage": 308,
+      "endPage": 310
+    },
+    "LPV": {
+      "name": "Laguna Paiva",
+      "startPage": 311,
+      "endPage": 313
+    },
+    "la": {
+      "name": "La Indiana",
+      "startPage": 314,
+      "endPage": 316
+    },
+    "LLg": {
+      "name": "La Langosta",
+      "startPage": 317,
+      "endPage": 319
+    },
+    "LAN": {
+      "name": "Landeta",
+      "startPage": 320,
+      "endPage": 322
+    },
+    "LLe": {
+      "name": "La Leoncita",
+      "startPage": 323,
+      "endPage": 325
+    },
+    "LaP": {
+      "name": "La Patria",
+      "startPage": 326,
+      "endPage": 328
+    },
+    "LDA": {
+      "name": "La Pelada",
+      "startPage": 329,
+      "endPage": 331
+    },
+    "LPl": {
+      "name": "La Pluma",
+      "startPage": 332,
+      "endPage": 334
+    },
+    "LQ": {
+      "name": "La Querencia",
+      "startPage": 335,
+      "endPage": 337
+    },
+    "LRV": {
+      "name": "Larivieri",
+      "startPage": 338,
+      "endPage": 340
+    },
+    "LEA": {
+      "name": "Larrechea",
+      "startPage": 341,
+      "endPage": 343
+    },
+    "LRU": {
+      "name": "La Rubia",
+      "startPage": 344,
+      "endPage": 347
+    },
+    "LAS": {
+      "name": "Las Arenas",
+      "startPage": 348,
+      "endPage": 349
+    },
+    "SRT": {
+      "name": "La Sarita",
+      "startPage": 350,
+      "endPage": 353
+    },
+    "LBN": {
+      "name": "Las Bandurrias",
+      "startPage": 354,
+      "endPage": 356
+    },
+    "LG": {
+      "name": "Las Gamas",
+      "startPage": 357,
+      "endPage": 359
+    },
+    "So": {
+      "name": "La Sofía",
+      "startPage": 360,
+      "endPage": 362
+    },
+    "LPA": {
+      "name": "Las Palmeras",
+      "startPage": 363,
+      "endPage": 366
+    },
+    "Pvs": {
+      "name": "Las Parvas",
+      "startPage": 367,
+      "endPage": 368
+    },
+    "LPR": {
+      "name": "Las Prusianas",
+      "startPage": 369,
+      "endPage": 371
+    },
+    "LTj": {
+      "name": "Las Trojas",
+      "startPage": 372,
+      "endPage": 374
+    },
+    "LTU": {
+      "name": "Las Tunas",
+      "startPage": 375,
+      "endPage": 377
+    },
+    "LTB": {
+      "name": "Las Turbias",
+      "startPage": 378,
+      "endPage": 379
+    },
+    "Zo": {
+      "name": "La Zoraida",
+      "startPage": 380,
+      "endPage": 382
+    },
+    "Lz": {
+      "name": "Lazzarino",
+      "startPage": 383,
+      "endPage": 385
+    },
+    "Lgz": {
+      "name": "Leguizamón",
+      "startPage": 386,
+      "endPage": 387
+    },
+    "LEH": {
+      "name": "Lehmann",
+      "startPage": 388,
+      "endPage": 390
+    },
+    "Li": {
+      "name": "Lima",
+      "startPage": 391,
+      "endPage": 393
+    },
+    "LOA": {
+      "name": "Loma Alta",
+      "startPage": 394,
+      "endPage": 397
+    },
+    "LCD": {
+      "name": "Los Cardos",
+      "startPage": 398,
+      "endPage": 400
+    },
+    "LL": {
+      "name": "Los Leones",
+      "startPage": 401,
+      "endPage": 403
+    },
+    "LMd": {
+      "name": "Los Medanitos",
+      "startPage": 404,
+      "endPage": 406
+    },
+    "LNg": {
+      "name": "Los Nogales",
+      "startPage": 407,
+      "endPage": 409
+    },
+    "LUL": {
+      "name": "Luciano Leiva",
+      "startPage": 410,
+      "endPage": 412
+    },
+    "MEL": {
+      "name": "Maciel",
+      "startPage": 413,
+      "endPage": 415
+    },
+    "Mg": {
+      "name": "Maggiolo",
+      "startPage": 416,
+      "endPage": 418
+    },
+    "Mz": {
+      "name": "Maizales",
+      "startPage": 419,
+      "endPage": 421
+    },
+    "Mnt": {
+      "name": "Manantiales",
+      "startPage": 422,
+      "endPage": 424
+    },
+    "MJ": {
+      "name": "Marcos Juárez",
+      "startPage": 425,
+      "endPage": 427
+    },
+    "MAR": {
+      "name": "Margarita",
+      "startPage": 428,
+      "endPage": 429
+    },
+    "MLA": {
+      "name": "María Luisa",
+      "startPage": 430,
+      "endPage": 432
+    },
+    "MMa": {
+      "name": "María Manuela",
+      "startPage": 433,
+      "endPage": 435
+    },
+    "MT": {
+      "name": "María Teresa",
+      "startPage": 436,
+      "endPage": 438
+    },
+    "MAT": {
+      "name": "Matilde",
+      "startPage": 439,
+      "endPage": 441
+    },
+    "Me": {
+      "name": "Melincué",
+      "startPage": 442,
+      "endPage": 444
+    },
+    "MON": {
+      "name": "Monigotes",
+      "startPage": 445,
+      "endPage": 448
+    },
+    "MF": {
+      "name": "Monte Flores",
+      "startPage": 449,
+      "endPage": 451
+    },
+    "MOS": {
+      "name": "Monte Oscuridad",
+      "startPage": 452,
+      "endPage": 455
+    },
+    "Mu": {
+      "name": "Murphy",
+      "startPage": 456,
+      "endPage": 458
+    },
+    "Nm": {
+      "name": "Namuncurá",
+      "startPage": 459,
+      "endPage": 461
+    },
+    "OV": {
+      "name": "Oliveros",
+      "startPage": 462,
+      "endPage": 464
+    },
+    "ORO": {
+      "name": "Oroño",
+      "startPage": 465,
+      "endPage": 467
+    },
+    "PKI": {
+      "name": "Paikín",
+      "startPage": 468,
+      "endPage": 469
+    },
+    "Pe": {
+      "name": "Pergamino",
+      "startPage": 470,
+      "endPage": 472
+    },
+    "PEA": {
+      "name": "Petronila",
+      "startPage": 473,
+      "endPage": 475
+    },
+    "Py": {
+      "name": "Peyrano",
+      "startPage": 476,
+      "endPage": 478
+    },
+    "PIL": {
+      "name": "Pilar",
+      "startPage": 479,
+      "endPage": 481
+    },
+    "PBO": {
+      "name": "Pozo Borrado",
+      "startPage": 482,
+      "endPage": 483
+    },
+    "PCA": {
+      "name": "Pueblo Casas",
+      "startPage": 484,
+      "endPage": 486
+    },
+    "PEL": {
+      "name": "Pueblo Elisa",
+      "startPage": 487,
+      "endPage": 489
+    },
+    "PUI": {
+      "name": "Pueblo Irigoyen",
+      "startPage": 490,
+      "endPage": 492
+    },
+    "RAF": {
+      "name": "Rafaela",
+      "startPage": 493,
+      "endPage": 496
+    },
+    "Ra": {
+      "name": "Ramallo",
+      "startPage": 497,
+      "endPage": 499
+    },
+    "RAM": {
+      "name": "Ramona",
+      "startPage": 500,
+      "endPage": 502
+    },
+    "Rn": {
+      "name": "Rancagua",
+      "startPage": 503,
+      "endPage": 505
+    },
+    "RTA": {
+      "name": "Reconquista",
+      "startPage": 506,
+      "endPage": 507
+    },
+    "REC": {
+      "name": "Recreo",
+      "startPage": 508,
+      "endPage": 510
+    },
+    "RB": {
+      "name": "Ribera",
+      "startPage": 511,
+      "endPage": 513
+    },
+    "RDA": {
+      "name": "Rincón de Ávila",
+      "startPage": 514,
+      "endPage": 516
+    },
+    "RSA": {
+      "name": "Río Salado",
+      "startPage": 517,
+      "endPage": 519
+    },
+    "Ro": {
+      "name": "Rojas",
+      "startPage": 520,
+      "endPage": 522
+    },
+    "Rd": {
+      "name": "Roldán",
+      "startPage": 523,
+      "endPage": 525
+    },
+    "Rs": {
+      "name": "Rosales",
+      "startPage": 526,
+      "endPage": 528
+    },
+    "Saf": {
+      "name": "Saforcada",
+      "startPage": 529,
+      "endPage": 531
+    },
+    "SAT": {
+      "name": "San Antonio",
+      "startPage": 532,
+      "endPage": 534
+    },
+    "SBD": {
+      "name": "San Bernardo",
+      "startPage": 535,
+      "endPage": 536
+    },
+    "SS": {
+      "name": "Sancti Spiritu",
+      "startPage": 537,
+      "endPage": 539
+    },
+    "SE": {
+      "name": "San Estanislao",
+      "startPage": 540,
+      "endPage": 541
+    },
+    "SFA": {
+      "name": "San Fabián",
+      "startPage": 542,
+      "endPage": 544
+    },
+    "SG": {
+      "name": "San Gregorio",
+      "startPage": 545,
+      "endPage": 547
+    },
+    "SGU": {
+      "name": "San Guillermo",
+      "startPage": 548,
+      "endPage": 551
+    },
+    "SJn": {
+      "name": "San Julián",
+      "startPage": 552,
+      "endPage": 554
+    },
+    "SJT": {
+      "name": "San Justo",
+      "startPage": 555,
+      "endPage": 558
+    },
+    "SME": {
+      "name": "San Martín de las Escobas",
+      "startPage": 559,
+      "endPage": 561
+    },
+    "SPE": {
+      "name": "San Pedro",
+      "startPage": 562,
+      "endPage": 563
+    },
+    "SFi": {
+      "name": "Santa Filipina",
+      "startPage": 564,
+      "endPage": 566
+    },
+    "SI": {
+      "name": "Santa Isabel",
+      "startPage": 567,
+      "endPage": 569
+    },
+    "SL": {
+      "name": "Santa Lucía",
+      "startPage": 570,
+      "endPage": 572
+    },
+    "SMN": {
+      "name": "Santa María Norte",
+      "startPage": 573,
+      "endPage": 575
+    },
+    "SU": {
+      "name": "San Urbano",
+      "startPage": 576,
+      "endPage": 578
+    },
+    "SAS": {
+      "name": "Sastre",
+      "startPage": 579,
+      "endPage": 581
+    },
+    "SCH": {
+      "name": "Schiffner",
+      "startPage": 582,
+      "endPage": 584
+    },
+    "SER": {
+      "name": "Serodino",
+      "startPage": 585,
+      "endPage": 587
+    },
+    "SMO": {
+      "name": "Sol de Mayo",
+      "startPage": 588,
+      "endPage": 590
+    },
+    "Te": {
+      "name": "Teodelina",
+      "startPage": 591,
+      "endPage": 593
+    },
+    "TOS": {
+      "name": "Tostado",
+      "startPage": 594,
+      "endPage": 595
+    },
+    "TOT": {
+      "name": "Totoras",
+      "startPage": 596,
+      "endPage": 598
+    },
+    "TL": {
+      "name": "Tres Lagunas",
+      "startPage": 599,
+      "endPage": 601
+    },
+    "TRS": {
+      "name": "Tres Reyes",
+      "startPage": 602,
+      "endPage": 603
+    },
+    "VT": {
+      "name": "Venado Tuerto",
+      "startPage": 604,
+      "endPage": 606
+    },
+    "VLA": {
+      "name": "Videla",
+      "startPage": 607,
+      "endPage": 609
+    },
+    "VIL": {
+      "name": "Vila",
+      "startPage": 610,
+      "endPage": 612
+    },
+    "VC": {
+      "name": "Villa Cañás",
+      "startPage": 613,
+      "endPage": 615
+    },
+    "VE": {
+      "name": "Villa Eloisa",
+      "startPage": 616,
+      "endPage": 618
+    },
+    "VMI": {
+      "name": "Villa Minetti",
+      "startPage": 619,
+      "endPage": 620
+    },
+    "VOC": {
+      "name": "Villa Ocampo",
+      "startPage": 621,
+      "endPage": 622
+    },
+    "VRs": {
+      "name": "Villa Rossi",
+      "startPage": 623,
+      "endPage": 625
+    },
+    "VTR": {
+      "name": "Villa Trinidad",
+      "startPage": 626,
+      "endPage": 629
+    },
+    "Vd": {
+      "name": "Villada",
+      "startPage": 630,
+      "endPage": 632
+    },
+    "Ww": {
+      "name": "Wheelwright",
+      "startPage": 633,
+      "endPage": 635
+    },
+    "Za": {
+      "name": "Zavalla",
+      "startPage": 636,
+      "endPage": 638
+    }
+  }
+}
