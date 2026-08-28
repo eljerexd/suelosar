@@ -5166,16 +5166,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                       alignment: Alignment.centerRight,
                       child: Padding(
                         padding: const EdgeInsets.only(right: 8),
-                        child: IconButton(
-                          tooltip: isFavorite
-                              ? 'Quitar de favoritos'
-                              : 'Agregar a favoritos',
-                          icon: Icon(
-                            AppIcons.star,
-                            color: isFavorite
-                                ? Theme.of(context).colorScheme.primary
-                                : null,
-                          ),
+                        child: _GisFavoriteStarButton(
+                          isFavorite: isFavorite,
                           onPressed: () {
                             setBottomSheetState(() {
                               _toggleFavorite(feature, series);
@@ -7536,6 +7528,59 @@ List<GisSoilSeries> _applySeriesNameResolver(
       .toList(growable: false);
 }
 
+/// Favorite toggle for the GIS info panel, matching Cartas de suelo's star
+/// (Fase 9 visual tweak): outline + neutral color when not favorited; a
+/// soft green circular backing behind a filled, accent-green star when it
+/// is. One implementation shared by both the mobile bottom sheet and the
+/// desktop/wide-window panel below, so Android and Windows render it
+/// identically without any per-platform branching.
+class _GisFavoriteStarButton extends StatelessWidget {
+  const _GisFavoriteStarButton({
+    required this.isFavorite,
+    required this.onPressed,
+  });
+
+  final bool isFavorite;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return IconButton(
+      tooltip: isFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos',
+      onPressed: onPressed,
+      icon: AnimatedSwitcher(
+        duration: AppMotion.duration(
+          context,
+          const Duration(milliseconds: 220),
+          reduced: const Duration(milliseconds: 60),
+        ),
+        switchInCurve: Curves.easeOutBack,
+        switchOutCurve: Curves.easeIn,
+        transitionBuilder: (child, animation) =>
+            ScaleTransition(scale: animation, child: child),
+        child: Container(
+          key: ValueKey(isFavorite),
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isFavorite
+                ? colorScheme.primaryContainer.withValues(alpha: 0.55)
+                : Colors.transparent,
+          ),
+          child: Icon(
+            AppIcons.star,
+            color: isFavorite
+                ? colorScheme.primary
+                : colorScheme.onSurfaceVariant,
+            fill: isFavorite ? 1 : 0,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _DesktopMapInformationPanel extends StatelessWidget {
   const _DesktopMapInformationPanel({
     required this.feature,
@@ -7635,12 +7680,9 @@ class _DesktopMapInformationPanel extends StatelessWidget {
                     icon: const Icon(AppIcons.library, size: 18),
                     label: const Text('Ver información'),
                   ),
-                  IconButton.filledTonal(
-                    tooltip: featureIsFavorite
-                        ? 'Quitar de favoritos'
-                        : 'Agregar a favoritos',
+                  _GisFavoriteStarButton(
+                    isFavorite: featureIsFavorite,
                     onPressed: onToggleFeatureFavorite,
-                    icon: Icon(featureIsFavorite ? Icons.star : AppIcons.star),
                   ),
                 ],
               ),
@@ -7897,6 +7939,11 @@ class _CurrentLocationLayer extends StatelessWidget {
 
   static const Color _locationBlue = Color(0xFF1976D2);
 
+  // Below this, a circle drawn at its true geographic radius would be hard
+  // to see or read as an intentional shape rather than a rendering
+  // artifact — kept modest, just past the 28px location dot itself.
+  static const double _minimumAccuracyCircleRadius = 24;
+
   final GisLocation location;
   final bool showAccuracyCircle;
 
@@ -7914,17 +7961,40 @@ class _CurrentLocationLayer extends StatelessWidget {
       child: Stack(
         children: [
           if (hasAccuracyCircle)
-            CircleLayer(
-              circles: [
-                CircleMarker(
-                  point: location.point,
-                  radius: accuracy,
-                  useRadiusInMeter: true,
-                  color: _locationBlue.withValues(alpha: 0.12),
-                  borderColor: _locationBlue.withValues(alpha: 0.42),
-                  borderStrokeWidth: 1,
-                ),
-              ],
+            Builder(
+              builder: (context) {
+                // `useRadiusInMeter: true` draws the circle at its real
+                // geographic size, which is correct but means a fixed
+                // number of meters shrinks to just a few screen pixels (or
+                // less) once zoomed out — effectively invisible outside a
+                // close zoom. This keeps that real-size circle whenever
+                // it's already legible, and only switches to a fixed pixel
+                // radius when the real one would render smaller than that
+                // — so the circle only ever grows relative to the true
+                // precision, never shrinks it into looking more precise
+                // than it is.
+                final camera = MapCamera.of(context);
+                final metersPerPixel = _metersPerPixelAt(camera);
+                final radiusInPixels = metersPerPixel > 0
+                    ? accuracy / metersPerPixel
+                    : 0.0;
+                final useTrueRadius =
+                    radiusInPixels >= _minimumAccuracyCircleRadius;
+                return CircleLayer(
+                  circles: [
+                    CircleMarker(
+                      point: location.point,
+                      radius: useTrueRadius
+                          ? accuracy
+                          : _minimumAccuracyCircleRadius,
+                      useRadiusInMeter: useTrueRadius,
+                      color: _locationBlue.withValues(alpha: 0.12),
+                      borderColor: _locationBlue.withValues(alpha: 0.42),
+                      borderStrokeWidth: 1,
+                    ),
+                  ],
+                );
+              },
             ),
           MarkerLayer(
             markers: [
@@ -7955,6 +8025,15 @@ class _CurrentLocationLayer extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// Standard Web Mercator meters-per-pixel at [camera]'s zoom and
+  /// latitude (256px tiles: `earth circumference / 256 = 156543.03392`).
+  static double _metersPerPixelAt(MapCamera camera) {
+    final latitudeRadians = camera.center.latitude * math.pi / 180;
+    return 156543.03392 *
+        math.cos(latitudeRadians).abs() /
+        math.pow(2, camera.zoom);
   }
 }
 

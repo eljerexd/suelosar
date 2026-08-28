@@ -37,7 +37,15 @@ class SantaFeSeriesRepository {
     : _assetBundle = assetBundle ?? rootBundle;
 
   final AssetBundle _assetBundle;
-  Future<_SantaFeIndex>? _indexFuture;
+
+  // Static, not an instance field: Fase 8 perf audit found three
+  // independent call sites (favorites_screen.dart, soil_maps_screen.dart,
+  // the GIS map's province config) each construct their own
+  // SantaFeSeriesRepository(), so an instance-scoped cache meant the
+  // 20KB/213-entry index JSON got re-read and re-parsed once per screen
+  // visit instead of once per app run. Mirrors the same static-cache
+  // pattern SoilMapRepository already uses for Buenos Aires' own catalog.
+  static Future<_SantaFeIndex>? _indexFuture;
 
   /// The asset path of the single consolidated PDF, as declared in the
   /// index JSON.

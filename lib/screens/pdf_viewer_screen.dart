@@ -73,6 +73,16 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   bool _initialPageApplied = false;
   Timer? _mobileScrollbarHideTimer;
 
+  // FASE 9 — prueba de hipótesis (Windows Release PDF en blanco): PdfViewer
+  // .asset() no expone `maxSizeToCacheOnMemory`, así que los bytes del
+  // asset se cargan acá y se sirven a través de PdfDocumentRefCustom, el
+  // único punto de la API pública de pdfrx donde ese parámetro es
+  // configurable. Ver PdfDocumentRefCustom más abajo para el porqué del
+  // valor elegido.
+  late final Future<Uint8List> _pdfBytesFuture = rootBundle
+      .load(widget.assetPath)
+      .then((data) => data.buffer.asUint8List());
+
   @override
   void initState() {
     super.initState();
@@ -264,31 +274,57 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 
   Widget _buildViewer({required bool desktop}) {
     final showScrollThumb = desktop || _usesAutoHideScrollbar;
-    return PdfViewer.asset(
-      widget.assetPath,
-      controller: _pdfController,
-      params: PdfViewerParams(
-        backgroundColor: const Color(0xFFF5F5F5),
-        underflowAnchor: PdfPageAnchor.center,
-        sizeDelegateProvider: _SuelosArPdfSizeDelegateProvider(
-          desktop: desktop,
-        ),
-        onViewerReady: (_, _) => _handleViewerReady(),
-        onPageChanged: _handlePageChanged,
-        normalizeMatrix: _hasPageRange ? _clampToPageRange : null,
-        viewerOverlayBuilder: showScrollThumb
-            ? (context, _, _) => [
-                PdfViewerScrollThumb(
-                  controller: _pdfController,
-                  orientation: ScrollbarOrientation.right,
-                  thumbSize: const Size(12, 64),
-                  margin: 4,
-                  thumbBuilder: (context, size, _, _) =>
-                      _buildScrollThumb(context, size, desktop: desktop),
-                ),
-              ]
-            : null,
-      ),
+    return FutureBuilder<Uint8List>(
+      future: _pdfBytesFuture,
+      builder: (context, snapshot) {
+        final bytes = snapshot.data;
+        if (bytes == null) return const SizedBox.shrink();
+        return PdfViewer(
+          PdfDocumentRefCustom(
+            fileSize: bytes.length,
+            sourceName: widget.assetPath,
+            // FASE 9 — prueba de hipótesis: forzar el umbral de "cachear en
+            // memoria" muy por encima de cualquier PDF de SuelosAR (el más
+            // grande hoy, el consolidado de Santa Fe, pesa ~3,2 MB), para que
+            // pdfrx siempre use FPDF_LoadMemDocument y nunca la ruta "on
+            // demand" (PdfiumFileAccessHelperWin32 en Windows).
+            maxSizeToCacheOnMemory: 20 * 1024 * 1024,
+            read: (buffer, position, size) {
+              if (position + size > bytes.length) {
+                size = bytes.length - position;
+                if (size < 0) return -1;
+              }
+              for (var i = 0; i < size; i++) {
+                buffer[i] = bytes[position + i];
+              }
+              return size;
+            },
+          ),
+          controller: _pdfController,
+          params: PdfViewerParams(
+            backgroundColor: const Color(0xFFF5F5F5),
+            underflowAnchor: PdfPageAnchor.center,
+            sizeDelegateProvider: _SuelosArPdfSizeDelegateProvider(
+              desktop: desktop,
+            ),
+            onViewerReady: (_, _) => _handleViewerReady(),
+            onPageChanged: _handlePageChanged,
+            normalizeMatrix: _hasPageRange ? _clampToPageRange : null,
+            viewerOverlayBuilder: showScrollThumb
+                ? (context, _, _) => [
+                    PdfViewerScrollThumb(
+                      controller: _pdfController,
+                      orientation: ScrollbarOrientation.right,
+                      thumbSize: const Size(12, 64),
+                      margin: 4,
+                      thumbBuilder: (context, size, _, _) =>
+                          _buildScrollThumb(context, size, desktop: desktop),
+                    ),
+                  ]
+                : null,
+          ),
+        );
+      },
     );
   }
 

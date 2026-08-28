@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../analytics/analytics_service.dart';
@@ -11,6 +13,7 @@ import '../app/instant_pop_material_page_route.dart';
 import '../constants/app_icons.dart';
 import '../services/settings_service.dart';
 import '../widgets/app_notification.dart';
+import '../widgets/destructive_action_confirmation.dart';
 import '../widgets/floating_app_bar_card.dart';
 import '../widgets/measurement_color_selector.dart';
 import 'synchronization_screen.dart';
@@ -45,10 +48,6 @@ class SettingsScreen extends StatelessWidget {
                   title: 'Mapa',
                   showComingSoon: false,
                   children: [
-                    _DisabledSwitchSetting(
-                      title: 'Centrar automáticamente al iniciar',
-                      value: true,
-                    ),
                     _FollowLocationSetting(),
                     _ShowGpsAccuracyCircleSetting(),
                     _ShowZoomLevelSetting(),
@@ -61,10 +60,6 @@ class SettingsScreen extends StatelessWidget {
                   showComingSoon: false,
                   children: [
                     _MeasurementColorSetting(),
-                    _DisabledSwitchSetting(
-                      title: 'Mostrar siempre las etiquetas',
-                      value: true,
-                    ),
                     _ConfirmBeforeDeletingSetting(),
                   ],
                 ),
@@ -73,13 +68,14 @@ class SettingsScreen extends StatelessWidget {
                   icon: AppIcons.performance,
                   title: 'Rendimiento',
                   showComingSoon: false,
-                  children: [
-                    _ReduceAnimationsSetting(),
-                    _DisabledActionSetting(
-                      title: 'Limpiar caché temporal',
-                      icon: AppIcons.delete,
-                    ),
-                  ],
+                  children: [_ReduceAnimationsSetting()],
+                ),
+                SizedBox(height: 18),
+                _SettingsSection(
+                  icon: AppIcons.delete,
+                  title: 'Datos y almacenamiento',
+                  showComingSoon: false,
+                  children: [_ClearMapsCacheSetting()],
                 ),
                 SizedBox(height: 18),
                 _SettingsSection(
@@ -488,36 +484,249 @@ class _ShowZoomLevelSetting extends StatelessWidget {
   }
 }
 
-class _DisabledSwitchSetting extends StatelessWidget {
-  const _DisabledSwitchSetting({required this.title, required this.value});
+/// Directory where PmTilesGisRepository copies each province's bundled
+/// PMTiles archive so it can be opened as a real file (PMTiles needs random
+/// file access; asset bundles don't support that) — see
+/// `PmTilesGisRepository._prepareAssetArchive` in gis_repository.dart. That
+/// file is off-limits to touch for this settings cleanup, so the path is
+/// duplicated here by convention (`suelosar_maps` under the app's support
+/// directory) rather than imported — if that directory name ever changes
+/// there, this needs updating too. Confirmed by direct inspection (both on
+/// the real Windows support directory and by reading `_prepareAssetArchive`)
+/// that this directory holds *only* those copies — nothing the user
+/// created, no favorites/measurements/markers/settings (those live
+/// elsewhere: SharedPreferences for settings, and their own sync-backed
+/// stores for the rest) — but the file matching below is a second,
+/// independent safety net on top of that directory scoping: only files
+/// whose name matches the PMTiles cache's own naming pattern are ever
+/// touched, regardless of what else might one day end up in this
+/// directory.
+Future<Directory> _mapsCacheDirectory() async {
+  final supportDirectory = await getApplicationSupportDirectory();
+  return Directory(
+    '${supportDirectory.path}${Platform.pathSeparator}suelosar_maps',
+  );
+}
 
-  final String title;
-  final bool value;
+/// Matches `_prepareAssetArchive`'s own output — `province-64hexCharSha256
+/// .pmtiles`, plus the `.tmp` staging file it briefly writes while
+/// copying before renaming to its final name (left behind only if the app
+/// was killed mid-copy). Nothing else in this directory is ever touched.
+final RegExp _mapsCacheFilePattern = RegExp(
+  r'^[a-z0-9_]+-[a-f0-9]{64}\.pmtiles(\.tmp)?$',
+);
 
-  @override
-  Widget build(BuildContext context) {
-    return _SettingsRow(
-      title: title,
-      trailing: Switch(value: value, onChanged: null),
-    );
+Future<List<File>> _mapsCacheFiles() async {
+  final directory = await _mapsCacheDirectory();
+  if (!directory.existsSync()) return const [];
+  return directory
+      .listSync()
+      .whereType<File>()
+      .where(
+        (file) => _mapsCacheFilePattern.hasMatch(
+          file.uri.pathSegments.last,
+        ),
+      )
+      .toList();
+}
+
+/// The province a cached file belongs to — the part of its name before the
+/// content hash, e.g. `soil_polygons` or `santa_fe_soil_polygons`.
+String _mapsCacheStem(File file) {
+  final name = file.uri.pathSegments.last;
+  final withoutSuffix = name.replaceFirst(
+    RegExp(r'\.pmtiles(\.tmp)?$'),
+    '',
+  );
+  final hashStart = withoutSuffix.length - 64;
+  return hashStart > 1
+      ? withoutSuffix.substring(0, hashStart - 1)
+      : withoutSuffix;
+}
+
+Future<int> _mapsCacheSizeBytes() async {
+  var total = 0;
+  for (final file in await _mapsCacheFiles()) {
+    total += await file.length();
+  }
+  return total;
+}
+
+// Reviewed against the real cache on disk before picking this: today the
+// two provinces' current copies total ~249 MB together, and
+// `_prepareAssetArchive` already removes an old version's file itself as
+// soon as it finishes copying in a replacement, so in normal operation this
+// directory never accumulates old versions to begin with — this threshold
+// is a backstop for the one case that isn't self-cleaning: the app being
+// killed before that removal step runs, leaving an orphaned older file
+// behind. 500 MB gives headroom for that plus a future third
+// smaller-than-Buenos-Aires-sized province before it would ever trigger.
+const int _mapsCacheAutoTrimThresholdBytes = 500 * 1024 * 1024;
+
+/// Best-effort, lazy safety net — runs only when the cache size is checked
+/// (i.e. whenever Configuración's "Limpiar caché de mapas" row builds),
+/// never on a timer or in the background. Only ever removes an *older*
+/// duplicate for a province that already has a newer file cached; the most
+/// recently modified file per province is always kept, since that's the
+/// one the map screen actually needs.
+Future<void> _autoTrimMapsCacheIfNeeded() async {
+  final files = await _mapsCacheFiles();
+  if (files.length <= 1) return;
+
+  final modified = <File, DateTime>{};
+  final sizes = <File, int>{};
+  var total = 0;
+  for (final file in files) {
+    modified[file] = await file.lastModified();
+    final size = await file.length();
+    sizes[file] = size;
+    total += size;
+  }
+  if (total <= _mapsCacheAutoTrimThresholdBytes) return;
+
+  final newestPerStem = <String, File>{};
+  for (final file in files) {
+    final stem = _mapsCacheStem(file);
+    final current = newestPerStem[stem];
+    if (current == null || modified[file]!.isAfter(modified[current]!)) {
+      newestPerStem[stem] = file;
+    }
+  }
+  final removable =
+      files.where((file) => newestPerStem[_mapsCacheStem(file)] != file)
+          .toList()
+        ..sort((a, b) => modified[a]!.compareTo(modified[b]!));
+
+  for (final file in removable) {
+    if (total <= _mapsCacheAutoTrimThresholdBytes) break;
+    try {
+      await file.delete();
+      total -= sizes[file]!;
+    } on FileSystemException {
+      // Skip a file that's still open/locked; try the next one.
+    }
   }
 }
 
-class _DisabledActionSetting extends StatelessWidget {
-  const _DisabledActionSetting({required this.title, required this.icon});
+/// Deletes every currently-cached copy (unlike the automatic trim above,
+/// this is the user explicitly asking to reclaim the space right now, so it
+/// removes the current file per province too, not just orphaned old ones —
+/// they're only ever a copy of what's already bundled in the app, so the
+/// map screen just recreates whichever it needs next time it's opened;
+/// nothing the user created is stored here).
+Future<bool> _clearMapsCache() async {
+  var allDeleted = true;
+  for (final file in await _mapsCacheFiles()) {
+    try {
+      await file.delete();
+    } on FileSystemException {
+      // Most likely still held open by an active map screen elsewhere in
+      // the app (Windows in particular refuses to delete open files).
+      allDeleted = false;
+    }
+  }
+  return allDeleted;
+}
 
-  final String title;
-  final IconData icon;
+Future<int> _loadMapsCacheSize() async {
+  await _autoTrimMapsCacheIfNeeded();
+  return _mapsCacheSizeBytes();
+}
+
+String _formatCacheSize(int bytes) {
+  if (bytes <= 0) return '0 MB';
+  final megabytes = bytes / (1024 * 1024);
+  if (megabytes < 1) return '<1 MB';
+  return '${megabytes.round()} MB';
+}
+
+class _ClearMapsCacheSetting extends StatefulWidget {
+  const _ClearMapsCacheSetting();
+
+  @override
+  State<_ClearMapsCacheSetting> createState() =>
+      _ClearMapsCacheSettingState();
+}
+
+class _ClearMapsCacheSettingState extends State<_ClearMapsCacheSetting> {
+  late Future<int> _sizeFuture = _loadMapsCacheSize();
+  bool _clearing = false;
+
+  Future<void> _handleTap(int currentSize) async {
+    if (currentSize <= _mapsCacheAutoTrimThresholdBytes) return;
+    final confirmed = await confirmDestructiveAction(
+      context,
+      title: 'Limpiar caché de mapas',
+      message:
+          'Se van a borrar ${_formatCacheSize(currentSize)} de mapas '
+          'preparados para uso sin conexión. Se vuelven a preparar '
+          'automáticamente la próxima vez que abras el mapa.',
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _clearing = true);
+    final success = await _clearMapsCache();
+    if (!mounted) return;
+    setState(() {
+      _clearing = false;
+      _sizeFuture = _mapsCacheSizeBytes();
+    });
+    AppNotification.show(
+      context,
+      message: success
+          ? 'Caché de mapas liberada.'
+          : 'No se pudo liberar la caché. Cerrá el mapa e intentá de nuevo.',
+      type: success ? AppNotificationType.success : AppNotificationType.error,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return _SettingsRow(
-      title: title,
-      trailing: IconButton(
-        tooltip: title,
-        onPressed: null,
-        icon: Icon(icon, size: 20),
-      ),
+    final colorScheme = Theme.of(context).colorScheme;
+    return FutureBuilder<int>(
+      future: _sizeFuture,
+      builder: (context, snapshot) {
+        final size = snapshot.data;
+        // Below the same threshold the automatic trim uses, there's nothing
+        // worth reclaiming yet — say so and disable the button, rather than
+        // inviting a delete that would just get re-downloaded immediately.
+        final belowThreshold =
+            size != null && size <= _mapsCacheAutoTrimThresholdBytes;
+        final label = size == null
+            ? '...'
+            : belowThreshold
+            ? 'Nada que limpiar'
+            : _formatCacheSize(size);
+        return _SettingsRow(
+          title: 'Limpiar caché de mapas',
+          trailing: _clearing
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Text(
+                        label,
+                        style: Theme.of(context).textTheme.bodyMedium
+                            ?.copyWith(color: colorScheme.onSurfaceVariant),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Limpiar caché de mapas',
+                      onPressed: (size != null && !belowThreshold)
+                          ? () => unawaited(_handleTap(size))
+                          : null,
+                      icon: const Icon(AppIcons.delete, size: 20),
+                    ),
+                  ],
+                ),
+        );
+      },
     );
   }
 }

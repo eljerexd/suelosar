@@ -246,4 +246,48 @@ void main() {
       expect(clampedInside.calcPosition(viewSize).dy, insideRange.calcPosition(viewSize).dy);
     },
   );
+
+  testWidgets(
+    'loads via PdfDocumentRefCustom with a large maxSizeToCacheOnMemory, not '
+    "PdfViewer.asset (regression test for Windows Release's blank-PDF bug: "
+    'PdfViewer.asset always defers to pdfrx_engine\'s on-demand file-access '
+    'path for any PDF over 1MB, which uses a Windows-only synchronization '
+    'implementation — PdfiumFileAccessHelperWin32 — that renders pages as '
+    'blank in --release builds. Forcing every SuelosAR PDF, comfortably '
+    "under this threshold, into pdfium's in-memory load path instead "
+    '(FPDF_LoadMemDocument) avoids that code path entirely. If this test '
+    'starts failing, whatever change did it likely reintroduced the bug.)',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.windows),
+          home: const PdfViewerScreen(title: 'Junín', assetPath: assetPath),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+
+      final viewer = tester.widget<PdfViewer>(find.byType(PdfViewer));
+      final documentRef = viewer.documentRef;
+      expect(
+        documentRef,
+        isA<PdfDocumentRefCustom>(),
+        reason:
+            'PdfViewer.asset() does not expose maxSizeToCacheOnMemory at '
+            'all, so it must not be used here.',
+      );
+
+      // Comfortably above SuelosAR's largest current PDF (Santa Fe's
+      // consolidated document, ~3.2MB) with wide margin for future series
+      // being added to either province's catalog without silently
+      // regressing back onto the on-demand path.
+      const minimumRequiredThreshold = 10 * 1024 * 1024;
+      final maxSizeToCacheOnMemory =
+          (documentRef as PdfDocumentRefCustom).maxSizeToCacheOnMemory;
+      expect(maxSizeToCacheOnMemory, isNotNull);
+      expect(
+        maxSizeToCacheOnMemory!,
+        greaterThanOrEqualTo(minimumRequiredThreshold),
+      );
+    },
+  );
 }
