@@ -138,12 +138,7 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(
-                              child: _DeviceCard(
-                                service: _service,
-                                onCopyUuid: _copyDeviceUuid,
-                              ),
-                            ),
+                            Expanded(child: _DeviceCard(service: _service)),
                             const SizedBox(width: 18),
                             Expanded(
                               child: _DevicesCard(
@@ -157,10 +152,7 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
                           ],
                         )
                       else ...[
-                        _DeviceCard(
-                          service: _service,
-                          onCopyUuid: _copyDeviceUuid,
-                        ),
+                        _DeviceCard(service: _service),
                         const SizedBox(height: 18),
                         _DevicesCard(
                           service: _pairingService,
@@ -171,36 +163,17 @@ class _SynchronizationScreenState extends State<SynchronizationScreen> {
                         ),
                       ],
                       const SizedBox(height: 18),
-                      if (wide)
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(child: _OperationsCard(service: _service)),
-                            const SizedBox(width: 18),
-                            Expanded(child: _ConnectionCard(service: _service)),
-                          ],
-                        )
-                      else ...[
-                        _OperationsCard(service: _service),
-                        const SizedBox(height: 18),
-                        _ConnectionCard(service: _service),
-                      ],
-                      const SizedBox(height: 18),
                       _LastSyncCard(service: _service),
-                      const SizedBox(height: 18),
-                      _ActionsCard(
-                        service: _service,
-                        synchronizationEnabled: _pairingService.hasPeers,
-                        feedback: _syncButtonFeedback,
-                        onClear: _confirmAndClearQueue,
-                        onSynchronize: _synchronizeNow,
-                        onRetry: _retryFailedOperations,
-                      ),
                       const SizedBox(height: 18),
                       _AdvancedCard(
                         service: _service,
                         onCopyUuid: _copyDeviceUuid,
                         onReuploadLocalData: _confirmAndReuploadLocalData,
+                        synchronizationEnabled: _pairingService.hasPeers,
+                        feedback: _syncButtonFeedback,
+                        onClear: _confirmAndClearQueue,
+                        onSynchronize: _synchronizeNow,
+                        onRetry: _retryFailedOperations,
                       ),
                     ],
                   );
@@ -676,23 +649,20 @@ class _InitialHistoryProgressRow extends StatelessWidget {
 }
 
 class _DeviceCard extends StatelessWidget {
-  const _DeviceCard({required this.service, required this.onCopyUuid});
+  const _DeviceCard({required this.service});
 
   final SynchronizationService service;
-  final VoidCallback onCopyUuid;
 
   @override
   Widget build(BuildContext context) {
     final device = service.device;
     return _SyncCard(
-      title: 'Dispositivo',
+      title: 'Este dispositivo',
       icon: AppIcons.device,
       child: Column(
         children: [
           _InfoRow(label: 'Nombre', value: _fallback(device.name)),
-          _UuidRow(uuid: device.uuid, onCopy: onCopyUuid),
           _InfoRow(label: 'Versión', value: _fallback(device.appVersion)),
-          _InfoRow(label: 'Plataforma', value: _fallback(device.platform)),
         ],
       ),
     );
@@ -718,7 +688,7 @@ class _DevicesCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final devices = service.peers;
     return _SyncCard(
-      title: 'Dispositivos',
+      title: 'Dispositivos vinculados',
       icon: AppIcons.device,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -944,80 +914,6 @@ class _SmallBadge extends StatelessWidget {
   }
 }
 
-class _OperationsCard extends StatelessWidget {
-  const _OperationsCard({required this.service});
-
-  final SynchronizationService service;
-
-  @override
-  Widget build(BuildContext context) {
-    return _SyncCard(
-      title: 'Cambios pendientes',
-      icon: AppIcons.queue,
-      child: Column(
-        children: [
-          _MetricRow(
-            icon: AppIcons.upload,
-            label: 'Subidas pendientes',
-            value: service.pendingUploads,
-          ),
-          _MetricRow(
-            icon: AppIcons.download,
-            label: 'Descargas pendientes',
-            value: service.pendingDownloads,
-          ),
-          _MetricRow(
-            icon: AppIcons.refresh,
-            label: 'Reintentos',
-            value: service.retryCount,
-          ),
-          _MetricRow(
-            icon: AppIcons.queue,
-            label: 'Tamaño de cola',
-            value: service.queueSize,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ConnectionCard extends StatelessWidget {
-  const _ConnectionCard({required this.service});
-
-  final SynchronizationService service;
-
-  @override
-  Widget build(BuildContext context) {
-    final waiting = service.engineStatus == SyncStatus.waitingConnection;
-    final connection = waiting
-        ? 'Esperando'
-        : service.connectivityStatus == ConnectivityStatus.online
-        ? 'En línea'
-        : 'Sin conexión';
-    final serviceStatus =
-        service.isBackendConfigured &&
-            !service.isBackendConnected &&
-            service.lastError?.trim().isNotEmpty == true
-        ? 'Error de inicializaci\u00f3n'
-        : !service.isBackendConfigured
-        ? 'No configurado'
-        : service.isBackendConnected
-        ? 'Conectado'
-        : 'Esperando conexión';
-    return _SyncCard(
-      title: 'Conexión y servicio',
-      icon: AppIcons.connection,
-      child: Column(
-        children: [
-          _InfoRow(label: 'Conexión', value: connection),
-          _InfoRow(label: 'Servicio', value: serviceStatus),
-        ],
-      ),
-    );
-  }
-}
-
 class _LastSyncCard extends StatelessWidget {
   const _LastSyncCard({required this.service});
 
@@ -1060,9 +956,11 @@ class _LastSyncCard extends StatelessWidget {
   }
 }
 
-class _ActionsCard extends StatelessWidget {
-  const _ActionsCard({
+class _AdvancedCard extends StatelessWidget {
+  const _AdvancedCard({
     required this.service,
+    required this.onCopyUuid,
+    required this.onReuploadLocalData,
     required this.synchronizationEnabled,
     required this.feedback,
     required this.onSynchronize,
@@ -1071,6 +969,8 @@ class _ActionsCard extends StatelessWidget {
   });
 
   final SynchronizationService service;
+  final VoidCallback onCopyUuid;
+  final VoidCallback onReuploadLocalData;
   final bool synchronizationEnabled;
   final _SyncButtonFeedback feedback;
   final VoidCallback onSynchronize;
@@ -1088,79 +988,22 @@ class _ActionsCard extends StatelessWidget {
         }.contains(service.engineStatus) ||
         feedback == _SyncButtonFeedback.running;
     final success = feedback == _SyncButtonFeedback.success;
-    return _SyncCard(
-      title: 'Acciones manuales',
-      icon: AppIcons.refresh,
-      child: Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        children: [
-          FilledButton(
-            onPressed: busy || !synchronizationEnabled ? null : onSynchronize,
-            child: AnimatedSwitcher(
-              duration: AppMotion.duration(
-                context,
-                const Duration(milliseconds: 180),
-              ),
-              child: Row(
-                key: ValueKey((busy, success)),
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (busy)
-                    const SizedBox.square(
-                      dimension: 17,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  else
-                    Icon(
-                      success ? AppIcons.check : AppIcons.synchronization,
-                      size: 18,
-                    ),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      busy
-                          ? 'Sincronizando...'
-                          : success
-                          ? 'Sincronizado'
-                          : 'Sincronizar ahora',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          OutlinedButton.icon(
-            onPressed: busy || !service.hasFailedOperations ? null : onRetry,
-            icon: const Icon(AppIcons.refresh),
-            label: const Text('Reintentar fallos'),
-          ),
-          TextButton.icon(
-            onPressed: busy || service.queueSize == 0 ? null : onClear,
-            icon: const Icon(AppIcons.delete),
-            label: const Text('Limpiar cola local'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AdvancedCard extends StatelessWidget {
-  const _AdvancedCard({
-    required this.service,
-    required this.onCopyUuid,
-    required this.onReuploadLocalData,
-  });
-
-  final SynchronizationService service;
-  final VoidCallback onCopyUuid;
-  final VoidCallback onReuploadLocalData;
-
-  @override
-  Widget build(BuildContext context) {
+    final waiting = service.engineStatus == SyncStatus.waitingConnection;
+    final connection = waiting
+        ? 'Esperando'
+        : service.connectivityStatus == ConnectivityStatus.online
+        ? 'En línea'
+        : 'Sin conexión';
+    final serviceStatus =
+        service.isBackendConfigured &&
+            !service.isBackendConnected &&
+            service.lastError?.trim().isNotEmpty == true
+        ? 'Error de inicialización'
+        : !service.isBackendConfigured
+        ? 'No configurado'
+        : service.isBackendConnected
+        ? 'Conectado'
+        : 'Esperando conexión';
     return _SyncCard(
       padding: EdgeInsets.zero,
       child: ExpansionTile(
@@ -1169,6 +1012,96 @@ class _AdvancedCard extends StatelessWidget {
         subtitle: const Text('Información de diagnóstico'),
         childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
         children: [
+          const _AdvancedSectionLabel('Cambios pendientes'),
+          _MetricRow(
+            icon: AppIcons.upload,
+            label: 'Subidas pendientes',
+            value: service.pendingUploads,
+          ),
+          _MetricRow(
+            icon: AppIcons.download,
+            label: 'Descargas pendientes',
+            value: service.pendingDownloads,
+          ),
+          _MetricRow(
+            icon: AppIcons.refresh,
+            label: 'Reintentos',
+            value: service.retryCount,
+          ),
+          _MetricRow(
+            icon: AppIcons.queue,
+            label: 'Tamaño de cola',
+            value: service.queueSize,
+          ),
+          const Divider(height: 28),
+          const _AdvancedSectionLabel('Conexión y servicio'),
+          _InfoRow(label: 'Conexión', value: connection),
+          _InfoRow(label: 'Servicio', value: serviceStatus),
+          const Divider(height: 28),
+          const _AdvancedSectionLabel('Acciones manuales'),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              FilledButton(
+                onPressed: busy || !synchronizationEnabled
+                    ? null
+                    : onSynchronize,
+                child: AnimatedSwitcher(
+                  duration: AppMotion.duration(
+                    context,
+                    const Duration(milliseconds: 180),
+                  ),
+                  child: Row(
+                    key: ValueKey((busy, success)),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (busy)
+                        const SizedBox.square(
+                          dimension: 17,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      else
+                        Icon(
+                          success ? AppIcons.check : AppIcons.synchronization,
+                          size: 18,
+                        ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          busy
+                              ? 'Sincronizando...'
+                              : success
+                              ? 'Sincronizado'
+                              : 'Sincronizar ahora',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: busy || !service.hasFailedOperations
+                    ? null
+                    : onRetry,
+                icon: const Icon(AppIcons.refresh),
+                label: const Text('Reintentar fallos'),
+              ),
+              TextButton.icon(
+                onPressed: busy || service.queueSize == 0 ? null : onClear,
+                icon: const Icon(AppIcons.delete),
+                label: const Text('Limpiar cola local'),
+              ),
+            ],
+          ),
+          const Divider(height: 28),
+          const _AdvancedSectionLabel('Diagnóstico'),
+          _InfoRow(
+            label: 'Plataforma',
+            value: _fallback(service.device.platform),
+          ),
           _InfoRow(label: 'SyncEngine', value: service.engineStatus.name),
           _InfoRow(label: 'Backend adapter', value: service.backendAdapter),
           _InfoRow(
@@ -1214,6 +1147,26 @@ class _AdvancedCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _AdvancedSectionLabel extends StatelessWidget {
+  const _AdvancedSectionLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }
