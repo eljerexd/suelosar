@@ -128,7 +128,21 @@ class PmTilesGisRepository implements GisRepository {
 
   @override
   Future<GisArchiveInfo> initialize() {
-    return _initialization ??= _openArchive();
+    // Bugfix (aislar fallos entre coberturas): only a successful open is
+    // cached. Previously a failed attempt was memoized too, so a coverage
+    // that started out unusable (e.g. Santa Fe before its on-demand
+    // archive is genuinely available) stayed permanently broken for the
+    // rest of the app session even after it became usable — every
+    // subsequent initialize() call just replayed the same cached
+    // rejection instead of retrying. Clearing it on failure lets the next
+    // call open the archive fresh.
+    return _initialization ??= _openArchive().catchError((
+      Object error,
+      StackTrace stackTrace,
+    ) {
+      _initialization = null;
+      Error.throwWithStackTrace(error, stackTrace);
+    });
   }
 
   @override

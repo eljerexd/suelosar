@@ -106,3 +106,17 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Fase 11B: Santa Fe's soil-polygon PMTiles ships as an Android on-demand
+# deferred component (see pubspec.yaml's deferred-components section), so it
+# was removed from Flutter's own cross-platform assets list. Windows has no
+# equivalent on-demand mechanism and isn't part of this phase's download
+# feature, so its copy is restored here directly from the same source file,
+# outside Flutter's asset bundling — copied next to the executable exactly
+# like the other Runtime files above, unconditionally, on every build.
+# PmTilesGisRepository.fromFile() reads it straight from this path.
+set(SANTA_FE_PMTILES_DATA_DIR "${INSTALL_BUNDLE_DATA_DIR}/santa_fe_pmtiles")
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/maps/santa_fe_soil_polygons.pmtiles"
+  DESTINATION "${SANTA_FE_PMTILES_DATA_DIR}"
+  COMPONENT Runtime)

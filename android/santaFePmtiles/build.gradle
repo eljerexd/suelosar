@@ -1,0 +1,115 @@
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader("UTF-8") { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode")
+if (flutterVersionCode == null) {
+    flutterVersionCode = "1"
+}
+
+def flutterVersionName = localProperties.getProperty("flutter.versionName")
+if (flutterVersionName == null) {
+    flutterVersionName = "1.0"
+}
+
+apply plugin: "com.android.dynamic-feature"
+
+android {
+    namespace = "ar.com.suelosar.santaFePmtiles"
+    // The generated template referenced the `flutter` extension (as
+    // app/build.gradle.kts does), but that extension only exists on the
+    // module the Flutter Gradle plugin is actually applied to (":app") —
+    // evaluating it here fails with "unknown property 'flutter'". These
+    // mirror app/build.gradle.kts's real resolved values for the installed
+    // Flutter SDK (packages/flutter_tools/gradle/.../FlutterExtension.kt).
+    compileSdk = 36
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        // Every declared srcDir gets tracked as a task input, and only the
+        // variant actually being assembled (e.g. betaRelease) has its
+        // directory created by the Flutter build step — the other three
+        // (prodDebug, prodRelease, betaDebug) stay nonexistent, which
+        // Gradle 9's stricter input tracking treats as a hard failure
+        // ("could not stat file") rather than an empty source set. Creating
+        // them up front keeps every variant's srcDir valid regardless of
+        // which one actually gets built.
+        applicationVariants.all { variant ->
+            // Flutter's own asset-generation step keys this path by build
+            // TYPE alone (debug/profile/release) — there's only one
+            // deferred-components declaration in pubspec.yaml, not one per
+            // product flavor — so using the full flavor+buildType variant
+            // name here (as the auto-generated template did) pointed at a
+            // directory Flutter never actually populates, silently leaving
+            // the module's assets empty. Confirmed by inspecting where
+            // `flutter build appbundle` really wrote the file: .../flutter/
+            // release/deferred_assets/, not .../betaRelease/deferred_assets/.
+            def assetsDir = file("${project.layout.buildDirectory.get()}/intermediates/flutter/${variant.buildType.name}/deferred_assets")
+            def libsDir = file("${project.layout.buildDirectory.get()}/intermediates/flutter/${variant.buildType.name}/deferred_libs")
+            assetsDir.mkdirs()
+            libsDir.mkdirs()
+            main.assets.srcDirs += assetsDir
+            main.jniLibs.srcDirs += libsDir
+        }
+    }
+
+    defaultConfig {
+        minSdk = 24
+        targetSdk = 36
+        versionCode = flutterVersionCode.toInteger()
+        versionName = flutterVersionName
+    }
+
+    // Must mirror app/build.gradle.kts's "env" flavor dimension (prod/beta)
+    // — AGP requires a dynamic-feature module to declare the same flavor
+    // dimensions as the base app it depends on.
+    flavorDimensions "env"
+    productFlavors {
+        prod {
+            dimension "env"
+        }
+        beta {
+            dimension "env"
+        }
+    }
+
+    // The generated sourceSets block above (applicationVariants.all)
+    // registers every variant's intermediates/flutter/<variant>/
+    // deferred_assets directory as a "main" asset source dir, including
+    // variants that are never actually assembled (e.g. prodDebug when only
+    // betaRelease is built) — those directories don't exist on disk. Lint
+    // Vital's task-input tracking (Gradle 9.1) refuses to run against a
+    // declared-but-missing directory. This module is assets-only (no
+    // Kotlin/Java source), so there is nothing for lint to check anyway.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+}
+
+dependencies {
+    implementation(project(":app"))
+}
+
+// The directories registered above are populated by the app module's own
+// per-variant Flutter build task (":app:compileFlutterBuild<Variant>"), not
+// by anything in this module's own task graph — Gradle 9's stricter
+// validation correctly flags that as an undeclared cross-project
+// dependency ("uses this output ... without declaring ... dependency") and
+// fails the build rather than risk a race. Declaring it explicitly here
+// fixes the ordering without disabling the check.
+afterEvaluate {
+    android.applicationVariants.all { variant ->
+        def variantSuffix = variant.name.capitalize()
+        def mergeAssetsTask = tasks.findByName("merge${variantSuffix}Assets")
+        mergeAssetsTask?.dependsOn(":app:compileFlutterBuild${variantSuffix}")
+    }
+}

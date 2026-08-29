@@ -60,6 +60,7 @@ import 'gis_soil_series.dart';
 import 'map_coverage.dart';
 import 'multi_coverage_repository.dart';
 import 'province_config.dart';
+import 'santa_fe_pmtiles_delivery.dart';
 import 'series_resolver.dart';
 import 'widgets/expandable_tools_fab.dart';
 
@@ -349,7 +350,22 @@ class _GisMapScreenState extends State<GisMapScreen>
         MultiCoverageRepository(
           coverages: _coverages,
           defaultCoverageId: _defaultCoverage.id,
+          isCoverageAvailable: (coverage) => coverage.id == 'santa_fe'
+              ? _checkSantaFePmtilesAvailable()
+              : Future.value(true),
+          repositoryBuilder: (coverage) =>
+              coverage.id == 'santa_fe' && !Platform.isAndroid
+              ? PmTilesGisRepository.fromFile(
+                  archiveFile: SantaFePmtilesDelivery.resolveWindowsArchiveFile(),
+                  layerName: coverage.config.pmtilesLayerName,
+                )
+              : PmTilesGisRepository.fromAsset(
+                  assetPath: coverage.config.pmtilesAsset,
+                  versionAssetPath: coverage.config.pmtilesVersionAsset,
+                  layerName: coverage.config.pmtilesLayerName,
+                ),
         );
+    SantaFePmtilesDelivery.instance.addListener(_handleSantaFePmtilesStatus);
     _pdfSeriesRepository = widget.pdfSeriesRepository ?? PdfSeriesRepository();
     // Precedence: explicit override > explicit provinceConfig's resolver >
     // wrap whichever _pdfSeriesRepository ends up in play (injected or
@@ -375,6 +391,9 @@ class _GisMapScreenState extends State<GisMapScreen>
       debugPrint('GIS diagnostic: tile pipeline disabled.');
     } else {
       unawaited(_initializeArchive());
+    }
+    if (_coverages.any((coverage) => coverage.id == 'santa_fe')) {
+      unawaited(SantaFePmtilesDelivery.instance.checkStatus());
     }
     if (_disableGeolocatorForDiagnostic) {
       debugPrint('GIS diagnostic: Geolocator disabled.');
@@ -416,6 +435,9 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   @override
   void dispose() {
+    SantaFePmtilesDelivery.instance.removeListener(
+      _handleSantaFePmtilesStatus,
+    );
     _removeDesktopLayersOverlay();
     final registeredRoute = _registeredMapRoute;
     if (registeredRoute != null) {
@@ -1752,24 +1774,53 @@ class _GisMapScreenState extends State<GisMapScreen>
                         child: LinearProgressIndicator(minHeight: 3),
                       ),
                     if (overlayState.error case final error?)
-                      Positioned(
-                        left: 16,
-                        right: 16,
-                        bottom: 16,
-                        child: Material(
-                          color: colorScheme.errorContainer,
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Text(
-                              error,
-                              style: TextStyle(
-                                color: colorScheme.onErrorContainer,
+                      ValueListenableBuilder<_MapViewportState>(
+                        valueListenable: _mapViewportState,
+                        builder: (context, viewState, child) {
+                          // Fase 11C: a tile fetch coming back incomplete
+                          // because Santa Fe simply isn't downloaded yet is
+                          // expected, not a fault — the dedicated card
+                          // below already explains that. Showing this
+                          // generic red error on top of it would describe
+                          // the same situation as if it were a bug.
+                          final undownloadedCoverage = _coverages
+                              .where((coverage) => coverage.id == 'santa_fe')
+                              .firstOrNull;
+                          final suppressedForSantaFe =
+                              undownloadedCoverage != null &&
+                              SantaFePmtilesDelivery.instance.status !=
+                                  SantaFePmtilesStatus.available &&
+                              _SantaFePmtilesBanner.isCoverageVisible(
+                                _usesMapLibreEngine
+                                    ? null
+                                    : (_mapEngine as FlutterMapEngine)
+                                          .controller
+                                          .camera,
+                                MediaQuery.sizeOf(context),
+                              );
+                          if (suppressedForSantaFe) {
+                            return const SizedBox.shrink();
+                          }
+                          return Positioned(
+                            left: 16,
+                            right: 16,
+                            bottom: 16,
+                            child: Material(
+                              color: colorScheme.errorContainer,
+                              borderRadius: BorderRadius.circular(8),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Text(
+                                  error,
+                                  style: TextStyle(
+                                    color: colorScheme.onErrorContainer,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
                               ),
-                              textAlign: TextAlign.center,
                             ),
-                          ),
-                        ),
+                          );
+                        },
                       ),
                   ],
                 );
@@ -1819,6 +1870,19 @@ class _GisMapScreenState extends State<GisMapScreen>
             viewStateListenable: _mapViewportState,
             showScale:
                 renderedMeasurementMode == null || !_hasMeasurementPoints,
+          ),
+        for (final undownloadedCoverage in _coverages.where(
+          (coverage) => coverage.id == 'santa_fe',
+        ))
+          _SantaFePmtilesBanner(
+            provinceName: _provinceDisplayName(undownloadedCoverage.id),
+            referenceMapAssetPath: undownloadedCoverage.config.referenceMapAsset,
+            viewStateListenable: _mapViewportState,
+            resolveCamera: () => _usesMapLibreEngine
+                ? null
+                : (_mapEngine as FlutterMapEngine).controller.camera,
+            onDownload: () =>
+                unawaited(SantaFePmtilesDelivery.instance.download()),
           ),
       ],
     );
@@ -3503,6 +3567,56 @@ class _GisMapScreenState extends State<GisMapScreen>
 
     _currentLocationFeature = feature;
     return feature;
+  }
+
+  /// [MultiCoverageRepository]'s `isCoverageAvailable` callback for Santa
+  /// Fe — Fase 11B. Re-probes the real delivery state (covers the case
+  /// where a previous session already finished the download, satisfying
+  /// the offline-persistence requirement) rather than trusting whatever
+  /// [SantaFePmtilesDelivery] happened to hold at construction time.
+  Future<bool> _checkSantaFePmtilesAvailable() async {
+    await SantaFePmtilesDelivery.instance.checkStatus();
+    return SantaFePmtilesDelivery.instance.status ==
+        SantaFePmtilesStatus.available;
+  }
+
+  /// Reacts to [SantaFePmtilesDelivery] transitioning to `available` —
+  /// either right after a download finishes, or from the startup probe
+  /// (see `initState`) finding a previously-completed download. Brings
+  /// Santa Fe into the active [MultiCoverageRepository] set and forces the
+  /// already-visible tiles to reload, so the polygons appear immediately
+  /// without the user having to pan, zoom, or reopen the screen.
+  void _handleSantaFePmtilesStatus() {
+    if (SantaFePmtilesDelivery.instance.status !=
+        SantaFePmtilesStatus.available) {
+      return;
+    }
+    final repository = _repository;
+    if (repository is! MultiCoverageRepository) return;
+    unawaited(
+      repository.markCoverageAvailable('santa_fe').then((_) {
+        if (mounted) _reloadVisibleTilesAfterCoverageChange();
+      }),
+    );
+  }
+
+  /// Bypasses [_loadVisibleTiles]'s usual "same tiles as last time, skip"
+  /// short-circuit: clears every cached rendered tile and the visible/
+  /// prefetch coordinate sets it compares against, then re-requests the
+  /// current viewport so newly-available Santa Fe features actually reach
+  /// the screen instead of being masked by stale cache entries.
+  void _reloadVisibleTilesAfterCoverageChange() {
+    for (final tile in _renderedTileCache.values) {
+      tile.dispose();
+    }
+    _renderedTileCache.clear();
+    _visibleTileCoordinates = {};
+    _prefetchedTileCoordinates = {};
+    if (_usesMapLibreEngine) return;
+    final engine = _mapEngine;
+    if (engine is FlutterMapEngine) {
+      unawaited(_loadVisibleTiles(engine.controller.camera, _archiveInfo));
+    }
   }
 
   void _updateMapViewportState(SoilMapCameraState camera) {
@@ -9836,6 +9950,418 @@ class _CompassGlyphPainter extends CustomPainter {
   @override
   bool shouldRepaint(_CompassGlyphPainter oldDelegate) {
     return oldDelegate.color != color;
+  }
+}
+
+/// Best-effort, easily-extended display name for a coverage's card —
+/// Fase 11C: "no hardcodear Santa Fe" inside the widget below, which takes
+/// this as a plain parameter instead of assuming any one province. Only
+/// Santa Fe has on-demand delivery today, so this is the only entry that
+/// matters in practice; adding a real name here is all a future province
+/// needs.
+String _provinceDisplayName(String coverageId) {
+  return switch (coverageId) {
+    'santa_fe' => 'Santa Fe',
+    _ => coverageId,
+  };
+}
+
+/// Persists, for the Santa Fe notice, which delivery-status the user has
+/// already closed it for — SharedPreferences so it survives closing and
+/// reopening the map (an in-memory-only flag doesn't). A status change
+/// (e.g. notInstalled -> error) makes a previous dismissal stale, so the
+/// notice can reappear if the situation actually changed.
+abstract final class _ProvinceNoticeDismissal {
+  static const _key = 'gis.province_notice_dismissed.santa_fe';
+
+  static Future<String?> read() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getString(_key);
+  }
+
+  static Future<void> write(String statusName) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_key, statusName);
+  }
+}
+
+/// Reads a province's real boundary polygon from the same reference-
+/// basemap asset `OfflineReferenceMapLayer` already uses
+/// ([ProvinceConfig.referenceMapAsset]) — its `provincialBoundaries` layer,
+/// sourced from IGN's real `ign:provincia` WFS layer (see that asset's own
+/// `source` field), not a rectangle standing in for the province. Returns
+/// null — no outline, never a fabricated shape — if there's no reference
+/// map asset, or the load/parse fails for any reason.
+abstract final class _ProvinceBoundaryLoader {
+  static Future<List<List<LatLng>>?> load(String? assetPath) async {
+    if (assetPath == null) return null;
+    try {
+      final raw = await rootBundle.loadString(assetPath);
+      final decoded = jsonDecode(raw) as Map<String, Object?>;
+      final layers = decoded['layers'] as Map<String, Object?>?;
+      final rings = layers?['provincialBoundaries'] as List<Object?>?;
+      if (rings == null || rings.isEmpty) return null;
+      return rings
+          .map(
+            (ring) => (ring as List<Object?>)
+                .map(
+                  (point) => LatLng(
+                    ((point as List<Object?>)[1]! as num).toDouble(),
+                    (point[0]! as num).toDouble(),
+                  ),
+                )
+                .toList(growable: false),
+          )
+          .toList(growable: false);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// Fase 11C: fixed map annotation for a coverage whose soil-polygon
+/// PMTiles isn't available yet — anchored to [_provinceCenter] via
+/// [MapCamera.latLngToScreenOffset], the same way a map marker's info
+/// window would be. Deliberately has no "keep on screen" or "avoid the
+/// controls" logic: its position is only ever a function of that fixed
+/// coordinate and the current camera, nothing else — panning moves it
+/// exactly as it moves Santa Fe, and it simply isn't repositioned if that
+/// puts it partly off-screen or under a control. On Windows — always
+/// bundled, see `windows/CMakeLists.txt` — [SantaFePmtilesDelivery.status]
+/// is always `available` and this never renders.
+///
+/// Visible exactly when [_provinceCenter] itself is inside the viewport —
+/// no zoom threshold, no grace period once it's left the screen. Its
+/// on-screen SIZE never changes either: [_SantaFePmtilesBannerState.
+/// _cardMaxWidth] is a fixed logical-pixel width regardless of zoom, so
+/// this behaves like a marker overlay, not a scaled map layer.
+class _SantaFePmtilesBanner extends StatefulWidget {
+  const _SantaFePmtilesBanner({
+    required this.provinceName,
+    required this.referenceMapAssetPath,
+    required this.viewStateListenable,
+    required this.resolveCamera,
+    required this.onDownload,
+  });
+
+  final String provinceName;
+
+  /// Same asset [_ProvinceBoundaryLoader] reads the real outline from —
+  /// passed in rather than looked up here so this widget doesn't need a
+  /// [MapCoverage] of its own, just like [ProvinceConfig].referenceMapAsset
+  /// already flows into `OfflineReferenceMapLayer` elsewhere on this screen.
+  final String? referenceMapAssetPath;
+  final ValueListenable<_MapViewportState> viewStateListenable;
+
+  /// Live camera accessor (not a snapshot) — null when the active engine
+  /// isn't [FlutterMapEngine] (e.g. the experimental MapLibre engine, which
+  /// has no equivalent projection available here); the annotation simply
+  /// doesn't render rather than crashing or guessing a position.
+  final MapCamera? Function() resolveCamera;
+  final VoidCallback onDownload;
+
+  /// A real point inside Santa Fe — not a guess, and deliberately not near
+  /// the provincial border: Rafaela, a well-known city that sits close to
+  /// the geographic middle of the province (roughly equidistant from the
+  /// northern Chaco border and the southern Rosario/Buenos Aires border),
+  /// rather than the PMTiles archive's data-derived center (which sits far
+  /// enough south, near Rosario/Casilda, to read as "next to Buenos
+  /// Aires") or the area centroid of the boundary polygon (which, for this
+  /// province's shape — wide in the north, narrow near Rosario — skews
+  /// noticeably north of the visual middle).
+  static const LatLng _provinceCenter = LatLng(-31.2503, -61.4867);
+
+  /// Whether [_provinceCenter] currently projects inside the visible
+  /// screen — the only thing that decides visibility. No zoom threshold:
+  /// at any zoom level, once this point scrolls off-screen the annotation
+  /// disappears, and it reappears the moment it's back in view.
+  static bool isCoverageVisible(MapCamera? camera, Size screenSize) {
+    if (camera == null || screenSize.isEmpty) return false;
+    final anchor = camera.latLngToScreenOffset(_provinceCenter);
+    return anchor.dx >= 0 &&
+        anchor.dx <= screenSize.width &&
+        anchor.dy >= 0 &&
+        anchor.dy <= screenSize.height;
+  }
+
+  @override
+  State<_SantaFePmtilesBanner> createState() => _SantaFePmtilesBannerState();
+}
+
+class _SantaFePmtilesBannerState extends State<_SantaFePmtilesBanner> {
+  static const double _cardMaxWidth = 200;
+
+  // Persisted (SharedPreferences) rather than kept only in memory — the
+  // close must survive panning away and back, and closing/reopening the
+  // map — for as long as Santa Fe's delivery status stays the same as it
+  // was when the user dismissed it.
+  String? _dismissedStatusName;
+
+  // The province's real boundary ring(s) in plain LatLng — reprojected to
+  // screen space fresh on every build (camera can rotate/zoom/pan), never
+  // recomputed from anything but the camera itself.
+  List<List<LatLng>>? _boundaryRings;
+
+  @override
+  void initState() {
+    super.initState();
+    SantaFePmtilesDelivery.instance.addListener(_handleDeliveryChanged);
+    unawaited(_loadDismissal());
+    unawaited(_loadBoundary());
+  }
+
+  @override
+  void dispose() {
+    SantaFePmtilesDelivery.instance.removeListener(_handleDeliveryChanged);
+    super.dispose();
+  }
+
+  void _handleDeliveryChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadDismissal() async {
+    final dismissed = await _ProvinceNoticeDismissal.read();
+    if (mounted && dismissed != _dismissedStatusName) {
+      setState(() => _dismissedStatusName = dismissed);
+    }
+  }
+
+  Future<void> _loadBoundary() async {
+    final rings = await _ProvinceBoundaryLoader.load(
+      widget.referenceMapAssetPath,
+    );
+    if (mounted && rings != null) {
+      setState(() => _boundaryRings = rings);
+    }
+  }
+
+  void _dismiss(SantaFePmtilesStatus status) {
+    setState(() => _dismissedStatusName = status.name);
+    unawaited(_ProvinceNoticeDismissal.write(status.name));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<_MapViewportState>(
+      valueListenable: widget.viewStateListenable,
+      builder: (context, viewState, child) {
+        final status = SantaFePmtilesDelivery.instance.status;
+        if (status == SantaFePmtilesStatus.available) {
+          return const SizedBox.shrink();
+        }
+
+        if (_dismissedStatusName == status.name) {
+          return const SizedBox.shrink();
+        }
+
+        // No camera to project against (e.g. the experimental MapLibre
+        // engine) — nothing to anchor to, so render nothing rather than
+        // guess a screen position.
+        final camera = widget.resolveCamera();
+        final screenSize = MediaQuery.sizeOf(context);
+        if (!_SantaFePmtilesBanner.isCoverageVisible(camera, screenSize)) {
+          return const SizedBox.shrink();
+        }
+
+        // A fixed, real point inside Santa Fe (see _provinceCenter),
+        // reprojected against the live camera on every build — exactly
+        // the same relationship a map marker has to its own position. No
+        // clamping, no "keep on screen": if this lands under a control or
+        // off-screen, it stays there, because the geography — not screen
+        // tidiness — decides where it goes.
+        final anchor = camera!.latLngToScreenOffset(
+          _SantaFePmtilesBanner._provinceCenter,
+        );
+
+        return Stack(
+          children: [
+            // Subtle outline + darkening tracing the province's real
+            // boundary — see _ProvinceBoundaryLoader. Nothing is drawn if
+            // that data isn't available; a rectangle is never substituted
+            // for it.
+            if (_boundaryRings case final rings?)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: screenSize,
+                  painter: _ProvinceHighlightPainter(
+                    rings: rings
+                        .map(
+                          (ring) => ring
+                              .map(camera.latLngToScreenOffset)
+                              .toList(growable: false),
+                        )
+                        .toList(growable: false),
+                    fillColor: Theme.of(
+                      context,
+                    ).colorScheme.scrim.withValues(alpha: 0.10),
+                    borderColor: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.45),
+                  ),
+                ),
+              ),
+            Positioned(
+              left: anchor.dx - _cardMaxWidth / 2,
+              top: anchor.dy + 8,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: _cardMaxWidth),
+                child: _SantaFePmtilesBannerCard(
+                  provinceName: widget.provinceName,
+                  onDownload: widget.onDownload,
+                  onClose: () => _dismiss(status),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Paints the province's real boundary ring(s) (projected screen points,
+/// one list per ring — see [_ProvinceBoundaryLoader]), each closed into its
+/// own subpath of the same [ui.Path] so multi-ring boundaries (e.g. an
+/// offshore island) all fill and stroke together in one pass.
+class _ProvinceHighlightPainter extends CustomPainter {
+  const _ProvinceHighlightPainter({
+    required this.rings,
+    required this.fillColor,
+    required this.borderColor,
+  });
+
+  final List<List<Offset>> rings;
+  final Color fillColor;
+  final Color borderColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = ui.Path();
+    for (final ring in rings) {
+      if (ring.length < 3) continue;
+      path.addPolygon(ring, true);
+    }
+    canvas.drawPath(path, Paint()..color = fillColor);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = borderColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ProvinceHighlightPainter oldDelegate) {
+    return !listEquals(oldDelegate.rings, rings) ||
+        oldDelegate.fillColor != fillColor ||
+        oldDelegate.borderColor != borderColor;
+  }
+}
+
+class _SantaFePmtilesBannerCard extends StatelessWidget {
+  const _SantaFePmtilesBannerCard({
+    required this.provinceName,
+    required this.onDownload,
+    required this.onClose,
+  });
+
+  final String provinceName;
+  final VoidCallback onDownload;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    // Same floating-card language as the home screen's module cards
+    // (surfaceContainerLow + a faint shadow, not a heavy elevated panel):
+    // a light, compact card, not a banner or HUD.
+    return Material(
+      color: colorScheme.surfaceContainerLow,
+      elevation: 2,
+      shadowColor: colorScheme.shadow.withValues(alpha: 0.16),
+      borderRadius: BorderRadius.circular(14),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Text(
+                      provinceName,
+                      style: textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 26,
+                  height: 26,
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 26,
+                      minHeight: 26,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(
+                      backgroundColor: colorScheme.surfaceContainerHighest
+                          .withValues(alpha: 0.55),
+                      shape: const CircleBorder(),
+                    ),
+                    tooltip: 'Cerrar',
+                    onPressed: onClose,
+                    icon: Icon(
+                      AppIcons.close,
+                      size: 14,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 10),
+              child: Text(
+                'Datos de suelo',
+                style: textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            FilledButton.tonal(
+              onPressed: onDownload,
+              style: FilledButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 9,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                textStyle: textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              child: const Text('Descargar'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

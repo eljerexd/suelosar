@@ -2,9 +2,12 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:suelosar/gis/gis_feature.dart';
 import 'package:suelosar/gis/gis_layer.dart';
+import 'package:suelosar/gis/gis_repository.dart';
 import 'package:suelosar/gis/map_coverage.dart';
 import 'package:suelosar/gis/multi_coverage_repository.dart';
+import 'package:suelosar/gis/province_config.dart';
 
 /// Fase 6 verification: the multi-coverage tile-routing/merge logic against
 /// the two REAL PMTiles archives — not synthetic fixtures. Directly proves
@@ -138,4 +141,171 @@ void main() {
       expect(coverage.id, 'buenos_aires');
     });
   });
+
+  group('MultiCoverageRepository.loadTile — isolates per-coverage failures', () {
+    // GeoBounds.everywhere forces both coverages to be "relevant" for the
+    // single real tile coordinate under test, regardless of its real
+    // geography — reproducing the overlap condition without depending on
+    // finding a real tile inside both provinces' actual bounding boxes.
+    MapCoverage everywhereCoverage(ProvinceConfig config) {
+      return MapCoverage(config: config, bounds: GeoBounds.everywhere);
+    }
+
+    const buenosAiresOnlyTile = GisTileCoordinates(zoom: 8, x: 85, y: 155);
+    const santaFeOnlyTile = GisTileCoordinates(zoom: 8, x: 83, y: 152);
+
+    test('Buenos Aires succeeds, Santa Fe fails — BA is still returned', () async {
+      final mixed = MultiCoverageRepository(
+        coverages: [
+          everywhereCoverage(ProvinceConfig.buenosAires),
+          everywhereCoverage(ProvinceConfig.santaFe),
+        ],
+        defaultCoverageId: 'buenos_aires',
+        repositoryBuilder: (coverage) => coverage.id == 'santa_fe'
+            ? const _FailingGisRepository()
+            : PmTilesGisRepository.fromAsset(
+                assetPath: coverage.config.pmtilesAsset,
+                versionAssetPath: coverage.config.pmtilesVersionAsset,
+                layerName: coverage.config.pmtilesLayerName,
+              ),
+      );
+      addTearDown(mixed.close);
+
+      await mixed.initialize();
+      final layer = await mixed.loadTile(buenosAiresOnlyTile);
+
+      expect(layer.features, isNotEmpty);
+      for (final feature in layer.features) {
+        expect(feature.id.contains(':'), isFalse);
+        expect(feature.properties.containsKey('SIMBC'), isTrue);
+      }
+    });
+
+    test('Santa Fe succeeds, Buenos Aires fails — SF is still returned', () async {
+      final mixed = MultiCoverageRepository(
+        coverages: [
+          everywhereCoverage(ProvinceConfig.buenosAires),
+          everywhereCoverage(ProvinceConfig.santaFe),
+        ],
+        defaultCoverageId: 'buenos_aires',
+        repositoryBuilder: (coverage) => coverage.id == 'buenos_aires'
+            ? const _FailingGisRepository()
+            : PmTilesGisRepository.fromAsset(
+                assetPath: coverage.config.pmtilesAsset,
+                versionAssetPath: coverage.config.pmtilesVersionAsset,
+                layerName: coverage.config.pmtilesLayerName,
+              ),
+      );
+      addTearDown(mixed.close);
+
+      await mixed.initialize();
+      final layer = await mixed.loadTile(santaFeOnlyTile);
+
+      expect(layer.features, isNotEmpty);
+      for (final feature in layer.features) {
+        expect(feature.id.startsWith('santa_fe:'), isTrue);
+      }
+    });
+
+    test('both coverages succeed — features are merged', () async {
+      const featureA = GisFeature(
+        id: 'a1',
+        geometry: GisGeometry(type: 'Polygon', coordinates: []),
+        properties: <String, Object?>{},
+        locality: '',
+        soilMapId: 0,
+      );
+      const featureB = GisFeature(
+        id: 'b1',
+        geometry: GisGeometry(type: 'Polygon', coordinates: []),
+        properties: <String, Object?>{},
+        locality: '',
+        soilMapId: 0,
+      );
+      final merged = MultiCoverageRepository(
+        coverages: [
+          everywhereCoverage(ProvinceConfig.buenosAires),
+          everywhereCoverage(ProvinceConfig.santaFe),
+        ],
+        defaultCoverageId: 'buenos_aires',
+        repositoryBuilder: (coverage) => coverage.id == 'buenos_aires'
+            ? _FakeGisRepository(featureA)
+            : _FakeGisRepository(featureB),
+      );
+      addTearDown(merged.close);
+
+      await merged.initialize();
+      final layer = await merged.loadTile(buenosAiresOnlyTile);
+
+      expect(layer.features, hasLength(2));
+      expect(layer.features.map((f) => f.id), containsAll(['a1', 'santa_fe:b1']));
+    });
+
+    test('both coverages fail — the failure still surfaces as an error', () async {
+      final failing = MultiCoverageRepository(
+        coverages: [
+          everywhereCoverage(ProvinceConfig.buenosAires),
+          everywhereCoverage(ProvinceConfig.santaFe),
+        ],
+        defaultCoverageId: 'buenos_aires',
+        repositoryBuilder: (coverage) => const _FailingGisRepository(),
+      );
+      addTearDown(failing.close);
+
+      await failing.initialize();
+      expect(
+        () => failing.loadTile(buenosAiresOnlyTile),
+        throwsA(isA<StateError>()),
+      );
+    });
+  });
+}
+
+/// Opens successfully (so [MultiCoverageRepository.initialize] itself never
+/// fails) but always throws on [loadTile] — reproduces a coverage that's
+/// marked available yet turns out unusable when a specific tile is
+/// actually requested, which is exactly the failure this isolation logic
+/// guards against.
+class _FailingGisRepository implements GisRepository {
+  const _FailingGisRepository();
+
+  @override
+  Future<GisArchiveInfo> initialize() async => const GisArchiveInfo(
+    minZoom: 4,
+    maxZoom: 14,
+    centerLatitude: 0,
+    centerLongitude: 0,
+  );
+
+  @override
+  Future<GisLayer> loadTile(GisTileCoordinates coordinates) async {
+    throw StateError('forced failure for test');
+  }
+
+  @override
+  Future<void> close() async {}
+}
+
+/// Always returns a single fixed [feature] for any tile — used to verify
+/// merge behavior deterministically, independent of real PMTiles content.
+class _FakeGisRepository implements GisRepository {
+  const _FakeGisRepository(this.feature);
+
+  final GisFeature feature;
+
+  @override
+  Future<GisArchiveInfo> initialize() async => const GisArchiveInfo(
+    minZoom: 4,
+    maxZoom: 14,
+    centerLatitude: 0,
+    centerLongitude: 0,
+  );
+
+  @override
+  Future<GisLayer> loadTile(GisTileCoordinates coordinates) async {
+    return GisLayer(id: 'fake', name: 'fake', features: [feature]);
+  }
+
+  @override
+  Future<void> close() async {}
 }

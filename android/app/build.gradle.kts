@@ -91,6 +91,11 @@ android {
             proguardFiles("proguard-rules.pro")
         }
     }
+
+    // Fase 11B: Santa Fe's soil-polygon PMTiles is an assets-only deferred
+    // component (see pubspec.yaml), delivered on demand via Play Feature/
+    // Asset Delivery instead of shipping inside the base module.
+    dynamicFeatures += setOf(":santaFePmtiles")
 }
 
 kotlin {

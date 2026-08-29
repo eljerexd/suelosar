@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
+
 import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_repository.dart';
@@ -23,22 +25,57 @@ class MultiCoverageRepository implements GisRepository {
   MultiCoverageRepository({
     required this.coverages,
     required this.defaultCoverageId,
+    Future<bool> Function(MapCoverage coverage)? isCoverageAvailable,
+    GisRepository Function(MapCoverage coverage)? repositoryBuilder,
   }) : assert(coverages.isNotEmpty),
-       assert(coverages.any((coverage) => coverage.id == defaultCoverageId));
+       assert(coverages.any((coverage) => coverage.id == defaultCoverageId)),
+       _isCoverageAvailable = isCoverageAvailable,
+       _repositoryBuilder = repositoryBuilder;
 
   final List<MapCoverage> coverages;
   final String defaultCoverageId;
 
+  // Fase 11B: both default to "always true"/"always the existing
+  // .fromAsset construction" when not supplied, so every pre-existing
+  // caller (Buenos Aires, tests) is byte-for-byte unaffected — only
+  // GisMapScreen's real construction site passes overrides, and only for
+  // the Santa Fe coverage specifically.
+  final Future<bool> Function(MapCoverage coverage)? _isCoverageAvailable;
+  final GisRepository Function(MapCoverage coverage)? _repositoryBuilder;
+
   final Map<String, GisRepository> _repositoryByCoverageId = {};
+
+  /// Coverages confirmed available as of the last [initialize] or
+  /// [markCoverageAvailable] call. A coverage absent from here is never
+  /// queried — see the [loadTile] guard below — so a not-yet-downloaded
+  /// Santa Fe never attempts to open a PMTiles archive that doesn't exist.
+  final Set<String> _availableCoverageIds = {};
+
+  /// Bugfix (race on cold start): the map engine can call [loadTile]
+  /// before the caller's own `await initialize()` has resolved — e.g.
+  /// FlutterMap's `onReady` firing while `GisMapScreen._initializeArchive`
+  /// is still awaiting this same call. Before this fix, that early
+  /// [loadTile] saw an empty [_availableCoverageIds] (not populated yet)
+  /// and returned an empty layer immediately — and because that empty
+  /// result's tile coordinates got recorded as "already loaded", the
+  /// *correct* reload that runs once [initialize] actually finishes was
+  /// silently skipped (same coordinates, nothing looked stale), leaving
+  /// Buenos Aires permanently without polygons on a slow first run (the
+  /// real culprit: copying its ~194MB archive to disk on first launch).
+  /// Tracking the in-flight [Future] here lets [loadTile] await it instead
+  /// of racing ahead of it.
+  Future<GisArchiveInfo>? _initializationFuture;
 
   GisRepository _repositoryFor(MapCoverage coverage) {
     return _repositoryByCoverageId.putIfAbsent(
       coverage.id,
-      () => PmTilesGisRepository.fromAsset(
-        assetPath: coverage.config.pmtilesAsset,
-        versionAssetPath: coverage.config.pmtilesVersionAsset,
-        layerName: coverage.config.pmtilesLayerName,
-      ),
+      () =>
+          _repositoryBuilder?.call(coverage) ??
+          PmTilesGisRepository.fromAsset(
+            assetPath: coverage.config.pmtilesAsset,
+            versionAssetPath: coverage.config.pmtilesVersionAsset,
+            layerName: coverage.config.pmtilesLayerName,
+          ),
     );
   }
 
@@ -46,9 +83,27 @@ class MultiCoverageRepository implements GisRepository {
       coverages.firstWhere((coverage) => coverage.id == defaultCoverageId);
 
   @override
-  Future<GisArchiveInfo> initialize() async {
+  Future<GisArchiveInfo> initialize() {
+    return _initializationFuture ??= _doInitialize();
+  }
+
+  Future<GisArchiveInfo> _doInitialize() async {
+    final available = <MapCoverage>[];
+    for (final coverage in coverages) {
+      final isAvailable =
+          _isCoverageAvailable == null || await _isCoverageAvailable(coverage);
+      if (isAvailable) available.add(coverage);
+    }
+    // The default coverage (Buenos Aires) must always be usable — nothing
+    // in this phase makes it conditional, so this can only trip if a future
+    // caller misconfigures availability for it.
+    assert(available.any((coverage) => coverage.id == defaultCoverageId));
+    _availableCoverageIds
+      ..clear()
+      ..addAll(available.map((coverage) => coverage.id));
+
     final infos = await Future.wait(
-      coverages.map((coverage) => _repositoryFor(coverage).initialize()),
+      available.map((coverage) => _repositoryFor(coverage).initialize()),
     );
 
     // Zoom bounds cover every coverage, so panning into any of them stays
@@ -56,7 +111,7 @@ class MultiCoverageRepository implements GisRepository {
     // Parte 8: "no cambiar el inicio de la aplicación en esta fase") —
     // never an average/merge of the coverages' centers, which wouldn't
     // usefully point at either.
-    final defaultIndex = coverages.indexOf(_defaultCoverage);
+    final defaultIndex = available.indexOf(_defaultCoverage);
     return GisArchiveInfo(
       minZoom: infos.map((info) => info.minZoom).reduce(math.min),
       maxZoom: infos.map((info) => info.maxZoom).reduce(math.max),
@@ -65,25 +120,88 @@ class MultiCoverageRepository implements GisRepository {
     );
   }
 
+  /// Called once a previously-unavailable coverage (Santa Fe, after its
+  /// on-demand download completes) becomes usable. Initializes its
+  /// repository and adds it to the active set so the next [loadTile] call
+  /// actually queries it — a no-op if it's already available.
+  Future<void> markCoverageAvailable(String coverageId) async {
+    if (_availableCoverageIds.contains(coverageId)) return;
+    final coverage = coverages.firstWhere((c) => c.id == coverageId);
+    await _repositoryFor(coverage).initialize();
+    _availableCoverageIds.add(coverageId);
+  }
+
   @override
   Future<GisLayer> loadTile(GisTileCoordinates coordinates) async {
+    // See _initializationFuture's doc comment: wait for an in-flight
+    // initialize() rather than reading _availableCoverageIds while it's
+    // still empty/stale.
+    final initializationFuture = _initializationFuture;
+    if (initializationFuture != null) {
+      await initializationFuture;
+    }
+
     final tileBounds = _tileGeoBounds(coordinates);
     final relevant = coverages
-        .where((coverage) => coverage.bounds.intersects(tileBounds))
+        .where(
+          (coverage) =>
+              coverage.bounds.intersects(tileBounds) &&
+              _availableCoverageIds.contains(coverage.id),
+        )
         .toList(growable: false);
 
     if (relevant.isEmpty) {
       return GisLayer(id: _tileLayerId(coordinates), name: '', features: const []);
     }
 
-    final layers = await Future.wait(
-      relevant.map((coverage) => _repositoryFor(coverage).loadTile(coordinates)),
+    // Bugfix (aislar fallos entre coberturas): each coverage's fetch is
+    // isolated in its own try/catch rather than one shared Future.wait —
+    // GeoBounds rectangles genuinely overlap between provinces (see this
+    // class's doc comment), so a tile near that overlap can have both
+    // Buenos Aires and Santa Fe as "relevant". Before this fix, one
+    // coverage failing (e.g. a Santa Fe archive that turned out unusable
+    // despite being marked available) rejected the whole Future.wait and
+    // took Buenos Aires down with it, even though BA's own fetch would
+    // have succeeded on its own. Only surfaces as an error when every
+    // relevant coverage failed for this tile — a partial result is not an
+    // error.
+    Object? lastError;
+    StackTrace? lastStackTrace;
+    final results = await Future.wait(
+      relevant.map((coverage) async {
+        try {
+          return await _repositoryFor(coverage).loadTile(coordinates);
+        } catch (error, stackTrace) {
+          lastError = error;
+          lastStackTrace = stackTrace;
+          debugPrint(
+            'MultiCoverageRepository: coverage "${coverage.id}" failed to '
+            'load tile ${coordinates.zoom}/${coordinates.x}/${coordinates.y} '
+            '— skipping it for this tile: $error',
+          );
+          return null;
+        }
+      }),
     );
 
-    final features = <GisFeature>[];
+    final succeededCoverages = <MapCoverage>[];
+    final succeededLayers = <GisLayer>[];
     for (var i = 0; i < relevant.length; i++) {
-      final coverage = relevant[i];
-      for (final feature in layers[i].features) {
+      final layer = results[i];
+      if (layer != null) {
+        succeededCoverages.add(relevant[i]);
+        succeededLayers.add(layer);
+      }
+    }
+
+    if (succeededLayers.isEmpty) {
+      Error.throwWithStackTrace(lastError!, lastStackTrace!);
+    }
+
+    final features = <GisFeature>[];
+    for (var i = 0; i < succeededCoverages.length; i++) {
+      final coverage = succeededCoverages[i];
+      for (final feature in succeededLayers[i].features) {
         features.add(
           // Buenos Aires (the default coverage) keeps its feature ids
           // exactly as PmTilesGisRepository already issues them — so
@@ -105,7 +223,7 @@ class MultiCoverageRepository implements GisRepository {
 
     return GisLayer(
       id: _tileLayerId(coordinates),
-      name: layers.first.name,
+      name: succeededLayers.first.name,
       features: List<GisFeature>.unmodifiable(features),
     );
   }

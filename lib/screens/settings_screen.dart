@@ -11,6 +11,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../analytics/analytics_service.dart';
 import '../app/instant_pop_material_page_route.dart';
 import '../constants/app_icons.dart';
+import '../gis/gis_repository.dart';
+import '../gis/map_coverage.dart';
+import '../gis/santa_fe_pmtiles_delivery.dart';
 import '../services/settings_service.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/destructive_action_confirmation.dart';
@@ -75,7 +78,10 @@ class SettingsScreen extends StatelessWidget {
                   icon: AppIcons.delete,
                   title: 'Datos y almacenamiento',
                   showComingSoon: false,
-                  children: [_ClearMapsCacheSetting()],
+                  children: [
+                    _ProvinceCartographyManager(),
+                    _MapsCacheSubsection(),
+                  ],
                 ),
                 SizedBox(height: 18),
                 _SettingsSection(
@@ -552,6 +558,29 @@ Future<int> _mapsCacheSizeBytes() async {
   return total;
 }
 
+/// Real on-disk bytes used by each province's cached copy, keyed by the
+/// same stem [_mapsCacheStem] derives — a single directory scan feeding
+/// both the "Cartografía" manager's per-province cards and its "Espacio
+/// utilizado" total, rather than one scan per figure.
+Future<Map<String, int>> _mapsCacheSizeByStem() async {
+  final sizes = <String, int>{};
+  for (final file in await _mapsCacheFiles()) {
+    final stem = _mapsCacheStem(file);
+    sizes[stem] = (sizes[stem] ?? 0) + await file.length();
+  }
+  return sizes;
+}
+
+/// The same stem a cached file for [coverage] would carry — mirrors
+/// [_mapsCacheStem]'s own derivation (content-hash suffix stripped) applied
+/// to the *asset* path instead of an existing file's name, so a province
+/// that has never been downloaded (no file yet to read a stem from) can
+/// still be looked up in a [_mapsCacheSizeByStem] map.
+String _provinceCacheStem(MapCoverage coverage) {
+  final name = coverage.config.pmtilesAsset.split('/').last;
+  return name.replaceFirst(RegExp(r'\.pmtiles$'), '');
+}
+
 // Reviewed against the real cache on disk before picking this: today the
 // two provinces' current copies total ~249 MB together, and
 // `_prepareAssetArchive` already removes an old version's file itself as
@@ -638,6 +667,448 @@ String _formatCacheSize(int bytes) {
   final megabytes = bytes / (1024 * 1024);
   if (megabytes < 1) return '<1 MB';
   return '${megabytes.round()} MB';
+}
+
+/// Display name for a province's cartography card — deliberately not part
+/// of [ProvinceConfig] (nothing else in the app needs a human-readable
+/// province name), so this stays the one place that maps an id to a name,
+/// the same pattern `GisMapScreen`'s own `_provinceDisplayName` already
+/// uses for its download notice. Buenos Aires is included even though it's
+/// the default/first coverage — this manager treats every entry in
+/// [MapCoverage.all] the same way, nothing hardcoded beyond the name.
+String _cartographyProvinceDisplayName(String coverageId) {
+  return switch (coverageId) {
+    'buenos_aires' => 'Buenos Aires',
+    'santa_fe' => 'Santa Fe',
+    _ => coverageId,
+  };
+}
+
+/// What a province's cartography card shows and which action makes sense —
+/// deliberately just these four, matching Santa Fe's own
+/// [SantaFePmtilesStatus] one-to-one so the two never drift apart.
+enum _CartographyStatus { available, notDownloaded, downloading, error }
+
+/// Fase 11D, Android only: lets the user see and manage each province's
+/// heavy soil-polygon cartography from Configuración, without ever
+/// mentioning PMTiles/asset packs/bundles/cache/ABI. Reuses the *existing*
+/// delivery mechanisms rather than inventing a new one:
+///
+///  * Santa Fe already has one — [SantaFePmtilesDelivery] (Play Asset
+///    Delivery) — this only adds the missing "undo" half ([uninstall])
+///    to it, then drives its card from the exact same [SantaFePmtilesStatus]
+///    the GIS map's own download notice already reads.
+///  * Buenos Aires never needed one before (it's always bundled), so
+///    "downloaded" here means exactly what it already means everywhere
+///    else in the app: [PmTilesGisRepository.fromAsset] has copied it into
+///    `suelosar_maps` (see `gis_repository.dart`, off-limits to modify).
+///    "Descargar" simply asks that *same* factory to do what it already
+///    does the first time a map screen opens Buenos Aires — there is no
+///    second copy mechanism, just an earlier trigger for the one that
+///    exists. "Eliminar" removes that local copy; the map recreates it
+///    next time it's opened, same as it does today after any cache clear.
+///
+/// Generalizes over [MapCoverage.all] rather than naming Buenos Aires/Santa
+/// Fe directly, so a future province needs nothing here beyond its own
+/// [MapCoverage] entry (and, if it ships on-demand like Santa Fe, its own
+/// delivery object wired into [_statusFor]/[_download]/[_delete]).
+///
+/// One real directory scan on first build (via [_mapsCacheSizeByStem]),
+/// never polled — refreshed only after an action this widget itself
+/// performs actually changes what's on disk.
+class _ProvinceCartographyManager extends StatefulWidget {
+  const _ProvinceCartographyManager();
+
+  @override
+  State<_ProvinceCartographyManager> createState() =>
+      _ProvinceCartographyManagerState();
+}
+
+class _ProvinceCartographyManagerState
+    extends State<_ProvinceCartographyManager> {
+  Map<String, int>? _sizesByStem;
+  final Set<String> _downloadingIds = {};
+  final Set<String> _deletingIds = {};
+  final Set<String> _erroredIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    if (Platform.isAndroid) {
+      SantaFePmtilesDelivery.instance.addListener(_handleSantaFeChanged);
+      unawaited(_refreshSizes());
+    }
+  }
+
+  @override
+  void dispose() {
+    if (Platform.isAndroid) {
+      SantaFePmtilesDelivery.instance.removeListener(_handleSantaFeChanged);
+    }
+    super.dispose();
+  }
+
+  void _handleSantaFeChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _refreshSizes() async {
+    await _autoTrimMapsCacheIfNeeded();
+    final sizes = await _mapsCacheSizeByStem();
+    if (mounted) setState(() => _sizesByStem = sizes);
+  }
+
+  _CartographyStatus _statusFor(MapCoverage coverage) {
+    if (coverage.id == 'santa_fe') {
+      return switch (SantaFePmtilesDelivery.instance.status) {
+        SantaFePmtilesStatus.available => _CartographyStatus.available,
+        SantaFePmtilesStatus.downloading => _CartographyStatus.downloading,
+        SantaFePmtilesStatus.notInstalled => _CartographyStatus.notDownloaded,
+        SantaFePmtilesStatus.error => _CartographyStatus.error,
+      };
+    }
+    if (_downloadingIds.contains(coverage.id)) {
+      return _CartographyStatus.downloading;
+    }
+    if (_erroredIds.contains(coverage.id)) return _CartographyStatus.error;
+    final sizes = _sizesByStem;
+    if (sizes == null) return _CartographyStatus.notDownloaded;
+    return sizes.containsKey(_provinceCacheStem(coverage))
+        ? _CartographyStatus.available
+        : _CartographyStatus.notDownloaded;
+  }
+
+  bool _isBusy(MapCoverage coverage) {
+    if (coverage.id == 'santa_fe') {
+      return SantaFePmtilesDelivery.instance.status ==
+              SantaFePmtilesStatus.downloading ||
+          _deletingIds.contains(coverage.id);
+    }
+    return _downloadingIds.contains(coverage.id) ||
+        _deletingIds.contains(coverage.id);
+  }
+
+  Future<void> _download(MapCoverage coverage) async {
+    if (coverage.id == 'santa_fe') {
+      await SantaFePmtilesDelivery.instance.download();
+      if (SantaFePmtilesDelivery.instance.status ==
+          SantaFePmtilesStatus.available) {
+        await _refreshSizes();
+      }
+      return;
+    }
+    setState(() {
+      _downloadingIds.add(coverage.id);
+      _erroredIds.remove(coverage.id);
+    });
+    try {
+      final repository = PmTilesGisRepository.fromAsset(
+        assetPath: coverage.config.pmtilesAsset,
+        versionAssetPath: coverage.config.pmtilesVersionAsset,
+        layerName: coverage.config.pmtilesLayerName,
+      );
+      await repository.initialize();
+      await repository.close();
+      await _refreshSizes();
+    } catch (_) {
+      if (mounted) setState(() => _erroredIds.add(coverage.id));
+    } finally {
+      if (mounted) setState(() => _downloadingIds.remove(coverage.id));
+    }
+  }
+
+  Future<void> _delete(MapCoverage coverage) async {
+    final displayName = _cartographyProvinceDisplayName(coverage.id);
+    final stem = _provinceCacheStem(coverage);
+    final sizeBytes = _sizesByStem?[stem] ?? 0;
+    final confirmed = await confirmDestructiveAction(
+      context,
+      title: 'Eliminar datos de $displayName',
+      message: 'Se liberarán ${_formatCacheSize(sizeBytes)}.',
+    );
+    if (!confirmed || !mounted) return;
+
+    setState(() => _deletingIds.add(coverage.id));
+    try {
+      if (coverage.id == 'santa_fe') {
+        await SantaFePmtilesDelivery.instance.uninstall();
+      }
+      var allDeleted = true;
+      for (final file in await _mapsCacheFiles()) {
+        if (_mapsCacheStem(file) != stem) continue;
+        try {
+          await file.delete();
+        } on FileSystemException {
+          allDeleted = false;
+        }
+      }
+      await _refreshSizes();
+      if (!mounted) return;
+      AppNotification.show(
+        context,
+        message: allDeleted
+            ? 'Datos de $displayName eliminados.'
+            : 'No se pudieron eliminar todos los archivos. Cerrá el mapa '
+                  'e intentá de nuevo.',
+        type: allDeleted
+            ? AppNotificationType.success
+            : AppNotificationType.error,
+      );
+    } finally {
+      if (mounted) setState(() => _deletingIds.remove(coverage.id));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Platform.isAndroid) return const SizedBox.shrink();
+
+    final textTheme = Theme.of(context).textTheme;
+    final colorScheme = Theme.of(context).colorScheme;
+    final sizes = _sizesByStem;
+    final totalBytes = sizes?.values.fold<int>(0, (a, b) => a + b);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const _SubsectionLabel('Cartografía'),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              children: [
+                Text(
+                  'Espacio utilizado',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  totalBytes == null ? '…' : _formatCacheSize(totalBytes),
+                  style: textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          for (final coverage in MapCoverage.all)
+            _ProvinceCartographyCard(
+              displayName: _cartographyProvinceDisplayName(coverage.id),
+              status: _statusFor(coverage),
+              busy: _isBusy(coverage),
+              sizeBytes: sizes?[_provinceCacheStem(coverage)],
+              onDownload: () => unawaited(_download(coverage)),
+              onDelete: () => unawaited(_delete(coverage)),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SubsectionLabel extends StatelessWidget {
+  const _SubsectionLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+class _ProvinceCartographyCard extends StatelessWidget {
+  const _ProvinceCartographyCard({
+    required this.displayName,
+    required this.status,
+    required this.busy,
+    required this.sizeBytes,
+    required this.onDownload,
+    required this.onDelete,
+  });
+
+  final String displayName;
+  final _CartographyStatus status;
+  final bool busy;
+  final int? sizeBytes;
+  final VoidCallback onDownload;
+  final VoidCallback onDelete;
+
+  static const _availableColor = Color(0xFF547A3A);
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final colorScheme = Theme.of(context).colorScheme;
+    final sizeLabel = sizeBytes == null ? '…' : _formatCacheSize(sizeBytes!);
+
+    final (
+      IconData statusIcon,
+      Color statusColor,
+      String statusText,
+    ) = switch (status) {
+      _CartographyStatus.available => (
+        AppIcons.success,
+        _availableColor,
+        'Disponible offline',
+      ),
+      _CartographyStatus.notDownloaded => (
+        AppIcons.download,
+        colorScheme.onSurfaceVariant,
+        'No descargada',
+      ),
+      _CartographyStatus.downloading => (
+        AppIcons.download,
+        colorScheme.onSurfaceVariant,
+        'Descargando…',
+      ),
+      _CartographyStatus.error => (
+        AppIcons.error,
+        colorScheme.error,
+        'No se pudo completar',
+      ),
+    };
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  displayName,
+                  style: textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Datos de suelos · $sizeLabel',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(statusIcon, size: 14, color: statusColor),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        statusText,
+                        style: textTheme.labelSmall?.copyWith(
+                          color: statusColor,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          _CartographyActionButton(
+            status: status,
+            busy: busy,
+            onDownload: onDownload,
+            onDelete: onDelete,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CartographyActionButton extends StatelessWidget {
+  const _CartographyActionButton({
+    required this.status,
+    required this.busy,
+    required this.onDownload,
+    required this.onDelete,
+  });
+
+  final _CartographyStatus status;
+  final bool busy;
+  final VoidCallback onDownload;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    if (busy) {
+      return const SizedBox(
+        width: 20,
+        height: 20,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+
+    const buttonStyle = ButtonStyle(
+      visualDensity: VisualDensity.compact,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      ),
+    );
+
+    return switch (status) {
+      _CartographyStatus.available => OutlinedButton(
+        style: buttonStyle,
+        onPressed: onDelete,
+        child: const Text('Eliminar'),
+      ),
+      _CartographyStatus.notDownloaded => FilledButton.tonal(
+        style: buttonStyle,
+        onPressed: onDownload,
+        child: const Text('Descargar'),
+      ),
+      _CartographyStatus.downloading => const SizedBox(
+        width: 20,
+        height: 20,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+      _CartographyStatus.error => FilledButton.tonal(
+        style: buttonStyle,
+        onPressed: onDownload,
+        child: const Text('Reintentar'),
+      ),
+    };
+  }
+}
+
+/// Wraps the pre-existing "Limpiar caché de mapas" row with a label of its
+/// own, so it reads as a clearly separate concept from the province cards
+/// above — temporary files versus cartography the user deliberately kept —
+/// rather than one undifferentiated list. Not Android-gated: cache
+/// clearing already worked identically on every platform before this
+/// phase, and stays exactly as it was.
+class _MapsCacheSubsection extends StatelessWidget {
+  const _MapsCacheSubsection();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [_SubsectionLabel('Caché'), _ClearMapsCacheSetting()],
+    );
+  }
 }
 
 class _ClearMapsCacheSetting extends StatefulWidget {
