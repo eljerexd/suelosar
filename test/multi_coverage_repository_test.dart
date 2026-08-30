@@ -259,6 +259,165 @@ void main() {
       );
     });
   });
+
+  group('MultiCoverageRepository availability transitions — Fase 11D bugfix', () {
+    // Bug: GisMapScreen's `isCoverageAvailable` hardcoded Buenos Aires (and
+    // any other non-Santa-Fe coverage) as always available, so deleting its
+    // local PMTiles copy from Configuración's provincial maps manager left
+    // its polygons showing forever — MultiCoverageRepository itself was
+    // never told, and even a fresh `isCoverageAvailable` correctly
+    // returning false used to crash `initialize()` (it asserted the
+    // default coverage was always available, then indexed `infos[-1]`).
+    // These tests exercise MultiCoverageRepository directly, independent
+    // of that GisMapScreen wiring, with fake repositories so "available"
+    // is controlled by the test rather than real files on disk.
+    MapCoverage everywhereCoverage(ProvinceConfig config) {
+      return MapCoverage(config: config, bounds: GeoBounds.everywhere);
+    }
+
+    const anyTile = GisTileCoordinates(zoom: 8, x: 1, y: 1);
+    const baFeature = GisFeature(
+      id: 'ba1',
+      geometry: GisGeometry(type: 'Polygon', coordinates: []),
+      properties: <String, Object?>{},
+      locality: '',
+      soilMapId: 0,
+    );
+    const sfFeature = GisFeature(
+      id: 'sf1',
+      geometry: GisGeometry(type: 'Polygon', coordinates: []),
+      properties: <String, Object?>{},
+      locality: '',
+      soilMapId: 0,
+    );
+
+    test('Buenos Aires available — its polygons are returned', () async {
+      final repo = MultiCoverageRepository(
+        coverages: [everywhereCoverage(ProvinceConfig.buenosAires)],
+        defaultCoverageId: 'buenos_aires',
+        isCoverageAvailable: (_) async => true,
+        repositoryBuilder: (_) => _TrackedGisRepository(baFeature),
+      );
+      addTearDown(repo.close);
+
+      await repo.initialize();
+      final layer = await repo.loadTile(anyTile);
+      expect(layer.features.map((f) => f.id), contains('ba1'));
+    });
+
+    test('Buenos Aires unavailable — no polygons are returned', () async {
+      final repo = MultiCoverageRepository(
+        coverages: [
+          everywhereCoverage(ProvinceConfig.buenosAires),
+          everywhereCoverage(ProvinceConfig.santaFe),
+        ],
+        defaultCoverageId: 'buenos_aires',
+        isCoverageAvailable: (coverage) async => coverage.id != 'buenos_aires',
+        repositoryBuilder: (coverage) => coverage.id == 'buenos_aires'
+            ? _TrackedGisRepository(baFeature)
+            : _TrackedGisRepository(sfFeature),
+      );
+      addTearDown(repo.close);
+
+      await repo.initialize();
+      final layer = await repo.loadTile(anyTile);
+      expect(layer.features.map((f) => f.id), isNot(contains('ba1')));
+      expect(layer.features.map((f) => f.id), contains('santa_fe:sf1'));
+    });
+
+    test(
+      'Santa Fe keeps the same available/unavailable behavior as Buenos Aires',
+      () async {
+        final available = MultiCoverageRepository(
+          coverages: [everywhereCoverage(ProvinceConfig.santaFe)],
+          defaultCoverageId: 'santa_fe',
+          isCoverageAvailable: (_) async => true,
+          repositoryBuilder: (_) => _TrackedGisRepository(sfFeature),
+        );
+        addTearDown(available.close);
+        await available.initialize();
+        expect((await available.loadTile(anyTile)).features, isNotEmpty);
+
+        final unavailable = MultiCoverageRepository(
+          coverages: [everywhereCoverage(ProvinceConfig.santaFe)],
+          defaultCoverageId: 'santa_fe',
+          isCoverageAvailable: (_) async => false,
+          repositoryBuilder: (_) => _TrackedGisRepository(sfFeature),
+        );
+        addTearDown(unavailable.close);
+        await unavailable.initialize();
+        expect((await unavailable.loadTile(anyTile)).features, isEmpty);
+      },
+    );
+
+    test(
+      'the default coverage being unavailable at initialize does not crash',
+      () async {
+        // Previously asserted Buenos Aires was always available, then
+        // indexed infos[-1] once it wasn't — this reproduces exactly that
+        // condition without depending on any real file on disk.
+        final repo = MultiCoverageRepository(
+          coverages: [
+            everywhereCoverage(ProvinceConfig.buenosAires),
+            everywhereCoverage(ProvinceConfig.santaFe),
+          ],
+          defaultCoverageId: 'buenos_aires',
+          isCoverageAvailable: (coverage) async => coverage.id == 'santa_fe',
+          repositoryBuilder: (coverage) => coverage.id == 'buenos_aires'
+              ? _TrackedGisRepository(baFeature)
+              : _TrackedGisRepository(sfFeature),
+        );
+        addTearDown(repo.close);
+
+        await repo.initialize();
+        final layer = await repo.loadTile(anyTile);
+        expect(layer.features.map((f) => f.id), contains('santa_fe:sf1'));
+        expect(layer.features.map((f) => f.id), isNot(contains('ba1')));
+      },
+    );
+
+    test(
+      'markCoverageUnavailable closes and discards the old repository; '
+      'markCoverageAvailable again builds a fresh one rather than reusing it',
+      () async {
+        var buildCount = 0;
+        final built = <_TrackedGisRepository>[];
+        final repo = MultiCoverageRepository(
+          coverages: [everywhereCoverage(ProvinceConfig.buenosAires)],
+          defaultCoverageId: 'buenos_aires',
+          isCoverageAvailable: (_) async => true,
+          repositoryBuilder: (_) {
+            buildCount++;
+            final repository = _TrackedGisRepository(baFeature);
+            built.add(repository);
+            return repository;
+          },
+        );
+        addTearDown(repo.close);
+
+        await repo.initialize();
+        expect(buildCount, 1);
+        expect((await repo.loadTile(anyTile)).features, isNotEmpty);
+        final firstRepository = built.single;
+
+        final changedToUnavailable = await repo.markCoverageUnavailable(
+          'buenos_aires',
+        );
+        expect(changedToUnavailable, isTrue);
+        expect(firstRepository.closed, isTrue);
+        expect((await repo.loadTile(anyTile)).features, isEmpty);
+
+        final changedToAvailable = await repo.markCoverageAvailable(
+          'buenos_aires',
+        );
+        expect(changedToAvailable, isTrue);
+        expect(buildCount, 2);
+        expect(built.last, isNot(same(firstRepository)));
+        expect(built.last.closed, isFalse);
+        expect((await repo.loadTile(anyTile)).features, isNotEmpty);
+      },
+    );
+  });
 }
 
 /// Opens successfully (so [MultiCoverageRepository.initialize] itself never
@@ -308,4 +467,37 @@ class _FakeGisRepository implements GisRepository {
 
   @override
   Future<void> close() async {}
+}
+
+/// Records whether [close] was called and throws if [loadTile] is used
+/// afterward — Fase 11D bugfix regression guard: a coverage marked
+/// unavailable must have its repository actually closed and discarded,
+/// never kept around to keep serving tiles or get reused once the
+/// coverage becomes available again.
+class _TrackedGisRepository implements GisRepository {
+  _TrackedGisRepository(this.feature);
+
+  final GisFeature feature;
+  bool closed = false;
+
+  @override
+  Future<GisArchiveInfo> initialize() async => const GisArchiveInfo(
+    minZoom: 4,
+    maxZoom: 14,
+    centerLatitude: 0,
+    centerLongitude: 0,
+  );
+
+  @override
+  Future<GisLayer> loadTile(GisTileCoordinates coordinates) async {
+    if (closed) {
+      throw StateError('loadTile called on a repository that was closed');
+    }
+    return GisLayer(id: 'tracked', name: 'tracked', features: [feature]);
+  }
+
+  @override
+  Future<void> close() async {
+    closed = true;
+  }
 }

@@ -94,13 +94,21 @@ class MultiCoverageRepository implements GisRepository {
           _isCoverageAvailable == null || await _isCoverageAvailable(coverage);
       if (isAvailable) available.add(coverage);
     }
-    // The default coverage (Buenos Aires) must always be usable — nothing
-    // in this phase makes it conditional, so this can only trip if a future
-    // caller misconfigures availability for it.
-    assert(available.any((coverage) => coverage.id == defaultCoverageId));
     _availableCoverageIds
       ..clear()
       ..addAll(available.map((coverage) => coverage.id));
+
+    // Fase 11D bugfix: the default coverage (Buenos Aires) used to be
+    // asserted always-available here, back when there was no way to
+    // remove its local copy at all. Now that Configuración's provincial
+    // maps manager can delete it, every coverage — including the default
+    // one — can genuinely be empty-handed, so this has to degrade
+    // gracefully instead of asserting/crashing: fall back to the default
+    // coverage's own placeholder info (the same one GisMapScreen already
+    // shows before any real archive loads) when NOTHING is available.
+    if (available.isEmpty) {
+      return _defaultCoverage.config.defaultArchiveInfo;
+    }
 
     final infos = await Future.wait(
       available.map((coverage) => _repositoryFor(coverage).initialize()),
@@ -108,27 +116,56 @@ class MultiCoverageRepository implements GisRepository {
 
     // Zoom bounds cover every coverage, so panning into any of them stays
     // navigable. Center stays the default coverage's (Buenos Aires,
-    // Parte 8: "no cambiar el inicio de la aplicación en esta fase") —
-    // never an average/merge of the coverages' centers, which wouldn't
-    // usefully point at either.
+    // Parte 8: "no cambiar el inicio de la aplicación en esta fase") when
+    // it's actually available; otherwise falls back to whichever coverage
+    // is, so deleting the default coverage's cartography doesn't strand
+    // the camera on a point with nothing left to show.
     final defaultIndex = available.indexOf(_defaultCoverage);
+    final centerInfo = defaultIndex >= 0 ? infos[defaultIndex] : infos.first;
     return GisArchiveInfo(
       minZoom: infos.map((info) => info.minZoom).reduce(math.min),
       maxZoom: infos.map((info) => info.maxZoom).reduce(math.max),
-      centerLatitude: infos[defaultIndex].centerLatitude,
-      centerLongitude: infos[defaultIndex].centerLongitude,
+      centerLatitude: centerInfo.centerLatitude,
+      centerLongitude: centerInfo.centerLongitude,
     );
   }
 
   /// Called once a previously-unavailable coverage (Santa Fe, after its
-  /// on-demand download completes) becomes usable. Initializes its
-  /// repository and adds it to the active set so the next [loadTile] call
-  /// actually queries it — a no-op if it's already available.
-  Future<void> markCoverageAvailable(String coverageId) async {
-    if (_availableCoverageIds.contains(coverageId)) return;
+  /// on-demand download completes; any coverage whose local PMTiles copy
+  /// reappears, e.g. re-downloaded after being deleted) becomes usable.
+  /// Initializes its repository and adds it to the active set so the next
+  /// [loadTile] call actually queries it. Returns whether this actually
+  /// changed anything — a no-op (returns `false`) if it was already
+  /// available — so a caller can skip reloading tiles when nothing did.
+  Future<bool> markCoverageAvailable(String coverageId) async {
+    if (_availableCoverageIds.contains(coverageId)) return false;
     final coverage = coverages.firstWhere((c) => c.id == coverageId);
     await _repositoryFor(coverage).initialize();
     _availableCoverageIds.add(coverageId);
+    return true;
+  }
+
+  /// The mirror of [markCoverageAvailable] — Fase 11D bugfix. A coverage
+  /// removed from Configuración's provincial maps manager (Buenos Aires
+  /// today; anything else with no on-demand delivery/uninstall flow of
+  /// its own, unlike Santa Fe's) must stop being queried by [loadTile]
+  /// immediately, and must not keep serving tiles from a
+  /// [PmTilesGisRepository] instance that was opened before its
+  /// underlying file was deleted. Discards that cached instance — closing
+  /// it first — rather than just forgetting about it, so a later
+  /// [markCoverageAvailable] for the same id builds a fresh repository
+  /// against whatever's on disk *then*, instead of reusing one whose
+  /// already-open PMTiles archive handle predates the deletion. Returns
+  /// whether this actually changed anything, same as
+  /// [markCoverageAvailable].
+  Future<bool> markCoverageUnavailable(String coverageId) async {
+    if (!_availableCoverageIds.contains(coverageId)) return false;
+    _availableCoverageIds.remove(coverageId);
+    final repository = _repositoryByCoverageId.remove(coverageId);
+    if (repository != null) {
+      await repository.close();
+    }
+    return true;
   }
 
   @override

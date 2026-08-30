@@ -43,10 +43,10 @@ class SettingsScreen extends StatelessWidget {
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
-            child: const Column(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _SettingsSection(
+                const _SettingsSection(
                   icon: AppIcons.map,
                   title: 'Mapa',
                   showComingSoon: false,
@@ -56,8 +56,8 @@ class SettingsScreen extends StatelessWidget {
                     _ShowZoomLevelSetting(),
                   ],
                 ),
-                SizedBox(height: 18),
-                _SettingsSection(
+                const SizedBox(height: 18),
+                const _SettingsSection(
                   icon: AppIcons.ruler,
                   title: 'Mediciones',
                   showComingSoon: false,
@@ -66,32 +66,37 @@ class SettingsScreen extends StatelessWidget {
                     _ConfirmBeforeDeletingSetting(),
                   ],
                 ),
-                SizedBox(height: 18),
-                _SettingsSection(
+                const SizedBox(height: 18),
+                const _SettingsSection(
                   icon: AppIcons.performance,
                   title: 'Rendimiento',
                   showComingSoon: false,
                   children: [_ReduceAnimationsSetting()],
                 ),
-                SizedBox(height: 18),
+                const SizedBox(height: 18),
+                // One card, two concepts kept apart only by the section's
+                // own divider + the "Caché" label: the province-manager
+                // row is Android only (nothing to show on Windows —
+                // bundled provinces there, no on-demand delivery), the
+                // cache row stays on every platform exactly as before.
                 _SettingsSection(
                   icon: AppIcons.delete,
                   title: 'Datos y almacenamiento',
                   showComingSoon: false,
                   children: [
-                    _ProvinceCartographyManager(),
-                    _MapsCacheSubsection(),
+                    if (Platform.isAndroid) const _ProvincialMapsSetting(),
+                    const _CacheSubsection(),
                   ],
                 ),
-                SizedBox(height: 18),
-                _SettingsSection(
+                const SizedBox(height: 18),
+                const _SettingsSection(
                   icon: AppIcons.synchronization,
                   title: 'Sincronización',
                   showComingSoon: false,
                   children: [_SynchronizationSetting()],
                 ),
-                SizedBox(height: 18),
-                _SettingsSection(
+                const SizedBox(height: 18),
+                const _SettingsSection(
                   icon: AppIcons.information,
                   title: 'Acerca de',
                   children: [
@@ -873,14 +878,14 @@ class _ProvinceCartographyManagerState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const _SubsectionLabel('Cartografía'),
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
             child: Row(
               children: [
                 Text(
                   'Espacio utilizado',
-                  style: textTheme.bodySmall?.copyWith(
+                  style: textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
                     color: colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -904,26 +909,6 @@ class _ProvinceCartographyManagerState
               onDelete: () => unawaited(_delete(coverage)),
             ),
         ],
-      ),
-    );
-  }
-}
-
-class _SubsectionLabel extends StatelessWidget {
-  const _SubsectionLabel(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Text(
-        text,
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-          fontWeight: FontWeight.w700,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
       ),
     );
   }
@@ -1067,10 +1052,19 @@ class _CartographyActionButton extends StatelessWidget {
         EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       ),
     );
+    // A touch tighter than buttonStyle so "Eliminar" doesn't compete with
+    // the province name next to it — still the same outline look.
+    const deleteButtonStyle = ButtonStyle(
+      visualDensity: VisualDensity.compact,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      ),
+    );
 
     return switch (status) {
       _CartographyStatus.available => OutlinedButton(
-        style: buttonStyle,
+        style: deleteButtonStyle,
         onPressed: onDelete,
         child: const Text('Eliminar'),
       ),
@@ -1090,24 +1084,6 @@ class _CartographyActionButton extends StatelessWidget {
         child: const Text('Reintentar'),
       ),
     };
-  }
-}
-
-/// Wraps the pre-existing "Limpiar caché de mapas" row with a label of its
-/// own, so it reads as a clearly separate concept from the province cards
-/// above — temporary files versus cartography the user deliberately kept —
-/// rather than one undifferentiated list. Not Android-gated: cache
-/// clearing already worked identically on every platform before this
-/// phase, and stays exactly as it was.
-class _MapsCacheSubsection extends StatelessWidget {
-  const _MapsCacheSubsection();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [_SubsectionLabel('Caché'), _ClearMapsCacheSetting()],
-    );
   }
 }
 
@@ -1259,6 +1235,133 @@ class _SynchronizationSetting extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// The provincial-cartography entry inside Configuración's "Datos y
+/// almacenamiento" card — Android only, since the manager it opens has
+/// nothing to show on Windows (bundled provinces there, no on-demand
+/// delivery). The card itself always renders (see [_CacheSubsection],
+/// its other child, which stays cross-platform); only this one row is
+/// left out on Windows.
+class _ProvincialMapsSetting extends StatelessWidget {
+  const _ProvincialMapsSetting();
+
+  @override
+  Widget build(BuildContext context) {
+    return _NavigationSetting(
+      title: 'Descargar y administrar mapas por provincia',
+      onTap: () {
+        Navigator.of(context).push(
+          InstantPopMaterialPageRoute(
+            builder: (_) => const ProvincialMapsScreen(),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The other half of the shared "Datos y almacenamiento" card — a small
+/// "Caché" label plus the pre-existing "Limpiar caché de mapas" row.
+/// Sharing one card with [_ProvincialMapsSetting] means the two concepts
+/// are kept apart only by this label and the divider `_SettingsSection`
+/// already draws between its children, per the explicit "una sola
+/// tarjeta" requirement — not by a second card. Cross-platform: this is
+/// exactly what "Datos y almacenamiento" already showed on every platform
+/// before the cartography manager existed.
+class _CacheSubsection extends StatelessWidget {
+  const _CacheSubsection();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 4, bottom: 2),
+          child: Text(
+            'Caché',
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w700,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        const _ClearMapsCacheSetting(),
+      ],
+    );
+  }
+}
+
+/// The same floating-card shell `_SettingsSection` gives every other
+/// Configuración group, minus its own icon+title header — used for a
+/// single navigation row that doesn't need one of its own (its label
+/// already says what it does), so it doesn't get a redundant heading
+/// repeating essentially the same text right above it.
+class _CardShell extends StatelessWidget {
+  const _CardShell({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: Colors.white,
+      elevation: 1,
+      shadowColor: theme.colorScheme.shadow.withValues(alpha: 0.12),
+      surfaceTintColor: Colors.transparent,
+      borderRadius: BorderRadius.circular(24),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// Fase 11D follow-up: the province cartography manager moved one level
+/// deeper — "Datos y almacenamiento" now just links to this screen instead
+/// of showing the province list inline, the same
+/// Configuración -> Datos y almacenamiento -> here pattern already used
+/// for Sincronización. Android only; Windows never reaches this screen
+/// (its entry point in DataAndStorageScreen is itself Android-gated) and
+/// keeps its own bundled provinces exactly as before.
+class ProvincialMapsScreen extends StatelessWidget {
+  const ProvincialMapsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return FloatingHeaderScaffold(
+      bottomPadding: 32,
+      header: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingAppBarBackButton(
+            onPressed: () => Navigator.maybePop(context),
+          ),
+          const SizedBox(width: 14),
+          const FloatingAppBarTitle('Descargar y administrar'),
+          const SizedBox(width: 10),
+        ],
+      ),
+      body: SingleChildScrollView(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: _CardShell(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: _ProvinceCartographyManager(),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -360,6 +360,52 @@ class PmTilesGisRepository implements GisRepository {
   }
 }
 
+/// Whether [assetPath]'s local cached copy (the file
+/// [PmTilesGisRepository.fromAsset] opens, written by
+/// `_prepareAssetArchive` under `suelosar_maps`) already exists on disk —
+/// checked WITHOUT creating one if it's missing, unlike `initialize()`,
+/// which recreates a missing copy from the bundled asset the moment it's
+/// called.
+///
+/// Fase 11D bugfix: `MultiCoverageRepository`'s availability check
+/// previously trusted every non-Santa-Fe coverage (Buenos Aires) as
+/// always available, since historically there was no way to remove its
+/// local copy at all. Now that Configuración's provincial maps manager
+/// can delete it, "available" has to mean "the file is actually there",
+/// checked *before* building/initializing a repository for it — never by
+/// calling `initialize()` itself and observing whether it throws, since
+/// that call is exactly what would silently recreate the file from the
+/// bundled asset and defeat the deletion.
+Future<bool> pmtilesAssetIsCachedLocally({
+  required String assetPath,
+  Future<Directory> Function()? supportDirectoryProvider,
+}) async {
+  final directoryProvider =
+      supportDirectoryProvider ?? getApplicationSupportDirectory;
+  final supportDirectory = await directoryProvider();
+  final mapDirectory = Directory(
+    '${supportDirectory.path}${Platform.pathSeparator}suelosar_maps',
+  );
+  if (!await mapDirectory.exists()) return false;
+
+  final assetStem = assetPath.split('/').last.replaceAll(
+    RegExp(r'\.pmtiles$'),
+    '',
+  );
+  await for (final entity in mapDirectory.list()) {
+    if (entity is! File) continue;
+    final filename = entity.uri.pathSegments.last;
+    if (!filename.startsWith('$assetStem-') ||
+        !filename.endsWith('.pmtiles')) {
+      continue;
+    }
+    // Matches `_prepareAssetArchive`'s own validity check — an empty or
+    // truncated file (e.g. the app was killed mid-copy) doesn't count.
+    if (await entity.length() > 127) return true;
+  }
+  return false;
+}
+
 class _TileDecodeRequest {
   const _TileDecodeRequest({
     required this.bytes,

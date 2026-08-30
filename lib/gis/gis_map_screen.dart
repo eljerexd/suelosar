@@ -31,6 +31,7 @@ import '../screens/gis_favorites_screen.dart';
 import '../screens/measurements_screen.dart';
 import '../screens/pdf_viewer_screen.dart';
 import '../screens/personal_markers_screen.dart';
+import '../screens/settings_screen.dart';
 import '../services/settings_service.dart';
 import '../services/desktop_window_service.dart';
 import '../services/gis_favorites_service.dart';
@@ -247,6 +248,19 @@ class _GisMapScreenState extends State<GisMapScreen>
   String? _savedMeasurementGeometrySignature;
   String? _savedMeasurementColorId;
   _MapToolHintType? _activeToolHint;
+  // Fase 11D UX: a one-off hint (e.g. "Santa Fe no descargada..." after
+  // closing that notice) shown through the same overlay/pill as
+  // _activeToolHint, but timer-driven instead of mode-driven — cleared on
+  // its own after a few seconds rather than when a tool mode ends.
+  (IconData, InlineSpan)? _transientMapHint;
+  Timer? _transientMapHintTimer;
+  // Owned by whichever _transientMapHint is currently showing (e.g. the
+  // "Configuración" link) — disposed both when that hint clears and when
+  // a new one replaces it, so it never leaks past the pill it belongs to.
+  TapGestureRecognizer? _transientMapHintLinkRecognizer;
+  // Drives the "Configuración" link's brief press-feedback dimming; reset
+  // whenever a new transient hint starts.
+  bool _transientMapHintLinkPressed = false;
   int? _draggedAreaVertexIndex;
   bool _suppressNextMapTap = false;
   MeasurementColorOption _measurementColor = MeasurementColorOption.blue;
@@ -352,7 +366,7 @@ class _GisMapScreenState extends State<GisMapScreen>
           defaultCoverageId: _defaultCoverage.id,
           isCoverageAvailable: (coverage) => coverage.id == 'santa_fe'
               ? _checkSantaFePmtilesAvailable()
-              : Future.value(true),
+              : _isBundledCoverageLocallyAvailable(coverage),
           repositoryBuilder: (coverage) =>
               coverage.id == 'santa_fe' && !Platform.isAndroid
               ? PmTilesGisRepository.fromFile(
@@ -429,7 +443,131 @@ class _GisMapScreenState extends State<GisMapScreen>
     _registeredMapRoute = route;
     GisMapOcclusionObserver.instance.register(
       route,
-      (coverage) => _updateMapOcclusion(_routeOcclusionToken, coverage),
+      _handleRouteOcclusionChanged,
+    );
+  }
+
+  /// Same occlusion bookkeeping as [_updateMapOcclusion], plus one thing
+  /// only a real route can trigger (unlike the search overlay, which also
+  /// shares that method): Fase 11D bugfix — once this route stops being
+  /// occluded (e.g. Configuración's provincial maps manager, pushed on
+  /// top, gets popped), re-check whether any bundled coverage's local
+  /// availability changed while it was open, since a deleted province
+  /// must not keep showing its old polygons until the app restarts.
+  void _handleRouteOcclusionChanged(double coverage) {
+    final wasOccludedByRoute = _isOccludedBy(_routeOcclusionToken);
+    _updateMapOcclusion(_routeOcclusionToken, coverage);
+    if (wasOccludedByRoute && !_isOccludedBy(_routeOcclusionToken)) {
+      unawaited(_refreshBundledCoverageAvailability());
+    }
+  }
+
+  bool _isOccludedBy(Object source) {
+    final value = _mapOcclusions[source];
+    return value != null && value >= _mapOcclusionThreshold;
+  }
+
+  /// Shows [text] through the exact same pill/overlay
+  /// [_MapToolHintOverlay] already renders tool hints with (position,
+  /// fade animation, size, style) — Fase 11D UX, so closing a
+  /// province-not-downloaded notice explains where to find the download
+  /// later without inventing a new visual component. Auto-clears itself a
+  /// few seconds later, unlike [_activeToolHint] (which clears when its
+  /// tool mode ends) — a fresh call restarts the timer rather than
+  /// stacking.
+  void _showTemporaryMapHint({
+    required IconData icon,
+    required InlineSpan text,
+  }) {
+    if (!mounted) return;
+    _transientMapHintTimer?.cancel();
+    setState(() => _transientMapHint = (icon, text));
+    _transientMapHintTimer = Timer(const Duration(milliseconds: 4500), () {
+      if (mounted) setState(() => _transientMapHint = null);
+      _transientMapHintLinkRecognizer?.dispose();
+      _transientMapHintLinkRecognizer = null;
+    });
+  }
+
+  /// Builds the "province not downloaded" transient hint with a tappable
+  /// "Configuración" link that jumps straight to [ProvincialMapsScreen]
+  /// (Configuración → Datos y almacenamiento → Descargar y administrar)
+  /// instead of leaving the user at the Configuración root.
+  void _showDownloadLaterHint(String provinceName) {
+    _transientMapHintLinkRecognizer?.dispose();
+    _transientMapHintLinkPressed = false;
+    final recognizer = TapGestureRecognizer();
+    recognizer.onTap = _openProvincialMapsManager;
+    recognizer.onTapDown = (_) {
+      _setTransientMapHintLinkPressed(provinceName, true);
+    };
+    recognizer.onTapCancel = () {
+      _setTransientMapHintLinkPressed(provinceName, false);
+    };
+    recognizer.onTapUp = (_) {
+      _setTransientMapHintLinkPressed(provinceName, false);
+    };
+    _transientMapHintLinkRecognizer = recognizer;
+    _showTemporaryMapHint(
+      icon: AppIcons.information,
+      text: _buildDownloadLaterHintSpan(provinceName, recognizer),
+    );
+  }
+
+  void _setTransientMapHintLinkPressed(String provinceName, bool pressed) {
+    if (!mounted || _transientMapHintLinkPressed == pressed) return;
+    final recognizer = _transientMapHintLinkRecognizer;
+    if (recognizer == null) return;
+    setState(() {
+      _transientMapHintLinkPressed = pressed;
+      _transientMapHint = (
+        AppIcons.information,
+        _buildDownloadLaterHintSpan(provinceName, recognizer),
+      );
+    });
+  }
+
+  /// "Configuración" is styled (not boxed) to read as an inline, tappable
+  /// link: a deeper shade of SuelosAR's own accent color, bold weight, a
+  /// faint underline, a hand cursor on desktop, and a brief dimming on
+  /// press — while staying plain inline text within the same sentence, no
+  /// pill/button/background/icon of its own.
+  InlineSpan _buildDownloadLaterHintSpan(
+    String provinceName,
+    TapGestureRecognizer recognizer,
+  ) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final linkColor = Color.lerp(accent, Colors.black, 0.18)!;
+    final pressedLinkColor = linkColor.withValues(alpha: 0.55);
+    return TextSpan(
+      children: [
+        TextSpan(
+          text: '$provinceName no descargada. Podés descargarla más '
+              'tarde desde ',
+        ),
+        TextSpan(
+          text: 'Configuración',
+          mouseCursor: SystemMouseCursors.click,
+          style: TextStyle(
+            color: _transientMapHintLinkPressed ? pressedLinkColor : linkColor,
+            fontWeight: FontWeight.w700,
+            decoration: TextDecoration.underline,
+            decorationColor: linkColor.withValues(alpha: 0.35),
+            decorationThickness: 1,
+          ),
+          recognizer: recognizer,
+        ),
+      ],
+    );
+  }
+
+  void _openProvincialMapsManager() {
+    final navigator = Navigator.of(context);
+    navigator.push(
+      InstantPopMaterialPageRoute(builder: (_) => const SettingsScreen()),
+    );
+    navigator.push(
+      InstantPopMaterialPageRoute(builder: (_) => const ProvincialMapsScreen()),
     );
   }
 
@@ -445,6 +583,8 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
     _tileLoadDebounce?.cancel();
     _searchIndexDebounce?.cancel();
+    _transientMapHintTimer?.cancel();
+    _transientMapHintLinkRecognizer?.dispose();
     unawaited(_locationSubscription?.cancel());
     _searchCameraAnimation?.dispose();
     _northRotationAnimation?.dispose();
@@ -1834,7 +1974,11 @@ class _GisMapScreenState extends State<GisMapScreen>
             alignLeft: androidPhoneLandscape,
           ),
         if (!_mapVisualsPaused)
-          _MapToolHintOverlay(type: _activeToolHint, top: topControlOffset),
+          _MapToolHintOverlay(
+            type: _activeToolHint,
+            top: topControlOffset,
+            hintOverride: _transientMapHint,
+          ),
         if (!_mapVisualsPaused && !showsMeasurementEditor && !desktopShell)
           _buildBottomRightControls(),
         if (!_mapVisualsPaused &&
@@ -1883,6 +2027,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                 : (_mapEngine as FlutterMapEngine).controller.camera,
             onDownload: () =>
                 unawaited(SantaFePmtilesDelivery.instance.download()),
+            onDismissedFirstTime: () => _showDownloadLaterHint(
+              _provinceDisplayName(undownloadedCoverage.id),
+            ),
           ),
       ],
     );
@@ -3578,6 +3725,42 @@ class _GisMapScreenState extends State<GisMapScreen>
     await SantaFePmtilesDelivery.instance.checkStatus();
     return SantaFePmtilesDelivery.instance.status ==
         SantaFePmtilesStatus.available;
+  }
+
+  /// [MultiCoverageRepository]'s `isCoverageAvailable` callback for every
+  /// coverage other than Santa Fe (Buenos Aires today) — Fase 11D bugfix.
+  /// These have no on-demand delivery object of their own to ask, only a
+  /// local PMTiles copy that Configuración's provincial maps manager can
+  /// now delete; a real disk check (never creating the file, only
+  /// observing whether it's already there) replaces the old assumption
+  /// that a coverage without Santa Fe's special-case was always available.
+  Future<bool> _isBundledCoverageLocallyAvailable(MapCoverage coverage) {
+    return pmtilesAssetIsCachedLocally(assetPath: coverage.config.pmtilesAsset);
+  }
+
+  /// Re-checks every non-Santa-Fe coverage's local availability — Fase
+  /// 11D bugfix. Santa Fe already has its own live update the moment its
+  /// status changes ([_handleSantaFePmtilesStatus], via
+  /// [SantaFePmtilesDelivery]'s [ChangeNotifier]); coverages like Buenos
+  /// Aires have no such notifier, so instead this runs whenever the map
+  /// stops being occluded (see [_updateMapOcclusion]) — in particular,
+  /// right after Configuración's provincial maps manager (which can
+  /// delete a coverage's local copy) is popped back to this screen. Only
+  /// reloads tiles if something actually changed, and only rebuilds the
+  /// affected coverages' repositories, never all of them.
+  Future<void> _refreshBundledCoverageAvailability() async {
+    final repository = _repository;
+    if (repository is! MultiCoverageRepository) return;
+    var changed = false;
+    for (final coverage in _coverages) {
+      if (coverage.id == 'santa_fe') continue;
+      final isAvailable = await _isBundledCoverageLocallyAvailable(coverage);
+      final didChange = isAvailable
+          ? await repository.markCoverageAvailable(coverage.id)
+          : await repository.markCoverageUnavailable(coverage.id);
+      changed = changed || didChange;
+    }
+    if (changed && mounted) _reloadVisibleTilesAfterCoverageChange();
   }
 
   /// Reacts to [SantaFePmtilesDelivery] transitioning to `available` —
@@ -7957,18 +8140,45 @@ enum _MapToolHintType { measureDistance, measureArea, marker, markerActive }
 enum _VertexMenuOption { delete, cancel }
 
 class _MapToolHintOverlay extends StatelessWidget {
-  const _MapToolHintOverlay({required this.type, required this.top});
+  const _MapToolHintOverlay({
+    required this.type,
+    required this.top,
+    this.hintOverride,
+  });
 
   final _MapToolHintType? type;
   final double top;
 
+  /// Fase 11D UX: when set, takes over this same overlay slot instead of
+  /// [type] — a timer-driven one-off hint (see
+  /// `_GisMapScreenState._showTemporaryMapHint`) rather than one tied to
+  /// an active tool mode. Kept as a plain override on the existing
+  /// overlay, not a second one, so two hint pills can never stack. Unlike
+  /// [type]-driven hints, this one may carry a tappable span (e.g. a
+  /// "Configuración" link), so it's the only case where this overlay
+  /// isn't fully non-interactive — see [build]'s `IgnorePointer.ignoring`.
+  final (IconData, InlineSpan)? hintOverride;
+
   @override
   Widget build(BuildContext context) {
+    final overrideValue = hintOverride;
+    final Widget child = overrideValue != null
+        ? _MapHintPill(
+            key: const ValueKey('tool-hint-override'),
+            icon: overrideValue.$1,
+            richText: overrideValue.$2,
+          )
+        : type == null
+        ? const SizedBox.shrink(key: ValueKey('tool-hint-empty'))
+        : _MapToolHintCard(key: ValueKey(type), type: type!);
     return Positioned(
       top: top,
       left: 16,
       right: 16,
       child: IgnorePointer(
+        // Mode-driven tool hints stay fully click-through, as before; only
+        // the timer-driven override may contain a tappable link.
+        ignoring: overrideValue == null,
         child: Center(
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
@@ -7976,9 +8186,7 @@ class _MapToolHintOverlay extends StatelessWidget {
             switchOutCurve: Curves.easeInCubic,
             transitionBuilder: (child, animation) =>
                 FadeTransition(opacity: animation, child: child),
-            child: type == null
-                ? const SizedBox.shrink(key: ValueKey('tool-hint-empty'))
-                : _MapToolHintCard(key: ValueKey(type), type: type!),
+            child: child,
           ),
         ),
       ),
@@ -7993,8 +8201,6 @@ class _MapToolHintCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final (icon, text) = switch (type) {
       _MapToolHintType.measureDistance || _MapToolHintType.measureArea => (
         AppIcons.ruler,
@@ -8009,7 +8215,36 @@ class _MapToolHintCard extends StatelessWidget {
         'Modo de marcador activo.',
       ),
     };
+    return _MapHintPill(icon: icon, text: text);
+  }
+}
 
+/// The pill card itself — position, animation and sizing live in
+/// [_MapToolHintOverlay]; this is just its content, shared between
+/// [_MapToolHintCard] (tool-mode hints) and [_MapToolHintOverlay.override]
+/// (Fase 11D's timer-driven ones), so both look and behave identically.
+class _MapHintPill extends StatelessWidget {
+  const _MapHintPill({required this.icon, this.text, this.richText, super.key})
+    : assert(
+        (text == null) != (richText == null),
+        'Provide exactly one of text or richText.',
+      );
+
+  final IconData icon;
+  final String? text;
+
+  /// Alternative to [text] for hints that need an inline tappable span
+  /// (e.g. a "Configuración" link) — same pill, just richer content.
+  final InlineSpan? richText;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final textStyle = theme.textTheme.labelLarge?.copyWith(
+      color: colorScheme.onSurface,
+      fontWeight: FontWeight.w600,
+    );
     return Material(
       color: Colors.white,
       elevation: 3,
@@ -8018,7 +8253,13 @@ class _MapToolHintCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(20),
       clipBehavior: Clip.antiAlias,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 38, maxHeight: 40),
+        constraints: BoxConstraints(
+          minHeight: 38,
+          // Plain tool hints stay single-line at a fixed height; a
+          // richText hint (e.g. the "Configuración" link) may wrap to a
+          // second line on narrow screens instead of truncating.
+          maxHeight: richText == null ? 40 : 64,
+        ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14),
           child: Row(
@@ -8027,15 +8268,19 @@ class _MapToolHintCard extends StatelessWidget {
               Icon(icon, size: 17, color: colorScheme.onSurfaceVariant),
               const SizedBox(width: 8),
               Flexible(
-                child: Text(
-                  text,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelLarge?.copyWith(
-                    color: colorScheme.onSurface,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                child: richText != null
+                    ? Text.rich(
+                        richText!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: textStyle,
+                      )
+                    : Text(
+                        text!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textStyle,
+                      ),
               ),
             ],
           ),
@@ -10042,6 +10287,7 @@ class _SantaFePmtilesBanner extends StatefulWidget {
     required this.viewStateListenable,
     required this.resolveCamera,
     required this.onDownload,
+    required this.onDismissedFirstTime,
   });
 
   final String provinceName;
@@ -10059,6 +10305,14 @@ class _SantaFePmtilesBanner extends StatefulWidget {
   /// doesn't render rather than crashing or guessing a position.
   final MapCamera? Function() resolveCamera;
   final VoidCallback onDownload;
+
+  /// Fires the very first time the user closes this notice with the `×` —
+  /// never again after that, even across app restarts (see
+  /// [_SantaFePmtilesBannerState._dismiss]). Fase 11D UX: lets the screen
+  /// show a one-off temporary hint explaining where to find the download
+  /// later, without this widget needing to know anything about how that
+  /// hint is displayed.
+  final VoidCallback onDismissedFirstTime;
 
   /// A real point inside Santa Fe — not a guess, and deliberately not near
   /// the provincial border: Rafaela, a well-known city that sits close to
@@ -10137,8 +10391,10 @@ class _SantaFePmtilesBannerState extends State<_SantaFePmtilesBanner> {
   }
 
   void _dismiss(SantaFePmtilesStatus status) {
+    final isFirstEverDismissal = _dismissedStatusName == null;
     setState(() => _dismissedStatusName = status.name);
     unawaited(_ProvinceNoticeDismissal.write(status.name));
+    if (isFirstEverDismissal) widget.onDismissedFirstTime();
   }
 
   @override
