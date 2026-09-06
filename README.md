@@ -155,3 +155,33 @@ Sin cambiar ninguna funcionalidad.
 flutter run -d windows
 
 🔴  PARA COMPILAR = flutter build windows --release --dart-define-from-file=.vscode/supabase.env.json
+
+## Optimización de PDFs bundleados (septiembre de 2026)
+
+Se optimizaron los 386 PDFs de `assets/pdfs/` ("cartas de suelo"):
+
+- **Antes:** ~154.0 MiB (161,479,323 bytes).
+- **Después:** ~80.1 MiB (83,975,133 bytes).
+- **Reducción:** ~48% (~73.9 MiB ahorrados).
+
+**Qué se optimizó:** únicamente el banner institucional (INTA / CIRN / Ministerio
+de Agricultura) que se repetía, byte por byte idéntico, dentro de cada uno de
+los 386 PDFs. Se re-codificó ese banner a JPEG calidad 85 (de 337,193 a
+132,650 bytes; `Tres_Lomas.pdf` usaba una variante propia del banner y también
+fue optimizada con el mismo método). Ningún otro contenido fue tocado: mapas,
+tablas, texto e imágenes específicas de cada carta quedaron intactos y
+verificados byte a byte idénticos contra los originales.
+
+**Validación:** los 386 PDFs fueron verificados estructuralmente (xref
+reconstruida y re-parseada correctamente) y byte a byte contra los originales
+(todos los objetos, salvo el banner, idénticos). También se revisaron
+visualmente para confirmar que no hay pérdida de calidad apreciable.
+
+**Nota:** se evaluó además eliminar la invocación repetida del banner en las
+páginas posteriores a la primera (el banner ya es un único objeto compartido
+entre páginas, no una copia por página). Esa técnica **no debe aplicarse**:
+no genera un ahorro real y, al reconstruir el archivo, termina aumentando su
+tamaño en vez de reducirlo.
+
+**Backup:** existe una copia completa de los 386 PDFs originales (previos a
+esta optimización) fuera del repositorio.
