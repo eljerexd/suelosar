@@ -78,6 +78,7 @@ class GisMapScreen extends StatefulWidget {
     this.provinceConfig,
     this.seriesResolver,
     this.coverages,
+    this.focusPersonalMarkerId,
   });
 
   final GisRepository? repository;
@@ -85,6 +86,14 @@ class GisMapScreen extends StatefulWidget {
   final GisRenderMetrics? renderMetrics;
   final GisLocationService? locationService;
   final DesktopWindowService? desktopWindowService;
+
+  /// When set, this screen centers the camera on the saved personal marker
+  /// with this id — nothing more — as soon as both the map and the saved
+  /// markers are ready. Lets a caller outside the GIS stack (e.g.
+  /// `HomeScreen`'s own "Marcadores" shortcut) land directly on a chosen
+  /// marker instead of requiring the user to already be inside the map. See
+  /// [_GisMapScreenState._centerOnPersonalMarkerOnOpen].
+  final String? focusPersonalMarkerId;
 
   /// Selects which province's PMTiles/center/reference-map/series-PDF
   /// wiring to use. Defaults to [ProvinceConfig.buenosAires] — omitting
@@ -122,6 +131,15 @@ class _GisMapScreenState extends State<GisMapScreen>
   static const LatLng _buenosAiresCenter = LatLng(-36.5, -60);
   static const double _minimumMapZoom = 7;
   static const double _initialZoom = _minimumMapZoom;
+
+  /// Fixed zoom used only when this screen opens already targeting a saved
+  /// personal marker (via [GisMapScreen.focusPersonalMarkerId], e.g. from
+  /// `HomeScreen`'s "Marcadores" shortcut). Deliberately closer than
+  /// [_initialZoom] so the point and its immediate surroundings are clearly
+  /// visible on first frame. Not used by [_openPersonalMarkers] (picking a
+  /// marker from *inside* a running GIS session), which keeps reusing
+  /// whatever zoom the map already has, as it always has.
+  static const double _externalPersonalMarkerFocusZoom = 12;
   static const GisArchiveInfo _defaultArchiveInfo = GisArchiveInfo(
     minZoom: 4,
     maxZoom: 14,
@@ -238,6 +256,8 @@ class _GisMapScreenState extends State<GisMapScreen>
   bool _desktopToolsPanelCollapsed = false;
   OverlayEntry? _desktopLayersOverlay;
   PersonalMarker? _desktopSelectedMarker;
+  bool _personalMarkersLoaded = false;
+  String? _pendingPersonalMarkerFocusId;
   final List<_SoilSeriesSearchEntry> _desktopRecentSearches =
       <_SoilSeriesSearchEntry>[];
   final Object _searchOcclusionToken = Object();
@@ -430,7 +450,13 @@ class _GisMapScreenState extends State<GisMapScreen>
     unawaited(_loadMapDisplayPreferences());
     unawaited(_loadMeasurementColor());
     unawaited(_loadSavedMeasurements());
-    unawaited(_loadPersonalMarkers());
+    _pendingPersonalMarkerFocusId = widget.focusPersonalMarkerId;
+    unawaited(
+      _loadPersonalMarkers().then((_) {
+        if (!mounted) return;
+        _consumePendingPersonalMarkerFocusIfReady();
+      }),
+    );
     if (!_disableGeolocatorForDiagnostic &&
         SettingsService.instance.followLocationAutomatically) {
       _isFollowingLocation = true;
@@ -1747,6 +1773,7 @@ class _GisMapScreenState extends State<GisMapScreen>
           onReady: () {
             _isMapReady = true;
             _updateMapViewportState(_mapEngine.camera);
+            _consumePendingPersonalMarkerFocusIfReady();
             if (!_disableGisTilePipelineForDiagnostic && !_usesMapLibreEngine) {
               unawaited(
                 _loadVisibleTiles(
@@ -4459,6 +4486,47 @@ class _GisMapScreenState extends State<GisMapScreen>
     await _showPersonalMarkerDetails(selectedMarker);
   }
 
+  /// Consumes [_pendingPersonalMarkerFocusId] (set from
+  /// [GisMapScreen.focusPersonalMarkerId] in `initState`) once both the map
+  /// surface and the saved markers are ready. Called from both readiness
+  /// signals — the map's `onReady` and [_loadPersonalMarkers]'s completion —
+  /// since either can resolve first; the pending id is only cleared once
+  /// both are true, so whichever signal comes second applies the focus.
+  void _consumePendingPersonalMarkerFocusIfReady() {
+    final pendingId = _pendingPersonalMarkerFocusId;
+    if (pendingId == null || !_isMapReady || !_personalMarkersLoaded) return;
+    _pendingPersonalMarkerFocusId = null;
+    _centerOnPersonalMarkerOnOpen(pendingId);
+  }
+
+  /// Centers the camera on the saved personal marker with [markerId] at a
+  /// fixed [_externalPersonalMarkerFocusZoom] — nothing else. Used only for
+  /// [GisMapScreen.focusPersonalMarkerId] (this screen opened *already
+  /// targeting* a marker, e.g. from `HomeScreen`'s "Marcadores" shortcut).
+  ///
+  /// Deliberately does not call [_focusPersonalMarker] or
+  /// [_showPersonalMarkerDetails]: unlike picking a marker from *inside* a
+  /// running GIS session (see [_openPersonalMarkers]), the first thing the
+  /// user sees on entering GIS this way must be the plain map centered on
+  /// the point — not an already-open details panel/bottom sheet, and not
+  /// the marker marked "selected". The pin itself still renders normally
+  /// (this screen always draws every entry in [_personalMarkers]); the user
+  /// can tap it manually to open its details, same as any other marker.
+  void _centerOnPersonalMarkerOnOpen(String markerId) {
+    PersonalMarker? marker;
+    for (final candidate in _personalMarkers) {
+      if (candidate.id == markerId) {
+        marker = candidate;
+        break;
+      }
+    }
+    if (marker == null) return;
+    final markerPoint = _safeLatLng(marker.latitude, marker.longitude);
+    if (markerPoint != null) {
+      _mapEngine.move(markerPoint, _externalPersonalMarkerFocusZoom);
+    }
+  }
+
   Future<void> _openMeasurements() async {
     final measurement = await Navigator.of(context).push<SavedMeasurement>(
       InstantPopMaterialPageRoute(builder: (_) => const MeasurementsScreen()),
@@ -5116,6 +5184,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _personalMarkers
         ..clear()
         ..addAll(markers);
+      _personalMarkersLoaded = true;
     });
   }
 

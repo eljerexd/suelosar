@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app/app_routes.dart';
 import '../app/instant_pop_material_page_route.dart';
 import '../constants/app_icons.dart';
+import '../gis/gis_map_screen.dart';
 import '../pairing/device_pairing_models.dart';
 import '../services/connectivity_service.dart';
 import '../services/device_pairing_service.dart';
@@ -14,6 +15,7 @@ import '../sync/sync_status.dart';
 import '../utils/app_motion.dart';
 import '../widgets/desktop_fullscreen_state_builder.dart';
 import '../widgets/responsive_desktop_shell.dart';
+import 'personal_markers_screen.dart';
 import 'synchronization_screen.dart';
 
 typedef DeviceLinkedStatusLoader = Future<bool> Function();
@@ -137,9 +139,10 @@ class HomeScreen extends StatelessWidget {
                                         title: 'Marcadores',
                                         subtitle:
                                             'Registrar y administrar observaciones de campo.',
-                                        onTap: () => Navigator.of(
+                                        onTap: () => _openPersonalMarkers(
                                           context,
-                                        ).pushNamed(AppRoutes.personalMarkers),
+                                          desktopWindowService,
+                                        ),
                                       ),
                                     ),
                                     Padding(
@@ -196,6 +199,41 @@ class HomeScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Opens the personal-markers picker and, if the user selects a saved
+/// marker, goes straight to GIS centered on it — the same "await the
+/// popped id, then act on it" pattern `GisMapScreen._openPersonalMarkers`
+/// already uses when this picker is opened from inside a running GIS
+/// session. Home is always the interactive route when this runs, so GIS
+/// can never already be on the stack here.
+///
+/// The GIS push is built directly (bypassing the app's named-route table)
+/// with a zero-duration transition instead of `pushNamed(AppRoutes.gisMap)`
+/// so the trip reads as "picker closes, GIS opens" rather than a visible
+/// detour back through the Home screen's own animated transition — Home
+/// still sits underneath in the navigation stack (so back-navigation from
+/// GIS behaves exactly as it does from every other module), it just never
+/// gets a chance to render as an intermediate screen.
+Future<void> _openPersonalMarkers(
+  BuildContext context,
+  DesktopWindowService? desktopWindowService,
+) async {
+  final markerId = await Navigator.of(context).push<String>(
+    InstantPopMaterialPageRoute(builder: (_) => const PersonalMarkersScreen()),
+  );
+  if (markerId == null || !context.mounted) return;
+  await Navigator.of(context).push<void>(
+    PageRouteBuilder<void>(
+      settings: RouteSettings(name: AppRoutes.gisMap, arguments: markerId),
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      pageBuilder: (_, _, _) => GisMapScreen(
+        desktopWindowService: desktopWindowService,
+        focusPersonalMarkerId: markerId,
+      ),
+    ),
+  );
 }
 
 class _HomeDesktopWindowControls extends StatelessWidget {
