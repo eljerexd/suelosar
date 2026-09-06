@@ -24,6 +24,7 @@ class ProvinceConfig {
     required this.seriesNameResolver,
     this.referenceMapAsset,
     this.preloadSeriesNames,
+    this.downloadBannerAnchor,
   });
 
   final String id;
@@ -62,6 +63,14 @@ class ProvinceConfig {
   /// (Buenos Aires' `IdentitySeriesNameResolver`).
   final Future<void> Function()? preloadSeriesNames;
 
+  /// A real point inside the province, used only to anchor the on-demand
+  /// download banner/notice (Fase 11C/12A) — null for a coverage that isn't
+  /// delivered on demand (see [MapCoverage.onDemandDelivery]). See
+  /// [santaFe]'s value for the full reasoning on why a real, well-known,
+  /// roughly-central town is used instead of the archive's data-derived
+  /// center or the boundary polygon's centroid.
+  final LatLng? downloadBannerAnchor;
+
   static final ProvinceConfig buenosAires = ProvinceConfig(
     id: 'buenos_aires',
     pmtilesAsset: AssetPaths.gisPmTiles,
@@ -77,6 +86,10 @@ class ProvinceConfig {
     referenceMapAsset: AssetPaths.agronomicReferenceMap,
     seriesResolver: BuenosAiresSeriesResolver(PdfSeriesRepository()),
     seriesNameResolver: const IdentitySeriesNameResolver(),
+    // Bolívar — a real, well-known town sitting close to the geographic
+    // middle of the province, the same reasoning Santa Fe's anchor uses
+    // below (Fase 12A: Buenos Aires becomes on-demand too).
+    downloadBannerAnchor: const LatLng(-36.2333, -61.1167),
   );
 
   /// Center/bounds read directly from the validated PMTiles archive's own
@@ -110,6 +123,17 @@ class ProvinceConfig {
       seriesResolver: SantaFeSeriesResolver(repository),
       seriesNameResolver: nameResolver,
       preloadSeriesNames: nameResolver.preload,
+      // Rafaela — a well-known city that sits close to the geographic
+      // middle of the province (roughly equidistant from the northern
+      // Chaco border and the southern Rosario/Buenos Aires border), rather
+      // than the PMTiles archive's data-derived center (which sits far
+      // enough south, near Rosario/Casilda, to read as "next to Buenos
+      // Aires") or the area centroid of the boundary polygon (which, for
+      // this province's shape — wide in the north, narrow near Rosario —
+      // skews noticeably north of the visual middle). Moved here from the
+      // download-banner widget itself in Fase 12A, once Buenos Aires needed
+      // an equivalent anchor and this stopped being Santa-Fe-only data.
+      downloadBannerAnchor: const LatLng(-31.2503, -61.4867),
     );
   }
 }

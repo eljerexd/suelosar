@@ -1,0 +1,87 @@
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader("UTF-8") { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode")
+if (flutterVersionCode == null) {
+    flutterVersionCode = "1"
+}
+
+def flutterVersionName = localProperties.getProperty("flutter.versionName")
+if (flutterVersionName == null) {
+    flutterVersionName = "1.0"
+}
+
+apply plugin: "com.android.dynamic-feature"
+
+android {
+    namespace = "ar.com.suelosar.buenosAiresPmtiles"
+    // See the matching comment in android/santaFePmtiles/build.gradle: the
+    // `flutter` extension only exists on ":app", so these mirror its real
+    // resolved values for the installed Flutter SDK instead of referencing it.
+    compileSdk = 36
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        // Same reasoning as santaFePmtiles: Flutter's asset-generation step
+        // keys deferred-component output by build TYPE alone (debug/
+        // profile/release), and every declared srcDir must exist up front
+        // or Gradle 9's stricter input tracking fails the build.
+        applicationVariants.all { variant ->
+            def assetsDir = file("${project.layout.buildDirectory.get()}/intermediates/flutter/${variant.buildType.name}/deferred_assets")
+            def libsDir = file("${project.layout.buildDirectory.get()}/intermediates/flutter/${variant.buildType.name}/deferred_libs")
+            assetsDir.mkdirs()
+            libsDir.mkdirs()
+            main.assets.srcDirs += assetsDir
+            main.jniLibs.srcDirs += libsDir
+        }
+    }
+
+    defaultConfig {
+        minSdk = 24
+        targetSdk = 36
+        versionCode = flutterVersionCode.toInteger()
+        versionName = flutterVersionName
+    }
+
+    // Must mirror app/build.gradle.kts's "env" flavor dimension (prod/beta)
+    // — AGP requires a dynamic-feature module to declare the same flavor
+    // dimensions as the base app it depends on.
+    flavorDimensions "env"
+    productFlavors {
+        prod {
+            dimension "env"
+        }
+        beta {
+            dimension "env"
+        }
+    }
+
+    // Assets-only module, no Kotlin/Java source — see santaFePmtiles for
+    // why Lint Vital's input tracking needs to be disabled here.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+}
+
+dependencies {
+    implementation(project(":app"))
+}
+
+// Same cross-project ordering fix as santaFePmtiles — see its comment.
+afterEvaluate {
+    android.applicationVariants.all { variant ->
+        def variantSuffix = variant.name.capitalize()
+        def mergeAssetsTask = tasks.findByName("merge${variantSuffix}Assets")
+        mergeAssetsTask?.dependsOn(":app:compileFlutterBuild${variantSuffix}")
+    }
+}

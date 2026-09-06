@@ -90,8 +90,6 @@ flutter:
     - assets/images/logoapp.png
     - assets/data/soil_maps.json
     - assets/data/soil_metadata.json
-    - assets/maps/soil_polygons.pmtiles
-    - assets/maps/soil_polygons.pmtiles.sha256
     - assets/maps/agronomic_reference_map.json
     - assets/pdfs/
     - assets/data/santa_fe_series_index.json
@@ -101,21 +99,27 @@ flutter:
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 
-  # Fase 11B: Santa Fe's soil-polygon PMTiles (66MB) is the one heavy GIS
-  # asset NOT bundled into the Android install — it ships as an assets-only
+  # Fase 11B/12A: both provinces' soil-polygon PMTiles are heavy GIS assets
+  # NOT bundled into the Android install — each ships as its own assets-only
   # deferred component instead, so Android downloads it on demand via Play
-  # Feature/Asset Delivery (see SantaFePmtilesDelivery). Once installed, it
-  # becomes loadable through the exact same `rootBundle`/asset-key path as
-  # any other asset (AssetPaths.santaFeGisPmTiles), which is why
-  # gis_repository.dart needed no changes. Windows keeps its own copy
-  # entirely outside this mechanism — see windows/CMakeLists.txt — since
-  # deferred components only affect Android (and web); declaring the file
-  # here as well would duplicate it inside Android's own app bundle.
+  # Feature/Asset Delivery (see SantaFePmtilesDelivery/
+  # BuenosAiresPmtilesDelivery). Once installed, each becomes loadable
+  # through the exact same `rootBundle`/asset-key path as any other asset
+  # (AssetPaths.santaFeGisPmTiles / AssetPaths.gisPmTiles), which is why
+  # gis_repository.dart needed no changes. Windows keeps its own copy of
+  # both entirely outside this mechanism — see windows/CMakeLists.txt —
+  # since deferred components only affect Android (and web); declaring
+  # these files here as well would duplicate them inside Android's own app
+  # bundle.
   deferred-components:
     - name: santaFePmtiles
       assets:
         - assets/maps/santa_fe_soil_polygons.pmtiles
         - assets/maps/santa_fe_soil_polygons.pmtiles.sha256
+    - name: buenosAiresPmtiles
+      assets:
+        - assets/maps/soil_polygons.pmtiles
+        - assets/maps/soil_polygons.pmtiles.sha256
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

@@ -13,7 +13,7 @@ import '../app/instant_pop_material_page_route.dart';
 import '../constants/app_icons.dart';
 import '../gis/gis_repository.dart';
 import '../gis/map_coverage.dart';
-import '../gis/santa_fe_pmtiles_delivery.dart';
+import '../gis/pmtiles_delivery.dart';
 import '../services/settings_service.dart';
 import '../widgets/app_notification.dart';
 import '../widgets/destructive_action_confirmation.dart';
@@ -690,33 +690,24 @@ String _cartographyProvinceDisplayName(String coverageId) {
 }
 
 /// What a province's cartography card shows and which action makes sense —
-/// deliberately just these four, matching Santa Fe's own
-/// [SantaFePmtilesStatus] one-to-one so the two never drift apart.
+/// deliberately just these four, matching [PmtilesDeliveryStatus] one-to-one
+/// so the two never drift apart.
 enum _CartographyStatus { available, notDownloaded, downloading, error }
 
-/// Fase 11D, Android only: lets the user see and manage each province's
+/// Fase 11D/12A, Android only: lets the user see and manage each province's
 /// heavy soil-polygon cartography from Configuración, without ever
 /// mentioning PMTiles/asset packs/bundles/cache/ABI. Reuses the *existing*
-/// delivery mechanisms rather than inventing a new one:
-///
-///  * Santa Fe already has one — [SantaFePmtilesDelivery] (Play Asset
-///    Delivery) — this only adds the missing "undo" half ([uninstall])
-///    to it, then drives its card from the exact same [SantaFePmtilesStatus]
-///    the GIS map's own download notice already reads.
-///  * Buenos Aires never needed one before (it's always bundled), so
-///    "downloaded" here means exactly what it already means everywhere
-///    else in the app: [PmTilesGisRepository.fromAsset] has copied it into
-///    `suelosar_maps` (see `gis_repository.dart`, off-limits to modify).
-///    "Descargar" simply asks that *same* factory to do what it already
-///    does the first time a map screen opens Buenos Aires — there is no
-///    second copy mechanism, just an earlier trigger for the one that
-///    exists. "Eliminar" removes that local copy; the map recreates it
-///    next time it's opened, same as it does today after any cache clear.
+/// delivery mechanisms rather than inventing a new one: both Santa Fe and
+/// Buenos Aires (Fase 12A) now have their own [PmtilesDelivery] (Play Asset
+/// Delivery) reachable via [MapCoverage.onDemandDelivery] — this widget
+/// only adds the missing "undo" half ([PmtilesDelivery.uninstall]) to it,
+/// then drives each card from the exact same [PmtilesDeliveryStatus] the
+/// GIS map's own download notice already reads.
 ///
 /// Generalizes over [MapCoverage.all] rather than naming Buenos Aires/Santa
 /// Fe directly, so a future province needs nothing here beyond its own
-/// [MapCoverage] entry (and, if it ships on-demand like Santa Fe, its own
-/// delivery object wired into [_statusFor]/[_download]/[_delete]).
+/// [MapCoverage] entry (and, if it ships on-demand, its own
+/// [MapCoverage.onDemandDelivery]).
 ///
 /// One real directory scan on first build (via [_mapsCacheSizeByStem]),
 /// never polled — refreshed only after an action this widget itself
@@ -740,7 +731,9 @@ class _ProvinceCartographyManagerState
   void initState() {
     super.initState();
     if (Platform.isAndroid) {
-      SantaFePmtilesDelivery.instance.addListener(_handleSantaFeChanged);
+      for (final coverage in MapCoverage.all) {
+        coverage.onDemandDelivery?.addListener(_handleDeliveryChanged);
+      }
       unawaited(_refreshSizes());
     }
   }
@@ -748,12 +741,14 @@ class _ProvinceCartographyManagerState
   @override
   void dispose() {
     if (Platform.isAndroid) {
-      SantaFePmtilesDelivery.instance.removeListener(_handleSantaFeChanged);
+      for (final coverage in MapCoverage.all) {
+        coverage.onDemandDelivery?.removeListener(_handleDeliveryChanged);
+      }
     }
     super.dispose();
   }
 
-  void _handleSantaFeChanged() {
+  void _handleDeliveryChanged() {
     if (mounted) setState(() {});
   }
 
@@ -764,12 +759,14 @@ class _ProvinceCartographyManagerState
   }
 
   _CartographyStatus _statusFor(MapCoverage coverage) {
-    if (coverage.id == 'santa_fe') {
-      return switch (SantaFePmtilesDelivery.instance.status) {
-        SantaFePmtilesStatus.available => _CartographyStatus.available,
-        SantaFePmtilesStatus.downloading => _CartographyStatus.downloading,
-        SantaFePmtilesStatus.notInstalled => _CartographyStatus.notDownloaded,
-        SantaFePmtilesStatus.error => _CartographyStatus.error,
+    final delivery = coverage.onDemandDelivery;
+    if (delivery != null) {
+      return switch (delivery.status) {
+        PmtilesDeliveryStatus.available => _CartographyStatus.available,
+        PmtilesDeliveryStatus.downloading => _CartographyStatus.downloading,
+        PmtilesDeliveryStatus.notInstalled =>
+          _CartographyStatus.notDownloaded,
+        PmtilesDeliveryStatus.error => _CartographyStatus.error,
       };
     }
     if (_downloadingIds.contains(coverage.id)) {
@@ -784,9 +781,9 @@ class _ProvinceCartographyManagerState
   }
 
   bool _isBusy(MapCoverage coverage) {
-    if (coverage.id == 'santa_fe') {
-      return SantaFePmtilesDelivery.instance.status ==
-              SantaFePmtilesStatus.downloading ||
+    final delivery = coverage.onDemandDelivery;
+    if (delivery != null) {
+      return delivery.status == PmtilesDeliveryStatus.downloading ||
           _deletingIds.contains(coverage.id);
     }
     return _downloadingIds.contains(coverage.id) ||
@@ -794,10 +791,10 @@ class _ProvinceCartographyManagerState
   }
 
   Future<void> _download(MapCoverage coverage) async {
-    if (coverage.id == 'santa_fe') {
-      await SantaFePmtilesDelivery.instance.download();
-      if (SantaFePmtilesDelivery.instance.status ==
-          SantaFePmtilesStatus.available) {
+    final delivery = coverage.onDemandDelivery;
+    if (delivery != null) {
+      await delivery.download();
+      if (delivery.status == PmtilesDeliveryStatus.available) {
         await _refreshSizes();
       }
       return;
@@ -835,8 +832,9 @@ class _ProvinceCartographyManagerState
 
     setState(() => _deletingIds.add(coverage.id));
     try {
-      if (coverage.id == 'santa_fe') {
-        await SantaFePmtilesDelivery.instance.uninstall();
+      final delivery = coverage.onDemandDelivery;
+      if (delivery != null) {
+        await delivery.uninstall();
       }
       var allDeleted = true;
       for (final file in await _mapsCacheFiles()) {

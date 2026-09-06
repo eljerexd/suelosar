@@ -92,10 +92,11 @@ android {
         }
     }
 
-    // Fase 11B: Santa Fe's soil-polygon PMTiles is an assets-only deferred
-    // component (see pubspec.yaml), delivered on demand via Play Feature/
-    // Asset Delivery instead of shipping inside the base module.
-    dynamicFeatures += setOf(":santaFePmtiles")
+    // Fase 11B/12A: both Santa Fe's and Buenos Aires' soil-polygon PMTiles
+    // are assets-only deferred components (see pubspec.yaml), delivered on
+    // demand via Play Feature/Asset Delivery instead of shipping inside the
+    // base module.
+    dynamicFeatures += setOf(":santaFePmtiles", ":buenosAiresPmtiles")
 }
 
 kotlin {

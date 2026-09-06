@@ -120,3 +120,17 @@ install(FILES
   "${CMAKE_CURRENT_SOURCE_DIR}/../assets/maps/santa_fe_soil_polygons.pmtiles"
   DESTINATION "${SANTA_FE_PMTILES_DATA_DIR}"
   COMPONENT Runtime)
+
+# Fase 12A: Buenos Aires' soil-polygon PMTiles is now, like Santa Fe's, an
+# Android on-demand deferred component (see pubspec.yaml's
+# deferred-components section), so it too was removed from Flutter's own
+# cross-platform assets list. Windows has no on-demand mechanism at all and
+# must keep Buenos Aires fully local/bundled exactly as before — its copy is
+# restored here the same way Santa Fe's is, outside Flutter's asset
+# bundling, unconditionally, on every build.
+# PmTilesGisRepository.fromFile() reads it straight from this path.
+set(BUENOS_AIRES_PMTILES_DATA_DIR "${INSTALL_BUNDLE_DATA_DIR}/buenos_aires_pmtiles")
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/maps/soil_polygons.pmtiles"
+  DESTINATION "${BUENOS_AIRES_PMTILES_DATA_DIR}"
+  COMPONENT Runtime)

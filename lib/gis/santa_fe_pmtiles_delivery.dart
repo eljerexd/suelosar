@@ -4,22 +4,21 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../constants/asset_paths.dart';
+import 'pmtiles_delivery.dart';
 
-/// Availability of Santa Fe's soil-polygon PMTiles — Fase 11B. Unlike every
-/// other GIS asset, this one isn't unconditionally bundled on Android: it
-/// ships as an assets-only Flutter deferred component (Play Feature/Asset
-/// Delivery under the hood), downloaded on demand. Windows keeps its own
-/// copy outside this mechanism entirely (see `windows/CMakeLists.txt`), so
-/// on every platform other than Android this reports `available` and never
-/// downloads anything.
-enum SantaFePmtilesStatus { notInstalled, downloading, available, error }
+/// Kept as the name this file has always used — Fase 12A extracted the
+/// actual enum into the shared [PmtilesDeliveryStatus] (identical values,
+/// same order) once Buenos Aires needed the same shape, so every existing
+/// reference to `SantaFePmtilesStatus` keeps compiling and behaving exactly
+/// as before.
+typedef SantaFePmtilesStatus = PmtilesDeliveryStatus;
 
 /// Single source of truth for Santa Fe PMTiles availability — both
 /// `MultiCoverageRepository` (deciding whether to query Santa Fe's archive
 /// at all) and the GIS screen's download banner read this same instance, so
 /// there is exactly one state to keep in sync rather than two that could
 /// drift apart.
-class SantaFePmtilesDelivery extends ChangeNotifier {
+class SantaFePmtilesDelivery extends PmtilesDelivery {
   SantaFePmtilesDelivery._();
 
   static final SantaFePmtilesDelivery instance = SantaFePmtilesDelivery._();
@@ -30,6 +29,7 @@ class SantaFePmtilesDelivery extends ChangeNotifier {
       ? SantaFePmtilesStatus.notInstalled
       : SantaFePmtilesStatus.available;
 
+  @override
   SantaFePmtilesStatus get status => _status;
 
   void _setStatus(SantaFePmtilesStatus value) {
@@ -57,6 +57,7 @@ class SantaFePmtilesDelivery extends ChangeNotifier {
   /// (see below) is the only thing driving [status] there — otherwise this
   /// would flip to `available` the instant it's called and the
   /// "not downloaded" UI could never be seen with a plain `flutter run`.
+  @override
   Future<void> checkStatus() async {
     if (!Platform.isAndroid) {
       _setStatus(SantaFePmtilesStatus.available);
@@ -80,6 +81,7 @@ class SantaFePmtilesDelivery extends ChangeNotifier {
   /// build, simulates the same status timeline instead (see
   /// [_simulateDevDownload]) — production and `flutter build appbundle`
   /// are completely unaffected, since [kDebugMode] is false there.
+  @override
   Future<void> download() async {
     if (!Platform.isAndroid) return;
     if (_status == SantaFePmtilesStatus.downloading) return;
@@ -114,6 +116,7 @@ class SantaFePmtilesDelivery extends ChangeNotifier {
   /// debug build — see [_simulateDevDownload]'s doc comment for why the
   /// same real-asset-is-already-present reasoning applies here) rather
   /// than waiting on a signal that never arrives.
+  @override
   Future<void> uninstall() async {
     if (!Platform.isAndroid) return;
     if (_status == SantaFePmtilesStatus.downloading) return;
@@ -156,7 +159,8 @@ class SantaFePmtilesDelivery extends ChangeNotifier {
   /// `install(FILES ...)` in `windows/CMakeLists.txt`, which copies the same
   /// source file to this exact relative location next to the executable on
   /// every build.
-  static File resolveWindowsArchiveFile() {
+  @override
+  File resolveWindowsArchiveFile() {
     final executableDirectory = File(Platform.resolvedExecutable).parent;
     return File(
       '${executableDirectory.path}${Platform.pathSeparator}data'

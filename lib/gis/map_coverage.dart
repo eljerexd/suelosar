@@ -1,4 +1,7 @@
+import 'buenos_aires_pmtiles_delivery.dart';
+import 'pmtiles_delivery.dart';
 import 'province_config.dart';
+import 'santa_fe_pmtiles_delivery.dart';
 
 /// A geographic rectangle in plain lat/lon — deliberately not
 /// `flutter_map`'s `LatLngBounds`, so this stays usable from
@@ -49,10 +52,18 @@ class GeoBounds {
 /// folding bounds into it, since bounds are only meaningful once more than
 /// one coverage exists at a time.
 class MapCoverage {
-  const MapCoverage({required this.config, required this.bounds});
+  const MapCoverage({required this.config, required this.bounds, this.onDemandDelivery});
 
   final ProvinceConfig config;
   final GeoBounds bounds;
+
+  /// Non-null exactly for coverages delivered on demand via Play Feature/
+  /// Asset Delivery (Santa Fe, Buenos Aires — Fase 11B/12A) rather than
+  /// unconditionally bundled. Every place that used to special-case
+  /// `id == 'santa_fe'` to decide "does this coverage need a download
+  /// banner/manager entry/availability probe" now checks this field
+  /// instead, so a coverage's on-demand-ness lives in exactly one place.
+  final PmtilesDelivery? onDemandDelivery;
 
   String get id => config.id;
 
@@ -66,6 +77,7 @@ class MapCoverage {
       minLongitude: -63.457031,
       maxLongitude: -56.656494,
     ),
+    onDemandDelivery: BuenosAiresPmtilesDelivery.instance,
   );
 
   /// Santa Fe's real archive extent, read from its PMTiles header
@@ -78,6 +90,7 @@ class MapCoverage {
       minLongitude: -62.885742,
       maxLongitude: -58.831787,
     ),
+    onDemandDelivery: SantaFePmtilesDelivery.instance,
   );
 
   /// Every coverage registered so far. Buenos Aires stays first — several
