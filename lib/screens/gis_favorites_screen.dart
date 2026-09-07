@@ -49,11 +49,25 @@ class _GisFavoritesScreenState extends State<GisFavoritesScreen> {
       ),
       body: Column(
         children: [
-          SearchBar(
-            hintText: 'Buscar favorito...',
-            leading: const Icon(AppIcons.search),
-            onChanged: (value) => _searchQuery.value = value,
-            onSubmitted: logSubmittedSearch,
+          FloatingAppBarCard(
+            padding: EdgeInsets.zero,
+            child: SearchBar(
+              hintText: 'Buscar favorito...',
+              leading: const Icon(AppIcons.search),
+              onChanged: (value) => _searchQuery.value = value,
+              onSubmitted: logSubmittedSearch,
+              elevation: const WidgetStatePropertyAll(0),
+              backgroundColor: const WidgetStatePropertyAll(Colors.white),
+              surfaceTintColor: const WidgetStatePropertyAll(
+                Colors.transparent,
+              ),
+              shape: WidgetStatePropertyAll(
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              ),
+              padding: const WidgetStatePropertyAll(
+                EdgeInsets.symmetric(horizontal: 18),
+              ),
+            ),
           ),
           const SizedBox(height: 12),
           Expanded(
@@ -118,10 +132,19 @@ class _GisFavoritesScreenState extends State<GisFavoritesScreen> {
           onTap: () => Navigator.of(context).pop(favorite.id),
           trailing: IconButton(
             key: ValueKey('remove-gis-favorite-${favorite.id}'),
-            icon: Icon(
-              AppIcons.star,
-              fill: 1,
-              color: Theme.of(context).colorScheme.primary,
+            icon: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Theme.of(
+                  context,
+                ).colorScheme.primaryContainer.withValues(alpha: 0.55),
+              ),
+              child: Icon(
+                AppIcons.star,
+                fill: 1,
+                color: Theme.of(context).colorScheme.primary,
+              ),
             ),
             tooltip: 'Quitar de favoritos',
             onPressed: () => _removeFavorite(favorite),

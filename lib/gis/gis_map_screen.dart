@@ -5267,6 +5267,7 @@ class _DesktopMapToolsPanelState extends State<_DesktopMapToolsPanel>
                 label: 'Favoritos',
                 selected: selectedSection == _DesktopPanelSection.favorites,
                 onTap: () => onSelectSection(_DesktopPanelSection.favorites),
+                isFavoritesAction: true,
               ),
               _DesktopMapPanelAction(
                 icon: AppIcons.myLocation,
@@ -5358,6 +5359,7 @@ class _DesktopMapToolsPanelState extends State<_DesktopMapToolsPanel>
                 selected: selectedSection == _DesktopPanelSection.favorites,
                 onPressed: () =>
                     onSelectSection(_DesktopPanelSection.favorites),
+                isFavoritesAction: true,
               ),
               _DesktopMapRailButton(
                 id: 'location',
@@ -5477,6 +5479,62 @@ class _DesktopCloseButtonState extends State<_DesktopCloseButton> {
   }
 }
 
+/// The Favoritos entry's icon in the GIS toolbar (both
+/// [_DesktopMapPanelAction] and [_DesktopMapRailButton]) — reuses the exact
+/// visual language already established for Favorites everywhere else
+/// (Cartas de Suelo, the Favoritos screen): a filled star in
+/// [ColorScheme.primary] sitting in a soft circular
+/// [ColorScheme.primaryContainer] badge when active, an outline star with
+/// no badge otherwise, and the same pop-in scale transition. Here "active"
+/// means this toolbar's Favoritos section is the one currently selected,
+/// not that a polygon is favorited — same visual grammar, different
+/// trigger. Every sibling tool (Capas, Buscar, Mediciones, Marcadores, Mi
+/// ubicación, medir distancia/área, agregar marcador) keeps rendering its
+/// own plain icon, untouched.
+class _FavoriteToolbarIcon extends StatelessWidget {
+  const _FavoriteToolbarIcon({
+    required this.active,
+    required this.color,
+    required this.size,
+  });
+
+  final bool active;
+  final Color color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return AnimatedSwitcher(
+      duration: AppMotion.duration(
+        context,
+        const Duration(milliseconds: 220),
+        reduced: const Duration(milliseconds: 60),
+      ),
+      switchInCurve: Curves.easeOutBack,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, animation) =>
+          ScaleTransition(scale: animation, child: child),
+      child: Container(
+        key: ValueKey(active),
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: active
+              ? colorScheme.primaryContainer.withValues(alpha: 0.55)
+              : Colors.transparent,
+        ),
+        child: Icon(
+          AppIcons.star,
+          size: size,
+          color: color,
+          fill: active ? 1 : 0,
+        ),
+      ),
+    );
+  }
+}
+
 class _DesktopMapPanelAction extends StatefulWidget {
   const _DesktopMapPanelAction({
     required this.icon,
@@ -5484,6 +5542,7 @@ class _DesktopMapPanelAction extends StatefulWidget {
     required this.onTap,
     this.id,
     this.selected = false,
+    this.isFavoritesAction = false,
   });
 
   final IconData icon;
@@ -5491,6 +5550,14 @@ class _DesktopMapPanelAction extends StatefulWidget {
   final VoidCallback? onTap;
   final String? id;
   final bool selected;
+
+  /// True only for the Favoritos entry — swaps its icon for
+  /// [_FavoriteToolbarIcon] so it reads as part of the same Favorites
+  /// system as Cartas de Suelo/the Favoritos screen (filled star + soft
+  /// circular badge when selected) instead of this row's generic icon
+  /// treatment. Every other action keeps rendering [icon] plainly,
+  /// unchanged.
+  final bool isFavoritesAction;
 
   @override
   State<_DesktopMapPanelAction> createState() => _DesktopMapPanelActionState();
@@ -5564,13 +5631,22 @@ class _DesktopMapPanelActionState extends State<_DesktopMapPanelAction> {
                     ),
                     child: Row(
                       children: [
-                        Icon(
-                          widget.icon,
-                          size: 20,
-                          color: enabled
-                              ? foreground
-                              : colorScheme.onSurface.withValues(alpha: 0.38),
-                        ),
+                        if (widget.isFavoritesAction)
+                          _FavoriteToolbarIcon(
+                            active: widget.selected,
+                            color: enabled
+                                ? foreground
+                                : colorScheme.onSurface.withValues(alpha: 0.38),
+                            size: 20,
+                          )
+                        else
+                          Icon(
+                            widget.icon,
+                            size: 20,
+                            color: enabled
+                                ? foreground
+                                : colorScheme.onSurface.withValues(alpha: 0.38),
+                          ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
@@ -5608,6 +5684,7 @@ class _DesktopMapRailButton extends StatefulWidget {
     required this.icon,
     required this.onPressed,
     this.selected = false,
+    this.isFavoritesAction = false,
   });
 
   final String id;
@@ -5615,6 +5692,10 @@ class _DesktopMapRailButton extends StatefulWidget {
   final IconData icon;
   final VoidCallback? onPressed;
   final bool selected;
+
+  /// True only for the Favoritos entry — see
+  /// [_DesktopMapPanelAction.isFavoritesAction].
+  final bool isFavoritesAction;
 
   @override
   State<_DesktopMapRailButton> createState() => _DesktopMapRailButtonState();
@@ -5691,13 +5772,21 @@ class _DesktopMapRailButtonState extends State<_DesktopMapRailButton> {
                   onFocusChange: (focused) =>
                       setState(() => _focused = focused),
                   onTap: widget.onPressed,
-                  child: Icon(
-                    widget.icon,
-                    size: 20,
-                    color: enabled
-                        ? foreground
-                        : colorScheme.onSurface.withValues(alpha: 0.38),
-                  ),
+                  child: widget.isFavoritesAction
+                      ? _FavoriteToolbarIcon(
+                          active: widget.selected,
+                          color: enabled
+                              ? foreground
+                              : colorScheme.onSurface.withValues(alpha: 0.38),
+                          size: 20,
+                        )
+                      : Icon(
+                          widget.icon,
+                          size: 20,
+                          color: enabled
+                              ? foreground
+                              : colorScheme.onSurface.withValues(alpha: 0.38),
+                        ),
                 ),
               ),
             ),

@@ -270,13 +270,25 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                 switchOutCurve: Curves.easeIn,
                 transitionBuilder: (child, animation) =>
                     ScaleTransition(scale: animation, child: child),
-                child: Icon(
-                  AppIcons.star,
+                // Favorited gets a soft circular backing (same soft-green
+                // token as the leading PDF icon) so the active state reads
+                // at a glance, not just from the icon's own fill/color.
+                child: Container(
                   key: ValueKey(isFavorite),
-                  color: isFavorite
-                      ? colorScheme.primary
-                      : colorScheme.onSurfaceVariant,
-                  fill: isFavorite ? 1 : 0,
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isFavorite
+                        ? colorScheme.primaryContainer.withValues(alpha: 0.55)
+                        : Colors.transparent,
+                  ),
+                  child: Icon(
+                    AppIcons.star,
+                    color: isFavorite
+                        ? colorScheme.primary
+                        : colorScheme.onSurfaceVariant,
+                    fill: isFavorite ? 1 : 0,
+                  ),
                 ),
               ),
             ),
