@@ -100,15 +100,26 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           title: Text(
             favorite.title.isEmpty ? 'Carta sin nombre' : favorite.title,
           ),
-          subtitle: Text('Memoria descriptiva\n${_displayIdentifier(favorite)}'),
+          subtitle: Text(
+            'Memoria descriptiva\n${_displayIdentifier(favorite)}',
+          ),
           isThreeLine: true,
           onTap: () => _openFavoritePdf(favorite),
           trailing: IconButton(
             key: ValueKey('remove-favorite-${favorite.id}'),
-            icon: Icon(
-              AppIcons.star,
-              fill: 1,
-              color: Theme.of(context).colorScheme.primary,
+            icon: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Theme.of(
+                  context,
+                ).colorScheme.primaryContainer.withValues(alpha: 0.55),
+              ),
+              child: Icon(
+                AppIcons.star,
+                fill: 1,
+                color: Theme.of(context).colorScheme.primary,
+              ),
             ),
             tooltip: 'Quitar de favoritos',
             onPressed: () => _removeFavorite(favorite),
