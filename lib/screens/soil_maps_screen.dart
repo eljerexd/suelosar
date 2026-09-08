@@ -140,6 +140,9 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                               final favoriteMaps = soilMaps
                                   .where(_isFavorite)
                                   .toList(growable: false);
+                              final nonFavoriteMaps = soilMaps
+                                  .where((soilMap) => !_isFavorite(soilMap))
+                                  .toList(growable: false);
                               return CustomScrollView(
                                 slivers: [
                                   const SliverToBoxAdapter(
@@ -186,11 +189,11 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                                   ),
                                   SliverList.separated(
                                     addAutomaticKeepAlives: false,
-                                    itemCount: soilMaps.length,
+                                    itemCount: nonFavoriteMaps.length,
                                     itemBuilder: (context, index) =>
                                         _buildSoilMapItem(
                                           context,
-                                          soilMaps[index],
+                                          nonFavoriteMaps[index],
                                           colorScheme,
                                         ),
                                     separatorBuilder: (context, index) =>

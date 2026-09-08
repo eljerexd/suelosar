@@ -602,9 +602,6 @@ class _GisMapScreenState extends State<GisMapScreen>
                   onMeasureArea: () =>
                       _selectMeasurementOption(_MeasurementMenuOption.area),
                   onAddMarker: _togglePersonalMarkerMode,
-                  onLocate: _isLocating || _disableGeolocatorForDiagnostic
-                      ? null
-                      : _centerMapOnCurrentLocationFromUser,
                 ),
               );
             },
@@ -1371,11 +1368,14 @@ class _GisMapScreenState extends State<GisMapScreen>
             topInset: topControlOffset,
             showLayers: !desktopShell,
             alignLeft: androidPhoneLandscape,
+            desktopStyle: desktopShell,
           ),
         if (!_mapVisualsPaused)
           _MapToolHintOverlay(type: _activeToolHint, top: topControlOffset),
         if (!_mapVisualsPaused && !showsMeasurementEditor && !desktopShell)
           _buildBottomRightControls(),
+        if (!_mapVisualsPaused && !showsMeasurementEditor && desktopShell)
+          _buildDesktopLocationButton(),
         if (!_mapVisualsPaused &&
             selectedSavedMeasurement != null &&
             !showsMeasurementEditor &&
@@ -1417,6 +1417,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     required double topInset,
     bool showLayers = true,
     bool alignLeft = false,
+    bool desktopStyle = false,
   }) {
     return Positioned.fill(
       child: SafeArea(
@@ -1434,6 +1435,8 @@ class _GisMapScreenState extends State<GisMapScreen>
               _MapCompassControl(
                 viewStateListenable: _mapViewportState,
                 onResetNorth: _animateMapToNorth,
+                desktopStyle: desktopStyle,
+                mapController: desktopStyle ? _mapController : null,
               ),
               if (showLayers)
                 _MapChromeSurface(
@@ -1507,6 +1510,39 @@ class _GisMapScreenState extends State<GisMapScreen>
                 },
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Desktop-only equivalent of the "Mi ubicación" entry inside
+  /// [_buildBottomRightControls] — same GPS logic
+  /// (`_centerMapOnCurrentLocationFromUser`/`_isLocating`/
+  /// `_disableGeolocatorForDiagnostic`), same icon, just presented as its
+  /// own floating control (bottom-right, deliberately apart from the
+  /// compass in [_buildRightControlRail]) instead of a row inside
+  /// `_DesktopMapToolsPanel`'s side menu.
+  Widget _buildDesktopLocationButton() {
+    return Positioned.fill(
+      child: SafeArea(
+        minimum: const EdgeInsets.fromLTRB(0, 0, 24, 24),
+        child: Align(
+          alignment: Alignment.bottomRight,
+          child: _MapChromeIconButton(
+            includeOuterSpacing: false,
+            useDesktopSurfaceStyle: true,
+            tooltip: 'Mi ubicación',
+            onPressed: _isLocating || _disableGeolocatorForDiagnostic
+                ? null
+                : _centerMapOnCurrentLocationFromUser,
+            icon: _isLocating
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(AppIcons.myLocation),
           ),
         ),
       ),
@@ -5153,7 +5189,6 @@ class _DesktopMapToolsPanel extends StatefulWidget {
     required this.onMeasureDistance,
     required this.onMeasureArea,
     required this.onAddMarker,
-    required this.onLocate,
   });
 
   final bool collapsed;
@@ -5164,7 +5199,6 @@ class _DesktopMapToolsPanel extends StatefulWidget {
   final VoidCallback onMeasureDistance;
   final VoidCallback onMeasureArea;
   final VoidCallback onAddMarker;
-  final VoidCallback? onLocate;
 
   @override
   State<_DesktopMapToolsPanel> createState() => _DesktopMapToolsPanelState();
@@ -5181,7 +5215,6 @@ class _DesktopMapToolsPanelState extends State<_DesktopMapToolsPanel>
   VoidCallback get onMeasureDistance => widget.onMeasureDistance;
   VoidCallback get onMeasureArea => widget.onMeasureArea;
   VoidCallback get onAddMarker => widget.onAddMarker;
-  VoidCallback? get onLocate => widget.onLocate;
 
   @override
   Widget build(BuildContext context) {
@@ -5269,11 +5302,6 @@ class _DesktopMapToolsPanelState extends State<_DesktopMapToolsPanel>
                 onTap: () => onSelectSection(_DesktopPanelSection.favorites),
                 isFavoritesAction: true,
               ),
-              _DesktopMapPanelAction(
-                icon: AppIcons.myLocation,
-                label: 'Mi ubicación',
-                onTap: onLocate,
-              ),
               const _DesktopNavigationDivider(),
               _DesktopMapPanelAction(
                 id: 'measure-distance',
@@ -5360,12 +5388,6 @@ class _DesktopMapToolsPanelState extends State<_DesktopMapToolsPanel>
                 onPressed: () =>
                     onSelectSection(_DesktopPanelSection.favorites),
                 isFavoritesAction: true,
-              ),
-              _DesktopMapRailButton(
-                id: 'location',
-                tooltip: 'Mi ubicación',
-                icon: AppIcons.myLocation,
-                onPressed: onLocate,
               ),
               const _DesktopNavigationDivider(compact: true),
               _DesktopMapRailButton(
@@ -9004,37 +9026,209 @@ class _MapViewportState {
       Object.hash(center.latitude, center.longitude, zoom, rotation);
 }
 
-class _MapCompassControl extends StatelessWidget {
+class _MapCompassControl extends StatefulWidget {
   const _MapCompassControl({
     required this.viewStateListenable,
     required this.onResetNorth,
+    this.desktopStyle = false,
+    this.mapController,
   });
 
   final ValueListenable<_MapViewportState> viewStateListenable;
   final VoidCallback onResetNorth;
 
+  /// True only on the desktop shell — swaps the shared mobile chrome
+  /// (brown circle) for the white-surface look already used by the rest
+  /// of the desktop floating controls. See
+  /// [_MapChromeSurface.useDesktopSurfaceStyle]. Also gates the two
+  /// desktop-only additions below (always-visible, drag-to-rotate) —
+  /// mobile keeps its exact previous behavior either way.
+  final bool desktopStyle;
+
+  /// Only read when [desktopStyle] is true, to drive drag-to-rotate.
+  /// Deliberately the same [MapController] the rest of this screen already
+  /// drives (`_mapController`/`_animateMapToNorth`) — every drag step
+  /// reads [MapController.camera]'s live rotation and writes back through
+  /// [MapController.rotate], the same flutter_map API the existing reset-
+  /// to-north animation already uses. There is no locally tracked
+  /// rotation value here that could drift from the real camera: the
+  /// glyph's own angle still comes exclusively from
+  /// [viewStateListenable], which [MapController.rotate] itself feeds
+  /// (via this screen's existing `onPositionChanged`/`onMapEvent` →
+  /// `_updateMapViewportState` pipeline) — a drag step and any other
+  /// rotation source (a reset, a two-finger gesture) update the exact
+  /// same state the same way.
+  final MapController? mapController;
+
+  @override
+  State<_MapCompassControl> createState() => _MapCompassControlState();
+}
+
+class _MapCompassControlState extends State<_MapCompassControl> {
+  /// Degrees the map rotates per logical pixel of horizontal drag — a
+  /// deliberately chosen feel (a full turn takes a comfortable ~600px),
+  /// not an arbitrary pixel-to-degree sum: every update still reads the
+  /// map's own current rotation before adding this increment (see
+  /// [_handleDragUpdate]), so it's always anchored to the real camera
+  /// rather than an independently accumulated value.
+  static const double _dragDegreesPerPixel = 0.6;
+
+  bool _isDragging = false;
+
+  /// Desktop-only, purely for the rotation-hint arcs' opacity below — a
+  /// separate `MouseRegion` from [_MapChromeSurface]'s own internal hover
+  /// tracking (which still drives its existing elevation/scale feedback
+  /// unchanged). Left at [MouseCursor.defer] (the default), so it never
+  /// competes with [_MapChromeSurface]'s own grab/grabbing cursor.
+  bool _isHovered = false;
+
+  void _handleDragStart(DragStartDetails details) {
+    setState(() => _isDragging = true);
+  }
+
+  void _handleDragUpdate(DragUpdateDetails details) {
+    final mapController = widget.mapController;
+    if (mapController == null) return;
+    final currentRotation = mapController.camera.rotation;
+    mapController.rotate(
+      currentRotation + details.delta.dx * _dragDegreesPerPixel,
+    );
+  }
+
+  void _handleDragEnd(DragEndDetails details) {
+    setState(() => _isDragging = false);
+  }
+
+  void _handleDragCancel() {
+    setState(() => _isDragging = false);
+  }
+
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<_MapViewportState>(
-      valueListenable: viewStateListenable,
+      valueListenable: widget.viewStateListenable,
       builder: (context, viewState, child) {
         final normalizedRotation = ((viewState.rotation + 180) % 360) - 180;
-        final visible = normalizedRotation.abs() > 0.5;
+        // Desktop: always on, per its own always-visible requirement.
+        // Mobile keeps the original "only while actually rotated" rule,
+        // untouched.
+        final visible = widget.desktopStyle || normalizedRotation.abs() > 0.5;
         if (!visible) {
           return const SizedBox.shrink(key: ValueKey('map-compass-hidden'));
         }
+        final button = _MapChromeIconButton(
+          key: const ValueKey('map-compass'),
+          includeOuterSpacing: false,
+          useDesktopSurfaceStyle: widget.desktopStyle,
+          cursorOverride: widget.desktopStyle
+              ? (_isDragging
+                    ? SystemMouseCursors.grabbing
+                    : SystemMouseCursors.grab)
+              : null,
+          // Desktop states the drag affordance explicitly, since the
+          // circular chrome alone reads as a plain button; mobile keeps
+          // its original, purely click-to-reset wording.
+          tooltip: widget.desktopStyle
+              ? 'Arrastrá para rotar · clic para volver al norte'
+              : 'Restablecer norte',
+          // Unchanged click path — a plain click/tap still resets to
+          // north exactly as before, on every platform. The horizontal
+          // drag recognizer wrapped around it below only wins the gesture
+          // arena once the pointer actually moves horizontally past the
+          // platform's touch slop, so a real click never also triggers a
+          // drag, and a real drag never also triggers this reset.
+          onPressed: widget.onResetNorth,
+          icon: _CompassGlyph(rotationTurns: -normalizedRotation / 360),
+        );
+        Widget compass = widget.desktopStyle
+            ? GestureDetector(
+                onHorizontalDragStart: _handleDragStart,
+                onHorizontalDragUpdate: _handleDragUpdate,
+                onHorizontalDragEnd: _handleDragEnd,
+                onHorizontalDragCancel: _handleDragCancel,
+                child: button,
+              )
+            : button;
+        if (widget.desktopStyle) {
+          // Purely decorative discoverability hint: two short arcs
+          // tracing a "rotate" motif just outside the 48px circle.
+          // `Positioned` (not a plain sized child) so it overflows the
+          // Stack's own bounds without changing what the Stack reports as
+          // its size to the layout above — the Stack still sizes itself
+          // to `compass` (the only non-positioned child, still exactly
+          // 48px), so this never shifts the compass's own position or the
+          // layers button below it. `IgnorePointer` keeps it out of the
+          // button's hit area, and it stays faint until hover/drag.
+          final hintOpacity = _isDragging ? 0.85 : (_isHovered ? 0.55 : 0.0);
+          compass = MouseRegion(
+            onEnter: (_) => setState(() => _isHovered = true),
+            onExit: (_) => setState(() => _isHovered = false),
+            child: Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                compass,
+                Positioned(
+                  left: -5,
+                  top: -5,
+                  right: -5,
+                  bottom: -5,
+                  child: IgnorePointer(
+                    child: AnimatedOpacity(
+                      opacity: hintOpacity,
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOut,
+                      child: CustomPaint(
+                        painter: _CompassRotationHintPainter(
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
         return Padding(
-          padding: const EdgeInsets.only(bottom: 10),
-          child: _MapChromeIconButton(
-            key: const ValueKey('map-compass'),
-            includeOuterSpacing: false,
-            tooltip: 'Restablecer norte',
-            onPressed: onResetNorth,
-            icon: _CompassGlyph(rotationTurns: -normalizedRotation / 360),
-          ),
+          padding: widget.desktopStyle
+              ? const EdgeInsets.only(top: 4, right: 8, bottom: 14)
+              : const EdgeInsets.only(bottom: 10),
+          child: compass,
         );
       },
     );
+  }
+}
+
+/// Two short opposing arcs traced just outside the compass's 48px circle —
+/// the classic "rotate" motif (like a refresh glyph), kept as a partial
+/// arc rather than a full ring so it reads as a subtle hint, not a second
+/// decoration competing with the compass glyph itself. Only ever painted
+/// at low opacity, driven by hover/drag state in
+/// [_MapCompassControlState].
+class _CompassRotationHintPainter extends CustomPainter {
+  const _CompassRotationHintPainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 1.5;
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+    canvas.drawArc(rect, -2.55, 1.15, false, paint);
+    canvas.drawArc(rect, 0.6, 1.15, false, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CompassRotationHintPainter oldDelegate) {
+    return oldDelegate.color != color;
   }
 }
 
@@ -10154,6 +10348,8 @@ class _MapChromeIconButton extends StatelessWidget {
     required this.icon,
     required this.onPressed,
     this.includeOuterSpacing = true,
+    this.useDesktopSurfaceStyle = false,
+    this.cursorOverride,
   });
 
   final String tooltip;
@@ -10161,16 +10357,24 @@ class _MapChromeIconButton extends StatelessWidget {
   final VoidCallback? onPressed;
   final bool includeOuterSpacing;
 
+  /// See [_MapChromeSurface.useDesktopSurfaceStyle].
+  final bool useDesktopSurfaceStyle;
+
+  /// See [_MapChromeSurface.cursorOverride].
+  final MouseCursor? cursorOverride;
+
   @override
   Widget build(BuildContext context) {
     return _MapChromeSurface(
       enabled: onPressed != null,
       includeOuterSpacing: includeOuterSpacing,
+      useDesktopSurfaceStyle: useDesktopSurfaceStyle,
+      cursorOverride: cursorOverride,
       child: IconButton(
         tooltip: tooltip,
         onPressed: onPressed,
         icon: icon,
-        iconSize: 21,
+        iconSize: useDesktopSurfaceStyle ? 26 : 21,
         padding: EdgeInsets.zero,
       ),
     );
@@ -10613,11 +10817,32 @@ class _MapChromeSurface extends StatefulWidget {
     required this.child,
     this.enabled = true,
     this.includeOuterSpacing = true,
+    this.useDesktopSurfaceStyle = false,
+    this.cursorOverride,
   });
 
   final Widget child;
   final bool enabled;
   final bool includeOuterSpacing;
+
+  /// Replaces the default `enabled ? click : basic` cursor with this
+  /// value while hovering. Only the desktop compass sets this (to show a
+  /// grab/grabbing hand, since it's draggable, not just clickable) — null
+  /// for every other caller keeps today's plain click cursor.
+  final MouseCursor? cursorOverride;
+
+  /// True only for the desktop compass control. Swaps the brown/cream
+  /// mobile chrome tokens ([SuelosArMapControlColors]) for the white
+  /// surface + [ColorScheme.shadow] alpha 0.18 that [FloatingAppBarCard]
+  /// already uses for the rest of the desktop GIS's floating chrome, and
+  /// tints the icon with [ColorScheme.primary] — the same accent
+  /// `_DesktopMapPanelAction`/`_GisFavoriteStarButton` already use —
+  /// instead of the mobile chrome's cream foreground. Every other caller
+  /// (the mobile compass, the layers button, the "Mi ubicación" button,
+  /// etc.) keeps rendering the existing brown chrome unchanged; the
+  /// hover/press scale-and-elevation behavior below is untouched either
+  /// way, only the color tokens differ.
+  final bool useDesktopSurfaceStyle;
 
   @override
   State<_MapChromeSurface> createState() => _MapChromeSurfaceState();
@@ -10653,11 +10878,26 @@ class _MapChromeSurfaceState extends State<_MapChromeSurface> {
         );
     final elevation = _isHovered ? 3.0 : 1.0;
     final scale = _isPressed ? 0.96 : (_isHovered ? 1.02 : 1.0);
+    final surfaceColor = widget.useDesktopSurfaceStyle
+        ? Colors.white
+        : mapControlColors.background.withValues(alpha: 0.97);
+    final iconColor = widget.useDesktopSurfaceStyle
+        ? colorScheme.primary
+        : mapControlColors.foreground;
+    // Desktop style sits directly over map imagery (not a chrome bar), so
+    // it gets a more visible shadow and a thin outline for contrast on
+    // bright/white map areas — neither is needed for the mobile chrome,
+    // which already sits on its own opaque brown surface.
+    final shadowAlpha = widget.useDesktopSurfaceStyle ? 0.26 : 0.16;
+    final borderSide = widget.useDesktopSurfaceStyle
+        ? BorderSide(color: colorScheme.outlineVariant.withValues(alpha: 0.5))
+        : BorderSide.none;
+    final dimension = widget.useDesktopSurfaceStyle ? 48.0 : 44.0;
 
     final surface = MouseRegion(
-      cursor: widget.enabled
-          ? SystemMouseCursors.click
-          : SystemMouseCursors.basic,
+      cursor: !widget.enabled
+          ? SystemMouseCursors.basic
+          : widget.cursorOverride ?? SystemMouseCursors.click,
       onEnter: (_) => _setHovered(true),
       onExit: (_) {
         _setHovered(false);
@@ -10678,18 +10918,18 @@ class _MapChromeSurfaceState extends State<_MapChromeSurface> {
             builder: (context, animatedElevation, child) {
               return Material(
                 elevation: animatedElevation,
-                shadowColor: colorScheme.shadow.withValues(alpha: 0.16),
-                color: mapControlColors.background.withValues(alpha: 0.97),
+                shadowColor: colorScheme.shadow.withValues(alpha: shadowAlpha),
+                color: surfaceColor,
                 surfaceTintColor: Colors.transparent,
-                borderRadius: BorderRadius.circular(22),
+                shape: CircleBorder(side: borderSide),
                 clipBehavior: Clip.antiAlias,
                 child: child,
               );
             },
             child: SizedBox.square(
-              dimension: 44,
+              dimension: dimension,
               child: IconTheme.merge(
-                data: IconThemeData(color: mapControlColors.foreground),
+                data: IconThemeData(color: iconColor),
                 child: widget.child,
               ),
             ),
