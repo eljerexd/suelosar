@@ -47,7 +47,6 @@ import '../widgets/personal_marker_category_icon.dart';
 import '../widgets/responsive_desktop_shell.dart';
 import '../widgets/saved_measurement_overflow_menu.dart';
 import 'engine/flutter_map_engine.dart';
-import 'engine/maplibre_engine.dart';
 import 'engine/soil_map_engine.dart';
 import 'gis_feature.dart';
 import 'gis_layer.dart';
@@ -115,9 +114,8 @@ class GisMapScreen extends StatefulWidget {
   /// (Fase 4B/5's pattern) without dragging in every registered province.
   final List<MapCoverage>? coverages;
 
-  /// Overrides the default [SoilMapEngine] (flutter_map). Used to evaluate
-  /// [MapLibreEngine] in parallel (Etapa 3) without changing the app's
-  /// default engine — production code never passes this.
+  /// Overrides the default [SoilMapEngine] ([FlutterMapEngine]). Used by
+  /// tests to inject a fake engine — production code never passes this.
   final SoilMapEngine? engine;
 
   @override
@@ -157,31 +155,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     'DISABLE_GEOLOCATOR',
   );
 
-  static const String _useMapLibreEngineOverride = String.fromEnvironment(
-    'USE_MAPLIBRE_ENGINE',
-  );
-
-  /// FlutterMap es el motor principal y de referencia 1:1 en toda
-  /// plataforma sin override explícito — MapLibre queda como
-  /// implementación experimental, solo activa vía
-  /// `--dart-define=USE_MAPLIBRE_ENGINE=true` (ver "SuelosAR Beta
-  /// (MapLibre)" en .vscode/launch.json). El registro de labels de
-  /// localidades en MapLibre sigue sin resolverse (ver diagnóstico en
-  /// AGENTS.md) — no cambiar este default de vuelta hasta que esté
-  /// corregido y validado contra FlutterMap.
-  bool get _useMapLibreEngineForDiagnostic {
-    switch (_useMapLibreEngineOverride) {
-      case 'true':
-        return true;
-      case 'false':
-        return false;
-      default:
-        return false;
-    }
-  }
-
   late final SoilMapEngine _mapEngine;
-  bool get _usesMapLibreEngine => _mapEngine is MapLibreEngine;
   final GlobalKey _mapKey = GlobalKey();
 
   late final GisRepository _repository;
@@ -238,9 +212,6 @@ class _GisMapScreenState extends State<GisMapScreen>
   AnimationController? _northRotationAnimation;
   StreamSubscription<GisLocation>? _locationSubscription;
   Timer? _tileLoadDebounce;
-  Timer? _searchIndexDebounce;
-  final Set<GisTileCoordinates> _indexedSearchTileCoordinates =
-      <GisTileCoordinates>{};
   GisArchiveInfo _archiveInfo = _defaultArchiveInfo;
   bool _isMapReady = false;
   bool _isLocating = false;
@@ -360,11 +331,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   void initState() {
     super.initState();
     unawaited(AnalyticsService.instance.logMapOpened());
-    _mapEngine =
-        widget.engine ??
-        (_useMapLibreEngineForDiagnostic
-            ? MapLibreEngine()
-            : FlutterMapEngine());
+    _mapEngine = widget.engine ?? FlutterMapEngine();
     _ownsRenderMetrics = widget.renderMetrics == null;
     _renderMetrics = widget.renderMetrics ?? GisRenderMetrics.disabled();
     _desktopWindowService =
@@ -627,7 +594,6 @@ class _GisMapScreenState extends State<GisMapScreen>
       GisMapOcclusionObserver.instance.unregister(registeredRoute);
     }
     _tileLoadDebounce?.cancel();
-    _searchIndexDebounce?.cancel();
     _transientMapHintTimer?.cancel();
     _transientMapHintLinkRecognizer?.dispose();
     unawaited(_locationSubscription?.cancel());
@@ -1427,25 +1393,18 @@ class _GisMapScreenState extends State<GisMapScreen>
         _archiveInfo = archiveInfo;
       });
 
-      if (_isMapReady && !_usesMapLibreEngine) {
+      if (_isMapReady) {
         unawaited(
           _loadVisibleTiles(
             (_mapEngine as FlutterMapEngine).controller.camera,
             archiveInfo,
           ),
         );
-      } else if (_isMapReady && _usesMapLibreEngine) {
-        unawaited(
-          _indexSearchTilesAroundCamera(_mapEngine.camera, archiveInfo),
-        );
       }
 
       // No-op for FlutterMapEngine (its polygons keep rendering through the
-      // existing tile pipeline above). For MapLibreEngine this prepares the
-      // real PMTiles archive + local tile server and loads the vector
-      // style, using the app's real theme colors (matches
-      // _GisPolygonStyle.fromColorScheme below) — the trailing setState
-      // rebuilds the map surface with it.
+      // existing tile pipeline above), kept because it is part of the
+      // [SoilMapEngine] contract for engines that render polygons natively.
       final colorScheme = Theme.of(context).colorScheme;
       await _mapEngine.loadSoilPolygonsLayer(
         archiveInfo: archiveInfo,
@@ -1515,171 +1474,14 @@ class _GisMapScreenState extends State<GisMapScreen>
         coverage.config.referenceMapAsset!,
   ];
 
-  /// MapLibre-only measurement readout/action panel.
-  ///
-  /// `_MeasurementLayer` (and its `_MeasurementPanel`) is passed through
-  /// `buildMapSurface`'s `children`, which MapLibreEngine always receives as
-  /// an empty list — it renders vertices/lines/fill natively instead (see
-  /// `setMeasurementGeometry`). Without this method MapLibre would show the
-  /// numbered vertices and geometry but no distance/area readout, save,
-  /// undo/clear, color selector, or exit controls at all.
-  ///
-  /// Placed as a screen-anchored sibling in `_buildMap`'s outer `Stack`
-  /// (not inside `buildMapSurface`'s `children`, which for FlutterMapEngine
-  /// must stay `flutter_map`-specific layer widgets) so it works without a
-  /// `FlutterMap` ancestor. Mirrors `_MeasurementLayer._buildDistance`/
-  /// `_buildArea`'s panel construction — same actions, same text, same
-  /// shared `measurement_math.dart` calculations — but does not reuse that
-  /// code directly since it also builds geographic-anchored `flutter_map`
-  /// layers (`PolylineLayer`/`MarkerLayer`/`PolygonLayer`) that only work
-  /// under a `FlutterMap` ancestor. `FlutterMapEngine` is unaffected: this
-  /// returns null whenever `_usesMapLibreEngine` is false.
-  ///
-  /// One documented difference: FlutterMapEngine shows the in-progress
-  /// distance value as a floating marker anchored at the path midpoint
-  /// (geographic position, follows the map). Here it is a text row inside
-  /// the bottom panel instead, since a geographic-anchored overlay would
-  /// need synchronous screen<->geo projection, which MapLibre's plugin only
-  /// exposes asynchronously (see the Etapa 3 measurement architecture note).
-  Widget? _buildMeasurementPanelForMapLibre(BuildContext context) {
-    if (!_usesMapLibreEngine) return null;
-    final mode = _measurementMode ?? _retainedMeasurementMode;
-    if (mode == null || !_hasMeasurementPoints) return null;
-    final isEditing = _measurementMode != null;
-    final isArea = mode == _MeasurementMode.area;
-    final points = isArea ? _areaMeasurementPoints : _distanceMeasurementPoints;
-    if (isArea ? points.length < 3 : points.isEmpty) return null;
-    if (!isArea && !isEditing) return null;
-    final isSaved = _activeSavedMeasurementId != null;
-
-    final actions = <Widget>[
-      if (isEditing) ...[
-        _MeasurementSaveButton(
-          highlighted: _measurementHasUnsavedChanges,
-          onPressed: _isCurrentMeasurementComplete
-              ? _saveCurrentMeasurement
-              : null,
-        ),
-        if (!isArea && points.length >= 2)
-          _MeasurementExportButton(onPressed: _exportCurrentMeasurementPdf),
-        if (isSaved) ...[
-          IconButton(
-            tooltip: 'Ocultar',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(AppIcons.visibilityOff, size: 18),
-            onPressed: _hideCurrentSavedMeasurement,
-          ),
-          IconButton(
-            tooltip: 'Eliminar medición',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(AppIcons.delete, size: 18),
-            onPressed: _deleteCurrentSavedMeasurement,
-          ),
-        ] else ...[
-          IconButton(
-            tooltip: 'Deshacer',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(AppIcons.undo, size: 18),
-            onPressed: _undoMeasurementPoint,
-          ),
-          IconButton(
-            tooltip: 'Limpiar',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(AppIcons.delete, size: 18),
-            onPressed: _clearMeasurement,
-          ),
-        ],
-        IconButton(
-          tooltip: 'Salir',
-          visualDensity: VisualDensity.compact,
-          icon: const Icon(AppIcons.close, size: 18),
-          onPressed: _exitMeasurement,
-        ),
-      ] else if (isArea)
-        _MeasurementExportButton(onPressed: _exportCurrentMeasurementPdf),
-    ];
-
-    final panelChildren = <Widget>[
-      if (isArea) ...[
-        Text(
-          'Área: ${formatMeasurementArea(calculateMeasurementArea(points))}',
-          key: const ValueKey('measurement-area'),
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w600,
-            fontFeatures: const [FontFeature.tabularFigures()],
-          ),
-        ),
-        const SizedBox(height: 3),
-        Text(
-          'Perímetro: '
-          '${formatMeasurementDistance(calculateMeasurementPerimeter(points))}',
-          key: const ValueKey('measurement-perimeter'),
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-            fontFeatures: const [FontFeature.tabularFigures()],
-          ),
-        ),
-        if (isEditing) ...[
-          const SizedBox(height: 8),
-          Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 8,
-            runSpacing: 6,
-            children: [
-              FilledButton.tonalIcon(
-                key: const ValueKey('analyze-parcel'),
-                icon: const Icon(AppIcons.analytics, size: 18),
-                label: const Text('Analizar lote'),
-                onPressed: () {
-                  _showParcelAnalysis(
-                    ParcelAnalysis(
-                      totalAreaSquareMeters: calculateMeasurementArea(points),
-                      perimeterMeters: calculateMeasurementPerimeter(points),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ],
-      ] else
-        Text(
-          formatMeasurementDistance(calculateMeasurementPathDistance(points)),
-          key: const ValueKey('measurement-distance'),
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-            fontWeight: FontWeight.w700,
-            fontFeatures: const [FontFeature.tabularFigures()],
-          ),
-        ),
-    ];
-
-    return Positioned(
-      left: 16,
-      right: 16,
-      bottom: 16.0 + MediaQuery.paddingOf(context).bottom,
-      child: Center(
-        child: _MeasurementPanel(
-          selectedColor: _measurementColor,
-          onColorChanged: _setMeasurementColor,
-          showColorSelector: isEditing,
-          actions: actions,
-          children: panelChildren,
-        ),
-      ),
-    );
-  }
-
   /// Pushes the current measurement geometry to `_mapEngine`. No-op for
   /// FlutterMapEngine (it ignores every argument here — see
-  /// `SoilMapEngine.setMeasurementGeometry`'s doc comment).
+  /// `SoilMapEngine.setMeasurementGeometry`'s doc comment), which renders
+  /// measurements through a `children` `_MeasurementLayer` widget instead.
   ///
-  /// Called from `_buildMap` on every rebuild (unchanged), and also called
-  /// directly, synchronously, from [_handleMapLibreVertexDragUpdate] on
-  /// every drag event — bypassing the wait for a Flutter rebuild entirely
-  /// for that path. See that method's doc comment for why: routing the
-  /// fill/line update through a `setState`-triggered rebuild gave it a
-  /// different timing than MapLibre's own internal update of the dragged
-  /// vertex's Symbol, which visibly desynced the two.
+  /// Called from `_buildMap` on every rebuild. Kept because it is part of
+  /// the [SoilMapEngine] contract for engines that render measurements
+  /// natively rather than as layer widgets.
   void _pushMeasurementGeometryToEngine() {
     final renderedMeasurementMode =
         _measurementMode ?? _retainedMeasurementMode;
@@ -1691,7 +1493,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       color: _measurementColor.color,
       onVertexTap: _showVertexMenu,
       onVertexDragStart: (index) => _startAreaVertexDrag(index, Offset.zero),
-      onVertexDragUpdate: _handleMapLibreVertexDragUpdate,
+      onVertexDragUpdate: _moveAreaVertexTo,
       onVertexDragEnd: (index) => _endAreaVertexDrag(),
       draggedVertexIndex: _draggedAreaVertexIndex,
     );
@@ -1719,21 +1521,10 @@ class _GisMapScreenState extends State<GisMapScreen>
     };
 
     // No-op for FlutterMapEngine (rendered via its `children` widgets
-    // below instead). For MapLibreEngine these keep its own annotations in
-    // sync with the same state on every rebuild; each setter no-ops
-    // internally when nothing actually changed.
+    // below instead). Kept because it is part of the [SoilMapEngine]
+    // contract for engines that render annotations natively; each setter
+    // no-ops internally when nothing actually changed.
     if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused) {
-      // MapLibreEngine-only: matches _AreaVertexHandle's normal-vertex
-      // border (colorScheme.surface) — see setVertexBadgeSurfaceColor's doc
-      // comment for why this isn't part of SoilMapEngine.
-      if (_mapEngine case final MapLibreEngine mapLibreEngine) {
-        mapLibreEngine.setVertexBadgeSurfaceColor(colorScheme.surface);
-        // Only actively editing (_measurementMode != null) should leave
-        // vertices draggable — a measurement shown solely via
-        // _retainedMeasurementMode (closed with X) matches
-        // FlutterMapEngine's non-interactive _SavedMeasurementsLayer.
-        mapLibreEngine.setMeasurementInteractive(_measurementMode != null);
-      }
       _mapEngine.setPersonalMarkers(
         [
           for (final marker in _personalMarkers)
@@ -1774,16 +1565,12 @@ class _GisMapScreenState extends State<GisMapScreen>
             _isMapReady = true;
             _updateMapViewportState(_mapEngine.camera);
             _consumePendingPersonalMarkerFocusIfReady();
-            if (!_disableGisTilePipelineForDiagnostic && !_usesMapLibreEngine) {
+            if (!_disableGisTilePipelineForDiagnostic) {
               unawaited(
                 _loadVisibleTiles(
                   (_mapEngine as FlutterMapEngine).controller.camera,
                   archiveInfo,
                 ),
-              );
-            } else if (!_disableGisTilePipelineForDiagnostic) {
-              unawaited(
-                _indexSearchTilesAroundCamera(_mapEngine.camera, archiveInfo),
               );
             }
             if (!_disableGeolocatorForDiagnostic &&
@@ -1797,165 +1584,160 @@ class _GisMapScreenState extends State<GisMapScreen>
               _isFollowingLocation = false;
             }
             _updateMapViewportState(camera);
-            if (!_disableGisTilePipelineForDiagnostic && !_usesMapLibreEngine) {
+            if (!_disableGisTilePipelineForDiagnostic) {
               _scheduleTileLoad(
                 (_mapEngine as FlutterMapEngine).controller.camera,
                 archiveInfo,
               );
-            } else if (!_disableGisTilePipelineForDiagnostic) {
-              _scheduleSearchIndexUpdate(camera, archiveInfo);
             }
           },
           onTap: _disableGisTilePipelineForDiagnostic ? null : _handleMapTap,
-          children: _usesMapLibreEngine
-              ? const <Widget>[]
-              : [
-                  if (!_mapVisualsPaused && _showReferenceBasemap)
-                    Positioned.fill(
-                      child: OfflineReferenceMapLayer(
-                        assetPaths: _referenceMapAssetPaths,
-                      ),
-                    ),
-                  if (!_disableGisTilePipelineForDiagnostic &&
-                      !_mapVisualsPaused &&
-                      _showSoilPolygons)
-                    Positioned.fill(
-                      child: _GisVisibleTileLayers(
-                        snapshotListenable: _visibleTileSnapshot,
-                        renderMetrics: _renderMetrics,
-                      ),
-                    ),
-                  if (!_mapVisualsPaused && _showReferenceBasemap)
-                    Positioned.fill(
-                      child: OfflineReferenceMapLayer(
-                        foreground: true,
-                        assetPaths: _referenceMapAssetPaths,
-                      ),
-                    ),
-                  if (!_disableGisTilePipelineForDiagnostic &&
-                      !_mapVisualsPaused)
-                    if (_currentLocation case final location?)
-                      AnimatedBuilder(
-                        animation: SettingsService.instance,
-                        builder: (context, _) => _CurrentLocationLayer(
-                          location: location,
-                          showAccuracyCircle:
-                              SettingsService.instance.showGpsAccuracyCircle,
-                        ),
-                      ),
-                  if (!_disableGisTilePipelineForDiagnostic &&
-                      !_mapVisualsPaused &&
-                      _savedMeasurements.isNotEmpty)
-                    _SavedMeasurementsLayer(
-                      measurements: _savedMeasurements
-                          .where((measurement) => measurement.isVisible)
-                          .toList(growable: false),
-                      highlightedMeasurementId: _highlightedSavedMeasurementId,
-                      showLabels: measurementMode == null,
-                      onHideMeasurement: _hideSavedMeasurement,
-                      onSelectMeasurement: _previewSavedMeasurement,
-                    ),
-                  if (!_disableGisTilePipelineForDiagnostic &&
-                      !_mapVisualsPaused &&
-                      _activeSavedMeasurementId != null)
-                    Positioned.fill(
-                      child: _SavedMeasurementLabels(
-                        measurements: _orderedSavedMeasurementsForLabels(
-                          _savedMeasurements
-                              .where((measurement) => measurement.isVisible)
-                              .toList(growable: false),
-                        ),
-                        selectedMeasurementId: _highlightedSavedMeasurementId,
-                        hoveredMeasurementId: null,
-                        onHideMeasurement: _hideSavedMeasurement,
-                        onSelectMeasurement: _previewSavedMeasurement,
-                        onHoverMeasurement: (_) {},
-                      ),
-                    ),
-                  if (!_disableGisTilePipelineForDiagnostic &&
-                      !_mapVisualsPaused &&
-                      _personalMarkers.isNotEmpty)
-                    MarkerLayer(
-                      markers: _personalMarkers
-                          .map((marker) {
-                            final point = _safeLatLng(
-                              marker.latitude,
-                              marker.longitude,
-                            );
-                            if (point == null) return null;
-                            return Marker(
-                              key: ValueKey('personal-marker-${marker.id}'),
-                              point: point,
-                              width: 44,
-                              height: 44,
-                              alignment: Alignment.bottomCenter,
-                              child: GestureDetector(
-                                key: ValueKey('marker-hit-target-${marker.id}'),
-                                behavior: HitTestBehavior.opaque,
-                                onTap: () => _handlePersonalMarkerTap(marker),
-                                child: Center(
-                                  child: Material(
-                                    color: colorScheme.surface,
-                                    elevation: 2,
-                                    shadowColor: colorScheme.shadow.withValues(
-                                      alpha: 0.18,
-                                    ),
-                                    shape: const CircleBorder(),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: SizedBox.square(
-                                      dimension: 36,
-                                      child: Icon(
-                                        personalMarkerCategoryIcon(
-                                          marker.category,
-                                        ),
-                                        size: 22,
-                                        color: const Color.fromARGB(
-                                          255,
-                                          209,
-                                          19,
-                                          19,
-                                        ),
-                                      ),
-                                    ),
+          children: [
+            if (!_mapVisualsPaused && _showReferenceBasemap)
+              Positioned.fill(
+                child: OfflineReferenceMapLayer(
+                  assetPaths: _referenceMapAssetPaths,
+                ),
+              ),
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                _showSoilPolygons)
+              Positioned.fill(
+                child: _GisVisibleTileLayers(
+                  snapshotListenable: _visibleTileSnapshot,
+                  renderMetrics: _renderMetrics,
+                ),
+              ),
+            if (!_mapVisualsPaused && _showReferenceBasemap)
+              Positioned.fill(
+                child: OfflineReferenceMapLayer(
+                  foreground: true,
+                  assetPaths: _referenceMapAssetPaths,
+                ),
+              ),
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused)
+              if (_currentLocation case final location?)
+                AnimatedBuilder(
+                  animation: SettingsService.instance,
+                  builder: (context, _) => _CurrentLocationLayer(
+                    location: location,
+                    showAccuracyCircle:
+                        SettingsService.instance.showGpsAccuracyCircle,
+                  ),
+                ),
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                _savedMeasurements.isNotEmpty)
+              _SavedMeasurementsLayer(
+                measurements: _savedMeasurements
+                    .where((measurement) => measurement.isVisible)
+                    .toList(growable: false),
+                highlightedMeasurementId: _highlightedSavedMeasurementId,
+                showLabels: measurementMode == null,
+                onHideMeasurement: _hideSavedMeasurement,
+                onSelectMeasurement: _previewSavedMeasurement,
+              ),
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                _activeSavedMeasurementId != null)
+              Positioned.fill(
+                child: _SavedMeasurementLabels(
+                  measurements: _orderedSavedMeasurementsForLabels(
+                    _savedMeasurements
+                        .where((measurement) => measurement.isVisible)
+                        .toList(growable: false),
+                  ),
+                  selectedMeasurementId: _highlightedSavedMeasurementId,
+                  hoveredMeasurementId: null,
+                  onHideMeasurement: _hideSavedMeasurement,
+                  onSelectMeasurement: _previewSavedMeasurement,
+                  onHoverMeasurement: (_) {},
+                ),
+              ),
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                _personalMarkers.isNotEmpty)
+              MarkerLayer(
+                markers: _personalMarkers
+                    .map((marker) {
+                      final point = _safeLatLng(
+                        marker.latitude,
+                        marker.longitude,
+                      );
+                      if (point == null) return null;
+                      return Marker(
+                        key: ValueKey('personal-marker-${marker.id}'),
+                        point: point,
+                        width: 44,
+                        height: 44,
+                        alignment: Alignment.bottomCenter,
+                        child: GestureDetector(
+                          key: ValueKey('marker-hit-target-${marker.id}'),
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => _handlePersonalMarkerTap(marker),
+                          child: Center(
+                            child: Material(
+                              color: colorScheme.surface,
+                              elevation: 2,
+                              shadowColor: colorScheme.shadow.withValues(
+                                alpha: 0.18,
+                              ),
+                              shape: const CircleBorder(),
+                              clipBehavior: Clip.antiAlias,
+                              child: SizedBox.square(
+                                dimension: 36,
+                                child: Icon(
+                                  personalMarkerCategoryIcon(
+                                    marker.category,
+                                  ),
+                                  size: 22,
+                                  color: const Color.fromARGB(
+                                    255,
+                                    209,
+                                    19,
+                                    19,
                                   ),
                                 ),
                               ),
-                            );
-                          })
-                          .whereType<Marker>()
-                          .toList(growable: false),
-                    ),
-                  if (!_disableGisTilePipelineForDiagnostic &&
-                      !_mapVisualsPaused &&
-                      renderedMeasurementMode != null &&
-                      _hasMeasurementPoints)
-                    _MeasurementLayer(
-                      mode: renderedMeasurementMode,
-                      isEditing: measurementMode != null,
-                      distancePoints: _distanceMeasurementPoints,
-                      areaPoints: _areaMeasurementPoints,
-                      selectedColor: _measurementColor,
-                      draggedAreaVertexIndex: _draggedAreaVertexIndex,
-                      onStartAreaVertexDrag: _startAreaVertexDrag,
-                      onMoveAreaVertex: _moveAreaVertex,
-                      onEndAreaVertexDrag: _endAreaVertexDrag,
-                      onVertexTap: _showVertexMenu,
-                      onColorChanged: _setMeasurementColor,
-                      onSave: _saveCurrentMeasurement,
-                      isSavedMeasurement: _activeSavedMeasurementId != null,
-                      onHideSavedMeasurement: _hideCurrentSavedMeasurement,
-                      onDeleteSavedMeasurement: _deleteCurrentSavedMeasurement,
-                      hasUnsavedChanges: _measurementHasUnsavedChanges,
-                      canSave: _isCurrentMeasurementComplete,
-                      onUndo: _undoMeasurementPoint,
-                      onClear: _clearMeasurement,
-                      onExit: _exitMeasurement,
-                      onAnalyze: _showParcelAnalysis,
-                      onExport: _exportCurrentMeasurementPdf,
-                    ),
-                ],
+                            ),
+                          ),
+                        ),
+                      );
+                    })
+                    .whereType<Marker>()
+                    .toList(growable: false),
+              ),
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused &&
+                renderedMeasurementMode != null &&
+                _hasMeasurementPoints)
+              _MeasurementLayer(
+                mode: renderedMeasurementMode,
+                isEditing: measurementMode != null,
+                distancePoints: _distanceMeasurementPoints,
+                areaPoints: _areaMeasurementPoints,
+                selectedColor: _measurementColor,
+                draggedAreaVertexIndex: _draggedAreaVertexIndex,
+                onStartAreaVertexDrag: _startAreaVertexDrag,
+                onMoveAreaVertex: _moveAreaVertex,
+                onEndAreaVertexDrag: _endAreaVertexDrag,
+                onVertexTap: _showVertexMenu,
+                onColorChanged: _setMeasurementColor,
+                onSave: _saveCurrentMeasurement,
+                isSavedMeasurement: _activeSavedMeasurementId != null,
+                onHideSavedMeasurement: _hideCurrentSavedMeasurement,
+                onDeleteSavedMeasurement: _deleteCurrentSavedMeasurement,
+                hasUnsavedChanges: _measurementHasUnsavedChanges,
+                canSave: _isCurrentMeasurementComplete,
+                onUndo: _undoMeasurementPoint,
+                onClear: _clearMeasurement,
+                onExit: _exitMeasurement,
+                onAnalyze: _showParcelAnalysis,
+                onExport: _exportCurrentMeasurementPdf,
+              ),
+          ],
         ),
-        ?_buildMeasurementPanelForMapLibre(context),
         if (!_mapVisualsPaused)
           Positioned.fill(
             child: ValueListenableBuilder<_MapOverlayState>(
@@ -1981,11 +1763,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                           // explains that. Showing this generic red error on
                           // top of it would describe the same situation as
                           // if it were a bug.
-                          final camera = _usesMapLibreEngine
-                              ? null
-                              : (_mapEngine as FlutterMapEngine)
-                                    .controller
-                                    .camera;
+                          final camera =
+                              (_mapEngine as FlutterMapEngine).controller.camera;
                           final screenSize = MediaQuery.sizeOf(context);
                           final suppressedForOnDemandCoverage = _coverages.any((
                             coverage,
@@ -2095,9 +1874,8 @@ class _GisMapScreenState extends State<GisMapScreen>
             referenceMapAssetPath:
                 undownloadedCoverage.config.referenceMapAsset,
             viewStateListenable: _mapViewportState,
-            resolveCamera: () => _usesMapLibreEngine
-                ? null
-                : (_mapEngine as FlutterMapEngine).controller.camera,
+            resolveCamera: () =>
+                (_mapEngine as FlutterMapEngine).controller.camera,
             onDownload: () =>
                 unawaited(undownloadedCoverage.onDemandDelivery!.download()),
             onDismissedFirstTime: () => _showDownloadLaterHint(
@@ -2548,34 +2326,9 @@ class _GisMapScreenState extends State<GisMapScreen>
       _suppressNextMapTap = false;
       _activeToolHint = null;
       if (isSaved) {
-        if (_usesMapLibreEngine) {
-          // FlutterMapEngine keeps a saved measurement on screen after X
-          // through `_SavedMeasurementsLayer`, an always-on layer
-          // independent of these editing-only point arrays — closing the
-          // editor there never made the shape disappear. MapLibreEngine has
-          // no equivalent separate layer; `setMeasurementGeometry` (driven
-          // by `_pushMeasurementGeometryToEngine`) is its only way to show
-          // measurement geometry at all. Clearing the points here
-          // previously made a just-saved/just-closed measurement vanish on
-          // MapLibre. Keeping them, with `_retainedMeasurementMode` set,
-          // reuses the exact mechanism `_activateMeasurementMode`'s
-          // `resumesSavedMeasurement` already relies on to keep a
-          // non-actively-edited measurement rendered —
-          // `_pushMeasurementGeometryToEngine`'s `showsMeasurement` only
-          // checks `_retainedMeasurementMode`/the points, not
-          // `_activeSavedMeasurementId`. FlutterMapEngine must not take
-          // this branch: `_MeasurementLayer` keeps rendering (vertices,
-          // color picker, Guardar) for as long as `_retainedMeasurementMode`
-          // is set, on top of `_SavedMeasurementsLayer` already showing the
-          // same just-saved measurement — two overlapping widgets for one
-          // measurement, which is exactly the Fase-6-era regression this
-          // condition fixes back to Stable's behavior.
-          _retainedMeasurementMode = mode;
-        } else {
-          _distanceMeasurementPoints.clear();
-          _areaMeasurementPoints.clear();
-          _retainedMeasurementMode = null;
-        }
+        _distanceMeasurementPoints.clear();
+        _areaMeasurementPoints.clear();
+        _retainedMeasurementMode = null;
         // `_activeSavedMeasurementId` itself still gets cleared below, same
         // as before: `_SavedMeasurementLabels` (a FlutterMap-only overlay)
         // renders whenever it's non-null, *in addition to*
@@ -3047,16 +2800,14 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   /// Same vertex-move logic as [_moveAreaVertex], but taking the new
-  /// geographic point directly instead of a screen offset — used by
-  /// MapLibreEngine's native drag callback, which already delivers the
-  /// dragged [LatLng] and needs no screen<->geo projection.
+  /// geographic point directly instead of a screen offset — for callers
+  /// that already have the dragged [LatLng] and need no screen<->geo
+  /// projection.
   ///
-  /// This wraps [_tryMoveAreaVertex] in an immediate `setState`, exactly as
-  /// this method always has — kept unchanged for FlutterMapEngine (reached
-  /// only via [_moveAreaVertex]). MapLibreEngine's drag path uses
-  /// [_handleMapLibreVertexDragUpdate] instead, which coalesces many rapid
-  /// native drag events into at most one `setState` per rendered frame —
-  /// see that method's doc comment for why.
+  /// Reached from [_moveAreaVertex] (FlutterMapEngine's `_AreaVertexHandle`
+  /// drag, after projecting the screen offset) and passed as
+  /// `onVertexDragUpdate` to [SoilMapEngine.setMeasurementGeometry], which
+  /// FlutterMapEngine ignores.
   void _moveAreaVertexTo(int index, LatLng point) {
     _suppressNextMapTap = false;
     if (!_pointIsInRange(index, point)) return;
@@ -3098,65 +2849,6 @@ class _GisMapScreenState extends State<GisMapScreen>
     return true;
   }
 
-  bool _mapLibreDragFrameScheduled = false;
-
-  /// `onVertexDragUpdate` for MapLibreEngine's `setMeasurementGeometry` (see
-  /// `_buildMap`/[_pushMeasurementGeometryToEngine]).
-  ///
-  /// Two rounds of investigation went into this (Etapa 3 reports):
-  ///
-  /// 1. Wrapping every single native `onFeatureDrag` "drag" event in its own
-  ///    `setState` made the geometry lag behind the finger overall — a real
-  ///    device can deliver drag events faster than a full `GisMapScreen`
-  ///    rebuild (a large widget tree) can drain, so rebuilds queued up.
-  /// 2. Fixing that by coalescing to at most one `setState` per rendered
-  ///    frame (via `addPostFrameCallback`) then caused a *different*,
-  ///    visually worse problem: the dragged vertex's own on-screen icon
-  ///    isn't moved by this code at all — MapLibre's `SymbolManager` moves
-  ///    it internally, on every single raw drag event, entirely inside the
-  ///    plugin, with no dependency on Flutter's widget tree or frame
-  ///    scheduling. Once the fill/line update here was coalesced to "once
-  ///    per rendered frame" while the vertex's own update kept firing on
-  ///    every raw event, the two were driven by two different, differently
-  ///    paced pipelines — visibly desyncing the boundary from the vertex it
-  ///    is supposed to touch, worse than before.
-  ///
-  /// Fix: split the two concerns. Validate + mutate the point list
-  /// immediately ([_tryMoveAreaVertex] — cheap, in-memory, no rebuild), then
-  /// push the accepted geometry to the engine *synchronously, in this same
-  /// call* via [_pushMeasurementGeometryToEngine] — the exact same
-  /// synchronous turn in which `MapLibreEngine._handleFeatureDrag` is
-  /// already running (it and `SymbolManager`'s own internal drag handler are
-  /// both plain listeners on the same `onFeatureDrag` event stream, invoked
-  /// back-to-back for the same native event). That keeps the fill/line
-  /// update on the identical cadence as the vertex's own native move, so
-  /// they can no longer drift apart. The coalesced `setState` is kept, but
-  /// now only for what actually needs a Flutter rebuild — the live
-  /// area/perimeter panel text — which was never the desynced part.
-  void _handleMapLibreVertexDragUpdate(int index, LatLng point) {
-    _suppressNextMapTap = false;
-    if (_tryMoveAreaVertex(index, point) &&
-        !_disableGisTilePipelineForDiagnostic &&
-        !_mapVisualsPaused) {
-      _pushMeasurementGeometryToEngine();
-    }
-    _scheduleMapLibreDragFrame();
-  }
-
-  void _scheduleMapLibreDragFrame() {
-    if (_mapLibreDragFrameScheduled || !mounted) return;
-    _mapLibreDragFrameScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _mapLibreDragFrameScheduled = false;
-      if (mounted) setState(() {});
-    });
-    // A drag gesture between two touch-move events doesn't otherwise have
-    // anything scheduling a new frame (no independent animation is
-    // running), so the post-frame callback above needs one requested
-    // explicitly or it would never fire.
-    WidgetsBinding.instance.scheduleFrame();
-  }
-
   void _endAreaVertexDrag() {
     if (_draggedAreaVertexIndex == null) {
       return;
@@ -3182,10 +2874,9 @@ class _GisMapScreenState extends State<GisMapScreen>
   /// Shows the delete/cancel popup for vertex [index] at screen [position].
   ///
   /// Extracted from `_MeasurementLayer` (which owned this for
-  /// FlutterMapEngine's `_AreaVertexHandle.onTap`) so MapLibreEngine's
-  /// `onFeatureTapped`-driven vertex tap (see `setMeasurementGeometry`'s
-  /// `onVertexTap`) can reuse the exact same menu — identical text, styling
-  /// and delete behavior on both engines.
+  /// FlutterMapEngine's `_AreaVertexHandle.onTap`) so it can also be reached
+  /// through [SoilMapEngine.setMeasurementGeometry]'s `onVertexTap` — one
+  /// menu, identical text, styling and delete behavior on every engine.
   Future<void> _showVertexMenu(int index, Offset position) async {
     final isArea = _measurementMode == _MeasurementMode.area;
     final points = isArea ? _areaMeasurementPoints : _distanceMeasurementPoints;
@@ -3872,7 +3563,6 @@ class _GisMapScreenState extends State<GisMapScreen>
     _renderedTileCache.clear();
     _visibleTileCoordinates = {};
     _prefetchedTileCoordinates = {};
-    if (_usesMapLibreEngine) return;
     final engine = _mapEngine;
     if (engine is FlutterMapEngine) {
       unawaited(_loadVisibleTiles(engine.controller.camera, _archiveInfo));
@@ -3932,87 +3622,6 @@ class _GisMapScreenState extends State<GisMapScreen>
       const Duration(milliseconds: 150),
       () => _loadVisibleTiles(camera, archiveInfo),
     );
-  }
-
-  /// MapLibre renders soil polygons natively and never calls
-  /// [_loadVisibleTiles] (see the `!_usesMapLibreEngine` guards around its
-  /// call sites) — so `_soilSeriesSearchIndex`, which [_loadVisibleTiles]
-  /// populates as a side effect of decoding each tile for FlutterMap's
-  /// CustomPainter, was staying permanently empty under MapLibre and the
-  /// GIS search stopped finding anything. This decodes the same tiles via
-  /// the same repository purely to feed the search index — no rendering,
-  /// no `_visibleTiles`/`_RenderedGisTile` cache involved, so it can't
-  /// affect FlutterMapEngine's pipeline.
-  ///
-  /// [SoilMapCameraState] doesn't expose a viewport (only center/zoom), so
-  /// unlike [_tileCoordinatesForViewport] this can't intersect exact
-  /// geographic bounds — instead it derives a tile radius from the actual
-  /// screen size (`MediaQuery.sizeOf(context)`) and the current zoom, the
-  /// same relationship flutter_map's own tile math relies on: at any zoom,
-  /// a tile is 256 logical px on screen, so `screenExtent / 2 / 256` tiles
-  /// cover half the visible viewport in that direction — the zoom terms
-  /// cancel out (world size and tile size grow together), so this needs no
-  /// zoom-dependent formula. A fixed radius (previously 2) under-covered
-  /// wide/short viewports at low zoom, leaving visible features unindexed.
-  void _scheduleSearchIndexUpdate(
-    SoilMapCameraState camera,
-    GisArchiveInfo archiveInfo,
-  ) {
-    if (_disableGisTilePipelineForDiagnostic) return;
-    if (!camera.zoom.isFinite ||
-        !camera.center.latitude.isFinite ||
-        !camera.center.longitude.isFinite) {
-      return;
-    }
-    _searchIndexDebounce?.cancel();
-    _searchIndexDebounce = Timer(
-      const Duration(milliseconds: 150),
-      () => unawaited(_indexSearchTilesAroundCamera(camera, archiveInfo)),
-    );
-  }
-
-  Future<void> _indexSearchTilesAroundCamera(
-    SoilMapCameraState camera,
-    GisArchiveInfo archiveInfo,
-  ) async {
-    final zoom = camera.zoom.floor().clamp(
-      archiveInfo.minZoom,
-      archiveInfo.maxZoom,
-    );
-    final tilesAtZoom = 1 << zoom;
-    final centerX = _longitudeToTileX(camera.center.longitude, zoom);
-    final centerY = _latitudeToTileY(camera.center.latitude, zoom);
-    // +1 tile of padding beyond half the viewport, matching
-    // _tileCoordinatesForViewport's own `padding: 1` prefetch margin.
-    final screenSize = mounted ? MediaQuery.sizeOf(context) : Size.zero;
-    final radiusX = (screenSize.width / 2 / 256).ceil() + 1;
-    final radiusY = (screenSize.height / 2 / 256).ceil() + 1;
-    final minX = (centerX - radiusX).clamp(0, tilesAtZoom - 1);
-    final maxX = (centerX + radiusX).clamp(0, tilesAtZoom - 1);
-    final minY = (centerY - radiusY).clamp(0, tilesAtZoom - 1);
-    final maxY = (centerY + radiusY).clamp(0, tilesAtZoom - 1);
-
-    final coordinates = <GisTileCoordinates>[
-      for (var x = minX; x <= maxX; x++)
-        for (var y = minY; y <= maxY; y++)
-          if (!_indexedSearchTileCoordinates.contains(
-            GisTileCoordinates(zoom: zoom, x: x, y: y),
-          ))
-            GisTileCoordinates(zoom: zoom, x: x, y: y),
-    ];
-    if (coordinates.isEmpty || !mounted) return;
-
-    try {
-      final layers = await Future.wait(coordinates.map(_repository.loadTile));
-      if (!mounted) return;
-      for (var index = 0; index < coordinates.length; index++) {
-        _indexedSearchTileCoordinates.add(coordinates[index]);
-        _indexSoilSeries(_buildRenderedPolygons(layers[index]));
-      }
-    } catch (_) {
-      // Best-effort: a failed tile fetch just leaves that area unsearchable
-      // until the next pan/zoom retries it, same as the FlutterMap path.
-    }
   }
 
   Future<void> _loadVisibleTiles(
@@ -4952,9 +4561,8 @@ class _GisMapScreenState extends State<GisMapScreen>
       _dismissActiveToolHint();
       if (_measurementMode == _MeasurementMode.area) {
         final candidate = List<LatLng>.of(_areaMeasurementPoints);
-        final edgeIndex = _nearestEdgeIndexForMeasurementTap(
+        final edgeIndex = _nearestMeasurementEdgeIndex(
           tapOffset,
-          point,
           _areaMeasurementPoints,
           closed: true,
         );
@@ -4975,9 +4583,8 @@ class _GisMapScreenState extends State<GisMapScreen>
         });
       } else {
         setState(() {
-          final edgeIndex = _nearestEdgeIndexForMeasurementTap(
+          final edgeIndex = _nearestMeasurementEdgeIndex(
             tapOffset,
-            point,
             _distanceMeasurementPoints,
             closed: false,
           );
@@ -5003,9 +4610,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       return;
     }
 
-    final feature = _usesMapLibreEngine
-        ? await _mapEngine.hitTestSoilFeature(tapOffset)
-        : _findFeatureAt(point);
+    final feature = _findFeatureAt(point);
     if (!mounted) return;
     if (feature == null) {
       _selectionPreview.value = null;
@@ -5037,11 +4642,6 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   SavedMeasurement? _findSavedMeasurementAt(Offset tapOffset) {
-    // MapLibreEngine does not expose synchronous screen<->geo projection
-    // (see the Etapa 3 report's measurement architecture note) — tapping
-    // directly on a saved measurement's line to select it is not available
-    // under that engine yet.
-    if (_usesMapLibreEngine) return null;
     for (final measurement in _savedMeasurements.reversed) {
       if (!measurement.isVisible) continue;
       final points = measurement.geometry;
@@ -5445,10 +5045,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     List<LatLng> points, {
     required bool closed,
   }) {
-    if (tapOffset == null || points.length < 2 || _usesMapLibreEngine) {
-      // MapLibreEngine has no synchronous screen<->geo projection yet — new
-      // measurement points are appended at the end instead of inserted at
-      // the nearest edge under that engine. See the Etapa 3 report.
+    if (tapOffset == null || points.length < 2) {
       return null;
     }
     var nearestDistance = 14.0;
@@ -5466,31 +5063,6 @@ class _GisMapScreenState extends State<GisMapScreen>
       }
     }
     return nearestIndex;
-  }
-
-  /// Resolves the segment nearest a measurement tap, engine-agnostic.
-  ///
-  /// FlutterMapEngine uses [_nearestMeasurementEdgeIndex] (screen-pixel
-  /// distance, via synchronous projection). MapLibreEngine has no
-  /// synchronous screen<->geo projection, so it uses the geographic
-  /// equivalent [nearestMeasurementEdgeIndex] (measurement_math.dart)
-  /// instead, computed directly from the tapped [LatLng] and the current
-  /// camera zoom — same ~14px hit-test radius, converted to meters.
-  int? _nearestEdgeIndexForMeasurementTap(
-    Offset? tapOffset,
-    LatLng tapPoint,
-    List<LatLng> points, {
-    required bool closed,
-  }) {
-    if (_usesMapLibreEngine) {
-      return nearestMeasurementEdgeIndex(
-        tapPoint: tapPoint,
-        points: points,
-        closed: closed,
-        zoom: _mapEngine.camera.zoom,
-      );
-    }
-    return _nearestMeasurementEdgeIndex(tapOffset, points, closed: closed);
   }
 
   GisFeature? _findFeatureAt(LatLng point) {
@@ -10467,9 +10039,9 @@ class _ProvincePmtilesBanner extends StatefulWidget {
   final ValueListenable<_MapViewportState> viewStateListenable;
 
   /// Live camera accessor (not a snapshot) — null when the active engine
-  /// isn't [FlutterMapEngine] (e.g. the experimental MapLibre engine, which
-  /// has no equivalent projection available here); the annotation simply
-  /// doesn't render rather than crashing or guessing a position.
+  /// isn't [FlutterMapEngine] and so exposes no equivalent projection here
+  /// (e.g. a test fake); the annotation simply doesn't render rather than
+  /// crashing or guessing a position.
   final MapCamera? Function() resolveCamera;
   final VoidCallback onDownload;
 
@@ -10588,10 +10160,10 @@ class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
     return ValueListenableBuilder<_MapViewportState>(
       valueListenable: widget.viewStateListenable,
       builder: (context, viewState, child) {
-        // No camera to project against (e.g. the experimental MapLibre
-        // engine) — nothing to anchor to, so render nothing rather than
-        // guess a screen position. Both the boundary and the card need a
-        // camera, so this is the one gate they still share.
+        // No camera to project against — nothing to anchor to, so render
+        // nothing rather than guess a screen position. Both the boundary
+        // and the card need a camera, so this is the one gate they still
+        // share.
         final camera = widget.resolveCamera();
         if (camera == null) return const SizedBox.shrink();
         final screenSize = MediaQuery.sizeOf(context);
