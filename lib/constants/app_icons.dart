@@ -8,7 +8,7 @@ abstract final class AppIcons {
   static const IconData check = LucideIcons.check;
   static const IconData chevronRight = LucideIcons.chevron_right;
   static const IconData close = LucideIcons.x;
-  static const IconData delete = LucideIcons.trash_2;
+  static const IconData delete = LucideIcons.trash;
   static const IconData edit = LucideIcons.square_pen;
   static const IconData visibility = LucideIcons.eye;
   static const IconData visibilityOff = LucideIcons.eye_off;
