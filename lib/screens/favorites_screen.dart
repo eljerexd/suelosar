@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import '../analytics/analytics_actions.dart';
 import '../constants/app_icons.dart';
 import '../models/pdf_soil_sheet_favorite.dart';
+import '../models/soil_card.dart';
 import '../repositories/pdf_series_repository.dart';
+import '../repositories/santa_fe_series_repository.dart';
 import '../services/pdf_soil_sheet_favorites_service.dart';
 import 'pdf_viewer_screen.dart';
 import '../widgets/app_notification.dart';
@@ -19,6 +21,8 @@ class FavoritesScreen extends StatefulWidget {
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
   final PdfSeriesRepository _pdfSeriesRepository = PdfSeriesRepository();
+  final SantaFeSeriesRepository _santaFeSeriesRepository =
+      SantaFeSeriesRepository();
   final PdfSoilSheetFavoritesService _favoritesService =
       PdfSoilSheetFavoritesService();
   List<PdfSoilSheetFavorite>? _favorites;
@@ -96,7 +100,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           title: Text(
             favorite.title.isEmpty ? 'Carta sin nombre' : favorite.title,
           ),
-          subtitle: Text('Memoria descriptiva\n${favorite.pdfIdentifier}'),
+          subtitle: Text(
+            'Memoria descriptiva\n${_displayIdentifier(favorite)}',
+          ),
           isThreeLine: true,
           onTap: () => _openFavoritePdf(favorite),
           trailing: IconButton(
@@ -125,6 +131,33 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
 
   Future<void> _openFavoritePdf(PdfSoilSheetFavorite favorite) async {
     final savedIdentifier = favorite.pdfIdentifier.trim();
+
+    if (savedIdentifier.startsWith(SoilCard.santaFeFavoriteIdentifierPrefix)) {
+      final code = savedIdentifier.substring(
+        SoilCard.santaFeFavoriteIdentifierPrefix.length,
+      );
+      final entry = await _santaFeSeriesRepository.findByCode(code);
+      final pdfAsset = await _santaFeSeriesRepository.pdfAsset;
+      if (!mounted) return;
+      if (entry == null) {
+        AppNotification.show(
+          context,
+          message: 'Memoria descriptiva no disponible.',
+          type: AppNotificationType.warning,
+        );
+        return;
+      }
+      await openLocalPdfViewer(
+        context,
+        title: favorite.title,
+        assetPath: pdfAsset,
+        unavailableMessage: 'Memoria descriptiva no disponible.',
+        initialPage: entry.startPage,
+        lastPage: entry.endPage,
+      );
+      return;
+    }
+
     final assetPath = savedIdentifier.isNotEmpty
         ? savedIdentifier.startsWith('assets/')
               ? savedIdentifier
@@ -145,6 +178,18 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       assetPath: assetPath,
       unavailableMessage: 'Memoria descriptiva no disponible.',
     );
+  }
+
+  /// The raw [PdfSoilSheetFavorite.pdfIdentifier] as shown in the list
+  /// subtitle. Strips [SoilCard.santaFeFavoriteIdentifierPrefix] so a Santa
+  /// Fe favorite shows its series code (e.g. "RSA") instead of leaking the
+  /// internal `santa_fe:` identifier scheme — Buenos Aires identifiers
+  /// (bare PDF filenames) are shown unchanged, exactly as before.
+  String _displayIdentifier(PdfSoilSheetFavorite favorite) {
+    final identifier = favorite.pdfIdentifier;
+    return identifier.startsWith(SoilCard.santaFeFavoriteIdentifierPrefix)
+        ? identifier.substring(SoilCard.santaFeFavoriteIdentifierPrefix.length)
+        : identifier;
   }
 
   List<PdfSoilSheetFavorite> _filterFavorites(

@@ -48,6 +48,145 @@ These systems should be considered production-ready.
 
 ---
 
+# GIS Engine Migration Status
+
+The project has started evaluating a migration of the GIS rendering
+engine away from flutter_map (migration candidate: MapLibre). This is a
+staged, reversible process — not a decision that flutter_map will
+definitely be replaced on any fixed timeline.
+
+Until this section says otherwise:
+
+- flutter_map must NOT be assumed to be the permanent rendering engine.
+  Do not write new code, tests, or documentation that assumes flutter_map
+  is a long-term architectural decision.
+- flutter_map must also NOT be removed or replaced outside of the staged
+  plan below. It remains the production engine until an alternative is
+  fully validated.
+- `gis_repository.dart` remains fully protected under the Core Rule
+  below. It is the data layer (PMTiles + MVT decoding + cache) and is
+  already independent of the rendering engine, which is exactly why it
+  does not need to change for this migration.
+- Any GIS architecture change must go through the stages listed here, in
+  order, without skipping stages.
+- Before modifying the rendering engine, the current migration plan must
+  be respected. Do not start engine-replacement work without explicitly
+  being in Stage 3 or later.
+- Each stage must be safe and reversible: it must be possible to abandon
+  a stage and return to the previous known-good state without data loss
+  or broken functionality.
+- The current engine must keep working end-to-end until a validated
+  alternative exists. No stage may leave the app without a functional
+  map.
+
+## Migration Stages
+
+**ETAPA 0 — Contexto**
+Update agent-facing documentation (this file and CLAUDE.md) so agents
+stop assuming flutter_map is permanent, and record the staged plan. No
+application code changes.
+
+**ETAPA 1 — Investigación técnica y validación experimental, cero cambios en la app**
+Research the candidate engine and validate it practically in an isolated
+Flutter project, separate from the SuelosAR project, using the real
+SuelosAR PMTiles file (`assets/maps/soil_polygons.pmtiles`). This stage
+must verify:
+
+- loading of the real PMTiles file;
+- MVT support;
+- performance with the real data volume;
+- `queryRenderedFeatures` or an equivalent hit-testing/query mechanism;
+- attribute retrieval;
+- feasibility of reproducing per-series polygon coloring;
+- support for the target platforms.
+
+No dependencies are added to the SuelosAR project, and no code in the
+SuelosAR project is touched. The isolated experimental project is
+separate from SuelosAR.
+
+**ETAPA 2 — Separar UI del motor**
+Introduce an abstraction boundary between the GIS screen's UI/business
+logic and the concrete rendering engine (flutter_map today), so the
+engine becomes swappable behind an interface. This stage touches
+`gis_map_screen.dart` and related UI files, but keeps flutter_map as the
+only implementation behind the new interface — behavior must not change.
+
+**ETAPA 3 — Implementación paralela**
+Build an alternative engine implementation behind the interface from
+Etapa 2, without wiring it up as the default. Both implementations exist
+side by side; the app keeps shipping with flutter_map by default.
+
+**ETAPA 4 — Comparación y migración de hit-testing/atributos**
+Validate the alternative implementation against the current one:
+rendering fidelity, hit-testing/selection behavior, attribute/metadata
+handling, performance. Port hit-testing and attribute handling to the
+new engine only once parity is demonstrated.
+
+**ETAPA 5 — Corte**
+Switch the default engine over, only after Etapa 4 validation is
+complete and explicitly approved. Keep a rollback path until the new
+engine has proven itself in production use.
+
+## Current Status (reverted to FlutterMap as default)
+
+MapLibre was briefly wired as the Android default (no-override case of
+`_useMapLibreEngineForDiagnostic` in `gis_map_screen.dart`) during Etapa
+3/4 evaluation, then **reverted** — FlutterMap is the default and
+1:1-reference engine on every platform again, with no explicit
+override needed. `--dart-define=USE_MAPLIBRE_ENGINE=true` still forces
+MapLibre for experimental use (see `.vscode/launch.json`'s "SuelosAR
+Beta (MapLibre)" config, which passes that flag; the plain "SuelosAR"
+config does not, so F5 there runs FlutterMap).
+
+`trackCameraPosition: true` (in `MapLibreEngine.buildMapSurface`'s
+`MapLibreMap` widget) is a confirmed, validated fix — kept regardless of
+which engine is default. Without it, `maplibre_gl`'s native
+`MapLibreMapController.onCameraMove()` discards every camera-move event
+before it reaches Dart, so the zoom badge, scale bar, and any
+zoom-dependent layer visibility never update after the initial camera.
+
+### Open bug: MapLibre localities/labels never render
+
+Confirmed NOT resolved. City-name labels (e.g. "Bahía Blanca") never
+appear on MapLibre, at any zoom, in any session tested — while
+FlutterMap renders them correctly every time. Extensive runtime
+diagnosis (cold-start logcat instrumentation + controlled A/B tests,
+each reverted after use) ruled out, with direct evidence rather than
+code-reading inference:
+
+1. **`iconImage: ['get', 'labelImage']` data-driven expression** — ruled
+   out; a hardcoded fixed `iconImage` (a known-good, already-registered
+   image name) doesn't render either.
+2. **`addImage()` failing** — ruled out; 30/30 cities logged
+   `addImage SUCCESS` in every one of ~9 concurrent registration runs
+   observed during a single cold start.
+3. **`addLayer()` failing** — ruled out; both `_refCityLabelsId` and
+   `_refCityLabelsSecondaryId` logged `addLayer SUCCESS` every time.
+4. **`setStyle()` invalidating a previously-successful registration** —
+   ruled out; a controlled test that added the labels exactly once,
+   guaranteed to run strictly after the last `setStyle()` of the startup
+   sequence (confirmed via logcat: only 2 `setStyle()` calls total, with
+   the label-registration success log lines as the very last events
+   before the screenshot), still did not render "Bahía Blanca".
+
+**Last open hypothesis, not yet investigated:** something in the
+`SymbolLayerProperties` beyond `iconImage` (e.g. `iconSize` defaulting
+to something unusable), the `filter`/`source` combination not actually
+matching the GeoJSON feature at render time (unverified —
+`queryRenderedFeatures`/`querySourceFeatures` at the exact pixel was
+never tried), a z-order/occlusion issue, or a native MapLibre GL
+renderer limitation not surfaced by any Dart-catchable exception.
+
+Relevant code: `lib/gis/engine/maplibre_engine.dart`,
+`_ensureCityLabelImagesRegistered` and the `_refCityLabelsId` /
+`_refCityLabelsSecondaryId` `addLayer` calls (~line 700-825).
+
+Do not re-attempt a fix without picking up from this list — the first
+three "obvious" hypotheses are already conclusively eliminated with
+runtime evidence, not just code review.
+
+---
+
 # Core Rule
 
 Do NOT modify the GIS engine unless absolutely necessary.
@@ -64,6 +203,11 @@ The following components are considered stable:
 - Docker pipeline
 
 New features should integrate around the engine, not rewrite it.
+
+Note: this rule is being revisited specifically for the rendering engine
+under the staged GIS Engine Migration plan above. `gis_repository.dart`,
+tile cache, PMTiles loading, MVT decoding, and the Docker pipeline remain
+fully stable and protected regardless of migration stage.
 
 ---
 

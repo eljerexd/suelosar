@@ -18,7 +18,6 @@ import '../analytics/analytics_actions.dart';
 import '../analytics/analytics_service.dart';
 import '../app/app_theme.dart';
 import '../app/instant_pop_material_page_route.dart';
-import '../constants/asset_paths.dart';
 import '../constants/app_icons.dart';
 import '../export/measurement_export.dart';
 import '../models/favorite_soil_feature.dart';
@@ -32,6 +31,7 @@ import '../screens/gis_favorites_screen.dart';
 import '../screens/measurements_screen.dart';
 import '../screens/pdf_viewer_screen.dart';
 import '../screens/personal_markers_screen.dart';
+import '../screens/settings_screen.dart';
 import '../services/settings_service.dart';
 import '../services/desktop_window_service.dart';
 import '../services/gis_favorites_service.dart';
@@ -46,14 +46,22 @@ import '../widgets/measurement_color_selector.dart';
 import '../widgets/personal_marker_category_icon.dart';
 import '../widgets/responsive_desktop_shell.dart';
 import '../widgets/saved_measurement_overflow_menu.dart';
+import 'engine/flutter_map_engine.dart';
+import 'engine/soil_map_engine.dart';
 import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_location_service.dart';
 import 'gis_map_occlusion_observer.dart';
+import 'measurement_math.dart';
 import 'offline_reference_map_layer.dart';
 import 'gis_render_metrics.dart';
 import 'gis_repository.dart';
 import 'gis_soil_series.dart';
+import 'map_coverage.dart';
+import 'multi_coverage_repository.dart';
+import 'pmtiles_delivery.dart';
+import 'province_config.dart';
+import 'series_resolver.dart';
 import 'widgets/expandable_tools_fab.dart';
 
 /// Interactive offline viewer for the spatial layers available in SuelosAR.
@@ -65,6 +73,11 @@ class GisMapScreen extends StatefulWidget {
     this.renderMetrics,
     this.locationService,
     this.desktopWindowService,
+    this.engine,
+    this.provinceConfig,
+    this.seriesResolver,
+    this.coverages,
+    this.focusPersonalMarkerId,
   });
 
   final GisRepository? repository;
@@ -72,6 +85,38 @@ class GisMapScreen extends StatefulWidget {
   final GisRenderMetrics? renderMetrics;
   final GisLocationService? locationService;
   final DesktopWindowService? desktopWindowService;
+
+  /// When set, this screen centers the camera on the saved personal marker
+  /// with this id — nothing more — as soon as both the map and the saved
+  /// markers are ready. Lets a caller outside the GIS stack (e.g.
+  /// `HomeScreen`'s own "Marcadores" shortcut) land directly on a chosen
+  /// marker instead of requiring the user to already be inside the map. See
+  /// [_GisMapScreenState._centerOnPersonalMarkerOnOpen].
+  final String? focusPersonalMarkerId;
+
+  /// Selects which province's PMTiles/center/reference-map/series-PDF
+  /// wiring to use. Defaults to [ProvinceConfig.buenosAires] — omitting
+  /// this keeps every existing call site's behavior unchanged (Fase 4B).
+  final ProvinceConfig? provinceConfig;
+
+  /// Explicit override for series -> PDF resolution, mainly for tests.
+  /// When null: uses [provinceConfig]'s resolver if one was passed,
+  /// otherwise wraps [pdfSeriesRepository]/[PdfSeriesRepository] exactly as
+  /// this screen always has (so existing tests that only inject
+  /// `pdfSeriesRepository` keep working unmodified).
+  final SeriesResolver? seriesResolver;
+
+  /// Fase 6: the set of provincial map sources shown together as one
+  /// seamless map, selected by geographic position rather than a picker.
+  /// Defaults to [MapCoverage.all] (currently Buenos Aires + Santa Fe).
+  /// Ignored when [provinceConfig] is passed instead — that still forces a
+  /// single coverage, kept for narrow single-province testing/verification
+  /// (Fase 4B/5's pattern) without dragging in every registered province.
+  final List<MapCoverage>? coverages;
+
+  /// Overrides the default [SoilMapEngine] ([FlutterMapEngine]). Used by
+  /// tests to inject a fake engine — production code never passes this.
+  final SoilMapEngine? engine;
 
   @override
   State<GisMapScreen> createState() => _GisMapScreenState();
@@ -84,6 +129,15 @@ class _GisMapScreenState extends State<GisMapScreen>
   static const LatLng _buenosAiresCenter = LatLng(-36.5, -60);
   static const double _minimumMapZoom = 7;
   static const double _initialZoom = _minimumMapZoom;
+
+  /// Fixed zoom used only when this screen opens already targeting a saved
+  /// personal marker (via [GisMapScreen.focusPersonalMarkerId], e.g. from
+  /// `HomeScreen`'s "Marcadores" shortcut). Deliberately closer than
+  /// [_initialZoom] so the point and its immediate surroundings are clearly
+  /// visible on first frame. Not used by [_openPersonalMarkers] (picking a
+  /// marker from *inside* a running GIS session), which keeps reusing
+  /// whatever zoom the map already has, as it always has.
+  static const double _externalPersonalMarkerFocusZoom = 12;
   static const GisArchiveInfo _defaultArchiveInfo = GisArchiveInfo(
     minZoom: 4,
     maxZoom: 14,
@@ -101,12 +155,21 @@ class _GisMapScreenState extends State<GisMapScreen>
     'DISABLE_GEOLOCATOR',
   );
 
-  final MapController _mapController = MapController();
+  late final SoilMapEngine _mapEngine;
   final GlobalKey _mapKey = GlobalKey();
 
   late final GisRepository _repository;
+
+  /// One listener closure per on-demand coverage (Santa Fe, Buenos Aires —
+  /// Fase 12A), keyed by coverage id so [dispose] can remove the exact same
+  /// closure instance it registered in [initState] with each delivery's
+  /// [ChangeNotifier].
+  final Map<String, VoidCallback> _onDemandDeliveryListeners = {};
   late final GisLocationService _locationService;
   late final PdfSeriesRepository _pdfSeriesRepository;
+  late final List<MapCoverage> _coverages;
+  late final MapCoverage _defaultCoverage;
+  late final SeriesResolver _seriesResolver;
   late final GisRenderMetrics _renderMetrics;
   late final DesktopWindowService _desktopWindowService;
   late final bool _ownsRenderMetrics;
@@ -164,6 +227,8 @@ class _GisMapScreenState extends State<GisMapScreen>
   bool _desktopToolsPanelCollapsed = false;
   OverlayEntry? _desktopLayersOverlay;
   PersonalMarker? _desktopSelectedMarker;
+  bool _personalMarkersLoaded = false;
+  String? _pendingPersonalMarkerFocusId;
   final List<_SoilSeriesSearchEntry> _desktopRecentSearches =
       <_SoilSeriesSearchEntry>[];
   final Object _searchOcclusionToken = Object();
@@ -180,6 +245,19 @@ class _GisMapScreenState extends State<GisMapScreen>
   String? _savedMeasurementGeometrySignature;
   String? _savedMeasurementColorId;
   _MapToolHintType? _activeToolHint;
+  // Fase 11D UX: a one-off hint (e.g. "Santa Fe no descargada..." after
+  // closing that notice) shown through the same overlay/pill as
+  // _activeToolHint, but timer-driven instead of mode-driven — cleared on
+  // its own after a few seconds rather than when a tool mode ends.
+  (IconData, InlineSpan)? _transientMapHint;
+  Timer? _transientMapHintTimer;
+  // Owned by whichever _transientMapHint is currently showing (e.g. the
+  // "Configuración" link) — disposed both when that hint clears and when
+  // a new one replaces it, so it never leaks past the pill it belongs to.
+  TapGestureRecognizer? _transientMapHintLinkRecognizer;
+  // Drives the "Configuración" link's brief press-feedback dimming; reset
+  // whenever a new transient hint starts.
+  bool _transientMapHintLinkPressed = false;
   int? _draggedAreaVertexIndex;
   bool _suppressNextMapTap = false;
   MeasurementColorOption _measurementColor = MeasurementColorOption.blue;
@@ -253,18 +331,73 @@ class _GisMapScreenState extends State<GisMapScreen>
   void initState() {
     super.initState();
     unawaited(AnalyticsService.instance.logMapOpened());
+    _mapEngine = widget.engine ?? FlutterMapEngine();
     _ownsRenderMetrics = widget.renderMetrics == null;
     _renderMetrics = widget.renderMetrics ?? GisRenderMetrics.disabled();
     _desktopWindowService =
         widget.desktopWindowService ?? DesktopWindowService.instance;
+    // widget.provinceConfig still forces a single coverage (Fase 4B/5's
+    // narrow single-province testing pattern) — wrapped with world-covering
+    // bounds so it matches every tile, exactly like there being only one
+    // coverage at all. Otherwise (the real default, no config passed):
+    // every registered coverage is live at once, picked per tile/feature by
+    // real geography — Fase 6, no province selector.
+    final explicitProvinceConfig = widget.provinceConfig;
+    _coverages = explicitProvinceConfig != null
+        ? [
+            MapCoverage(
+              config: explicitProvinceConfig,
+              bounds: GeoBounds.everywhere,
+            ),
+          ]
+        : (widget.coverages ?? MapCoverage.all);
+    _defaultCoverage = _coverages.first;
     _repository =
         widget.repository ??
-        PmTilesGisRepository.fromAsset(
-          assetPath: AssetPaths.gisPmTiles,
-          versionAssetPath: AssetPaths.gisPmTilesVersion,
-          layerName: AssetPaths.gisLayerName,
+        MultiCoverageRepository(
+          coverages: _coverages,
+          defaultCoverageId: _defaultCoverage.id,
+          isCoverageAvailable: (coverage) => coverage.onDemandDelivery != null
+              ? _checkOnDemandAvailable(coverage.onDemandDelivery!)
+              : _isBundledCoverageLocallyAvailable(coverage),
+          repositoryBuilder: (coverage) =>
+              coverage.onDemandDelivery != null && !Platform.isAndroid
+              ? PmTilesGisRepository.fromFile(
+                  archiveFile: coverage.onDemandDelivery!
+                      .resolveWindowsArchiveFile(),
+                  layerName: coverage.config.pmtilesLayerName,
+                )
+              : PmTilesGisRepository.fromAsset(
+                  assetPath: coverage.config.pmtilesAsset,
+                  versionAssetPath: coverage.config.pmtilesVersionAsset,
+                  layerName: coverage.config.pmtilesLayerName,
+                ),
         );
+    for (final coverage in _coverages) {
+      final delivery = coverage.onDemandDelivery;
+      if (delivery == null) continue;
+      void listener() => _handleOnDemandStatusChanged(coverage.id, delivery);
+      _onDemandDeliveryListeners[coverage.id] = listener;
+      delivery.addListener(listener);
+    }
     _pdfSeriesRepository = widget.pdfSeriesRepository ?? PdfSeriesRepository();
+    // Precedence: explicit override > explicit provinceConfig's resolver >
+    // wrap whichever _pdfSeriesRepository ends up in play (injected or
+    // default) — the same thing this screen has always done, so a caller
+    // that only passes `pdfSeriesRepository` (existing tests) is unaffected.
+    // This single resolver is only ever used as a fallback for a caller
+    // that replaced `repository` with something that isn't a
+    // MultiCoverageRepository (e.g. a test fake) — see _resolverForFeature.
+    _seriesResolver =
+        widget.seriesResolver ??
+        explicitProvinceConfig?.seriesResolver ??
+        BuenosAiresSeriesResolver(_pdfSeriesRepository);
+    _archiveInfo = _defaultCoverage.config.defaultArchiveInfo;
+    _mapViewportState.value = _MapViewportState(
+      center: _defaultCoverage.config.initialCenter,
+      zoom: _initialZoom,
+      rotation: 0,
+    );
     _locationService =
         widget.locationService ?? const DeviceGisLocationService();
     if (_disableGisTilePipelineForDiagnostic) {
@@ -273,6 +406,10 @@ class _GisMapScreenState extends State<GisMapScreen>
     } else {
       unawaited(_initializeArchive());
     }
+    for (final coverage in _coverages) {
+      final delivery = coverage.onDemandDelivery;
+      if (delivery != null) unawaited(delivery.checkStatus());
+    }
     if (_disableGeolocatorForDiagnostic) {
       debugPrint('GIS diagnostic: Geolocator disabled.');
     }
@@ -280,7 +417,13 @@ class _GisMapScreenState extends State<GisMapScreen>
     unawaited(_loadMapDisplayPreferences());
     unawaited(_loadMeasurementColor());
     unawaited(_loadSavedMeasurements());
-    unawaited(_loadPersonalMarkers());
+    _pendingPersonalMarkerFocusId = widget.focusPersonalMarkerId;
+    unawaited(
+      _loadPersonalMarkers().then((_) {
+        if (!mounted) return;
+        _consumePendingPersonalMarkerFocusIfReady();
+      }),
+    );
     if (!_disableGeolocatorForDiagnostic &&
         SettingsService.instance.followLocationAutomatically) {
       _isFollowingLocation = true;
@@ -307,18 +450,152 @@ class _GisMapScreenState extends State<GisMapScreen>
     _registeredMapRoute = route;
     GisMapOcclusionObserver.instance.register(
       route,
-      (coverage) => _updateMapOcclusion(_routeOcclusionToken, coverage),
+      _handleRouteOcclusionChanged,
+    );
+  }
+
+  /// Same occlusion bookkeeping as [_updateMapOcclusion], plus one thing
+  /// only a real route can trigger (unlike the search overlay, which also
+  /// shares that method): Fase 11D bugfix — once this route stops being
+  /// occluded (e.g. Configuración's provincial maps manager, pushed on
+  /// top, gets popped), re-check whether any bundled coverage's local
+  /// availability changed while it was open, since a deleted province
+  /// must not keep showing its old polygons until the app restarts.
+  void _handleRouteOcclusionChanged(double coverage) {
+    final wasOccludedByRoute = _isOccludedBy(_routeOcclusionToken);
+    _updateMapOcclusion(_routeOcclusionToken, coverage);
+    if (wasOccludedByRoute && !_isOccludedBy(_routeOcclusionToken)) {
+      unawaited(_refreshBundledCoverageAvailability());
+    }
+  }
+
+  bool _isOccludedBy(Object source) {
+    final value = _mapOcclusions[source];
+    return value != null && value >= _mapOcclusionThreshold;
+  }
+
+  /// Shows [text] through the exact same pill/overlay
+  /// [_MapToolHintOverlay] already renders tool hints with (position,
+  /// fade animation, size, style) — Fase 11D UX, so closing a
+  /// province-not-downloaded notice explains where to find the download
+  /// later without inventing a new visual component. Auto-clears itself a
+  /// few seconds later, unlike [_activeToolHint] (which clears when its
+  /// tool mode ends) — a fresh call restarts the timer rather than
+  /// stacking.
+  void _showTemporaryMapHint({
+    required IconData icon,
+    required InlineSpan text,
+  }) {
+    if (!mounted) return;
+    _transientMapHintTimer?.cancel();
+    setState(() => _transientMapHint = (icon, text));
+    _transientMapHintTimer = Timer(const Duration(milliseconds: 4500), () {
+      if (mounted) setState(() => _transientMapHint = null);
+      _transientMapHintLinkRecognizer?.dispose();
+      _transientMapHintLinkRecognizer = null;
+    });
+  }
+
+  /// Builds the "province not downloaded" transient hint with a tappable
+  /// "Configuración" link that jumps straight to [ProvincialMapsScreen]
+  /// (Configuración → Datos y almacenamiento → Descargar y administrar)
+  /// instead of leaving the user at the Configuración root.
+  void _showDownloadLaterHint(String provinceName) {
+    _transientMapHintLinkRecognizer?.dispose();
+    _transientMapHintLinkPressed = false;
+    final recognizer = TapGestureRecognizer();
+    recognizer.onTap = _openProvincialMapsManager;
+    recognizer.onTapDown = (_) {
+      _setTransientMapHintLinkPressed(provinceName, true);
+    };
+    recognizer.onTapCancel = () {
+      _setTransientMapHintLinkPressed(provinceName, false);
+    };
+    recognizer.onTapUp = (_) {
+      _setTransientMapHintLinkPressed(provinceName, false);
+    };
+    _transientMapHintLinkRecognizer = recognizer;
+    _showTemporaryMapHint(
+      icon: AppIcons.information,
+      text: _buildDownloadLaterHintSpan(provinceName, recognizer),
+    );
+  }
+
+  void _setTransientMapHintLinkPressed(String provinceName, bool pressed) {
+    if (!mounted || _transientMapHintLinkPressed == pressed) return;
+    final recognizer = _transientMapHintLinkRecognizer;
+    if (recognizer == null) return;
+    setState(() {
+      _transientMapHintLinkPressed = pressed;
+      _transientMapHint = (
+        AppIcons.information,
+        _buildDownloadLaterHintSpan(provinceName, recognizer),
+      );
+    });
+  }
+
+  /// "Configuración" is styled (not boxed) to read as an inline, tappable
+  /// link: a deeper shade of SuelosAR's own accent color, bold weight, a
+  /// faint underline, a hand cursor on desktop, and a brief dimming on
+  /// press — while staying plain inline text within the same sentence, no
+  /// pill/button/background/icon of its own.
+  InlineSpan _buildDownloadLaterHintSpan(
+    String provinceName,
+    TapGestureRecognizer recognizer,
+  ) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final linkColor = Color.lerp(accent, Colors.black, 0.18)!;
+    final pressedLinkColor = linkColor.withValues(alpha: 0.55);
+    return TextSpan(
+      children: [
+        TextSpan(
+          text:
+              '$provinceName no descargada. Podés descargarla más '
+              'tarde desde ',
+        ),
+        TextSpan(
+          text: 'Configuración',
+          mouseCursor: SystemMouseCursors.click,
+          style: TextStyle(
+            color: _transientMapHintLinkPressed ? pressedLinkColor : linkColor,
+            fontWeight: FontWeight.w700,
+            decoration: TextDecoration.underline,
+            decorationColor: linkColor.withValues(alpha: 0.35),
+            decorationThickness: 1,
+          ),
+          recognizer: recognizer,
+        ),
+      ],
+    );
+  }
+
+  void _openProvincialMapsManager() {
+    final navigator = Navigator.of(context);
+    navigator.push(
+      InstantPopMaterialPageRoute(builder: (_) => const SettingsScreen()),
+    );
+    navigator.push(
+      InstantPopMaterialPageRoute(builder: (_) => const ProvincialMapsScreen()),
     );
   }
 
   @override
   void dispose() {
+    for (final coverage in _coverages) {
+      final delivery = coverage.onDemandDelivery;
+      final listener = _onDemandDeliveryListeners[coverage.id];
+      if (delivery != null && listener != null) {
+        delivery.removeListener(listener);
+      }
+    }
     _removeDesktopLayersOverlay();
     final registeredRoute = _registeredMapRoute;
     if (registeredRoute != null) {
       GisMapOcclusionObserver.instance.unregister(registeredRoute);
     }
     _tileLoadDebounce?.cancel();
+    _transientMapHintTimer?.cancel();
+    _transientMapHintLinkRecognizer?.dispose();
     unawaited(_locationSubscription?.cancel());
     _searchCameraAnimation?.dispose();
     _northRotationAnimation?.dispose();
@@ -335,6 +612,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _renderMetrics.dispose();
     }
     unawaited(_repository.close());
+    _mapEngine.dispose();
     super.dispose();
   }
 
@@ -837,6 +1115,7 @@ class _GisMapScreenState extends State<GisMapScreen>
           child: SuelosArFloatingInformationPanel(
             child: _DesktopMapInformationPanel(
               feature: feature,
+              seriesNameResolverForFeature: _seriesNameResolverForFeature,
               measurement: feature == null ? selectedMeasurement : null,
               marker: feature == null && selectedMeasurement == null
                   ? _desktopSelectedMarker
@@ -849,8 +1128,9 @@ class _GisMapScreenState extends State<GisMapScreen>
               onToggleFeatureFavorite: feature == null
                   ? null
                   : () {
-                      final series = GisSoilSeries.fromProperties(
-                        feature.properties,
+                      final series = _resolveSeriesDisplayNames(
+                        feature,
+                        GisSoilSeries.fromProperties(feature.properties),
                       );
                       setState(() => _toggleFavorite(feature, series));
                     },
@@ -1099,6 +1379,7 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   Future<void> _initializeArchive() async {
     if (_disableGisTilePipelineForDiagnostic) return;
+    unawaited(_preloadSeriesNamesIfNeeded());
     try {
       final archiveInfo = await _repository.initialize();
       if (!mounted) {
@@ -1110,8 +1391,28 @@ class _GisMapScreenState extends State<GisMapScreen>
       });
 
       if (_isMapReady) {
-        unawaited(_loadVisibleTiles(_mapController.camera, archiveInfo));
+        unawaited(
+          _loadVisibleTiles(
+            (_mapEngine as FlutterMapEngine).controller.camera,
+            archiveInfo,
+          ),
+        );
       }
+
+      // No-op for FlutterMapEngine (its polygons keep rendering through the
+      // existing tile pipeline above), kept because it is part of the
+      // [SoilMapEngine] contract for engines that render polygons natively.
+      final colorScheme = Theme.of(context).colorScheme;
+      await _mapEngine.loadSoilPolygonsLayer(
+        archiveInfo: archiveInfo,
+        layerName: _defaultCoverage.config.pmtilesLayerName,
+        normalFillColor: colorScheme.primary,
+        selectedFillColor: colorScheme.tertiary,
+      );
+      if (!mounted) return;
+      await _mapEngine.loadReferenceBasemap();
+      if (!mounted) return;
+      setState(() {});
     } catch (_) {
       if (!mounted) {
         return;
@@ -1122,6 +1423,77 @@ class _GisMapScreenState extends State<GisMapScreen>
         error: 'No se pudo cargar la información geográfica.',
       );
     }
+  }
+
+  /// Awaits every registered coverage's [ProvinceConfig.preloadSeriesNames]
+  /// (no-op for Buenos Aires' [IdentitySeriesNameResolver]; a small,
+  /// already-cached index for Santa Fe's — Fase 6 Parte 9: never the full
+  /// 213-series PDF, never every province's names, just what each
+  /// coverage's own resolver already needed), then triggers one rebuild so
+  /// any already-visible raw `SERIE1..6` codes resolve to real names. Runs
+  /// alongside — not blocking — the rest of [_initializeArchive].
+  Future<void> _preloadSeriesNamesIfNeeded() async {
+    final preloads = [
+      for (final coverage in _coverages)
+        if (coverage.config.preloadSeriesNames != null)
+          coverage.config.preloadSeriesNames!(),
+    ];
+    if (preloads.isEmpty) return;
+    await Future.wait(preloads);
+    if (mounted) setState(() {});
+  }
+
+  /// Which coverage a feature (as returned by [_repository]) belongs to —
+  /// falls back to [_defaultCoverage] whenever [_repository] isn't a
+  /// [MultiCoverageRepository] (a test fake, or `provinceConfig` forcing a
+  /// single coverage), so every existing single-coverage call site keeps
+  /// resolving exactly the one resolver it always has.
+  MapCoverage _coverageForFeature(GisFeature feature) {
+    final repository = _repository;
+    if (repository is MultiCoverageRepository) {
+      return repository.coverageForFeatureId(feature.id);
+    }
+    return _defaultCoverage;
+  }
+
+  SeriesNameResolver _seriesNameResolverForFeature(GisFeature feature) {
+    return _coverageForFeature(feature).config.seriesNameResolver;
+  }
+
+  /// Every registered coverage's reference-map asset, merged by
+  /// [OfflineReferenceMapLayer] into one basemap — Fase 6 Parte 7: still
+  /// one widget, one painter/style, just fed more than one source. A
+  /// coverage with no reference map yet (none currently) is simply
+  /// skipped, not padded with Buenos Aires' as a fallback.
+  List<String> get _referenceMapAssetPaths => [
+    for (final coverage in _coverages)
+      if (coverage.config.referenceMapAsset != null)
+        coverage.config.referenceMapAsset!,
+  ];
+
+  /// Pushes the current measurement geometry to `_mapEngine`. No-op for
+  /// FlutterMapEngine (it ignores every argument here — see
+  /// `SoilMapEngine.setMeasurementGeometry`'s doc comment), which renders
+  /// measurements through a `children` `_MeasurementLayer` widget instead.
+  ///
+  /// Called from `_buildMap` on every rebuild. Kept because it is part of
+  /// the [SoilMapEngine] contract for engines that render measurements
+  /// natively rather than as layer widgets.
+  void _pushMeasurementGeometryToEngine() {
+    final renderedMeasurementMode =
+        _measurementMode ?? _retainedMeasurementMode;
+    final showsMeasurement =
+        renderedMeasurementMode != null && _hasMeasurementPoints;
+    _mapEngine.setMeasurementGeometry(
+      distancePoints: showsMeasurement ? _distanceMeasurementPoints : const [],
+      areaPoints: showsMeasurement ? _areaMeasurementPoints : const [],
+      color: _measurementColor.color,
+      onVertexTap: _showVertexMenu,
+      onVertexDragStart: (index) => _startAreaVertexDrag(index, Offset.zero),
+      onVertexDragUpdate: _moveAreaVertexTo,
+      onVertexDragEnd: (index) => _endAreaVertexDrag(),
+      draggedVertexIndex: _draggedAreaVertexIndex,
+    );
   }
 
   Widget _buildMap(GisArchiveInfo archiveInfo, {bool desktopShell = false}) {
@@ -1145,57 +1517,85 @@ class _GisMapScreenState extends State<GisMapScreen>
       null => false,
     };
 
+    // No-op for FlutterMapEngine (rendered via its `children` widgets
+    // below instead). Kept because it is part of the [SoilMapEngine]
+    // contract for engines that render annotations natively; each setter
+    // no-ops internally when nothing actually changed.
+    if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused) {
+      _mapEngine.setPersonalMarkers(
+        [
+          for (final marker in _personalMarkers)
+            SoilMapMarkerPin(
+              id: marker.id,
+              point: LatLng(marker.latitude, marker.longitude),
+              icon: personalMarkerCategoryIcon(marker.category),
+            ),
+        ],
+        onMarkerTap: (id) {
+          final marker = _personalMarkers
+              .where((candidate) => candidate.id == id)
+              .firstOrNull;
+          if (marker != null) _handlePersonalMarkerTap(marker);
+        },
+      );
+      final location = _currentLocation;
+      _mapEngine.setCurrentLocationMarker(
+        point: location?.point,
+        accuracyMeters: location?.accuracyMeters,
+        showAccuracyCircle: SettingsService.instance.showGpsAccuracyCircle,
+      );
+      _pushMeasurementGeometryToEngine();
+    }
+
     return Stack(
       fit: StackFit.expand,
       children: [
-        FlutterMap(
+        _mapEngine.buildMapSurface(
           key: _mapKey,
-          mapController: _mapController,
-          options: MapOptions(
-            initialCenter: _buenosAiresCenter,
-            initialZoom: _initialZoom,
-            minZoom: math.max(_minimumMapZoom, archiveInfo.minZoom.toDouble()),
-            maxZoom: archiveInfo.maxZoom + 2,
-            backgroundColor: colorScheme.surfaceContainerLowest,
-            interactionOptions: InteractionOptions(
-              flags: _draggedAreaVertexIndex == null
-                  ? InteractiveFlag.all
-                  : InteractiveFlag.all &
-                        ~InteractiveFlag.drag &
-                        ~InteractiveFlag.flingAnimation &
-                        ~InteractiveFlag.pinchMove,
-            ),
-            onMapReady: () {
-              _isMapReady = true;
-              _updateMapViewportState(_mapController.camera);
-              if (!_disableGisTilePipelineForDiagnostic) {
-                unawaited(
-                  _loadVisibleTiles(_mapController.camera, archiveInfo),
-                );
-              }
-              if (!_disableGeolocatorForDiagnostic &&
-                  _isFollowingLocation &&
-                  _currentLocation != null) {
-                _moveMapToLocation(_currentLocation!);
-              }
-            },
-            onPositionChanged: (camera, hasGesture) {
-              if (hasGesture) {
-                _isFollowingLocation = false;
-              }
-              _updateMapViewportState(camera);
-              if (!_disableGisTilePipelineForDiagnostic) {
-                _scheduleTileLoad(camera, archiveInfo);
-              }
-            },
-            onMapEvent: (event) {
-              _updateMapViewportState(event.camera);
-            },
-            onTap: _disableGisTilePipelineForDiagnostic ? null : _handleMapTap,
-          ),
+          initialCenter: _defaultCoverage.config.initialCenter,
+          initialZoom: _initialZoom,
+          minZoom: math.max(_minimumMapZoom, archiveInfo.minZoom.toDouble()),
+          maxZoom: archiveInfo.maxZoom + 2,
+          backgroundColor: colorScheme.surfaceContainerLowest,
+          gesturesEnabled: _draggedAreaVertexIndex == null,
+          onReady: () {
+            _isMapReady = true;
+            _updateMapViewportState(_mapEngine.camera);
+            _consumePendingPersonalMarkerFocusIfReady();
+            if (!_disableGisTilePipelineForDiagnostic) {
+              unawaited(
+                _loadVisibleTiles(
+                  (_mapEngine as FlutterMapEngine).controller.camera,
+                  archiveInfo,
+                ),
+              );
+            }
+            if (!_disableGeolocatorForDiagnostic &&
+                _isFollowingLocation &&
+                _currentLocation != null) {
+              _moveMapToLocation(_currentLocation!);
+            }
+          },
+          onPositionChanged: (camera, {required hasGesture}) {
+            if (hasGesture) {
+              _isFollowingLocation = false;
+            }
+            _updateMapViewportState(camera);
+            if (!_disableGisTilePipelineForDiagnostic) {
+              _scheduleTileLoad(
+                (_mapEngine as FlutterMapEngine).controller.camera,
+                archiveInfo,
+              );
+            }
+          },
+          onTap: _disableGisTilePipelineForDiagnostic ? null : _handleMapTap,
           children: [
             if (!_mapVisualsPaused && _showReferenceBasemap)
-              const Positioned.fill(child: OfflineReferenceMapLayer()),
+              Positioned.fill(
+                child: OfflineReferenceMapLayer(
+                  assetPaths: _referenceMapAssetPaths,
+                ),
+              ),
             if (!_disableGisTilePipelineForDiagnostic &&
                 !_mapVisualsPaused &&
                 _showSoilPolygons)
@@ -1206,10 +1606,14 @@ class _GisMapScreenState extends State<GisMapScreen>
                 ),
               ),
             if (!_mapVisualsPaused && _showReferenceBasemap)
-              const Positioned.fill(
-                child: OfflineReferenceMapLayer(foreground: true),
+              Positioned.fill(
+                child: OfflineReferenceMapLayer(
+                  foreground: true,
+                  assetPaths: _referenceMapAssetPaths,
+                ),
               ),
-            if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused)
+            if (!_disableGisTilePipelineForDiagnostic &&
+                !_mapVisualsPaused)
               if (_currentLocation case final location?)
                 AnimatedBuilder(
                   animation: SettingsService.instance,
@@ -1281,9 +1685,16 @@ class _GisMapScreenState extends State<GisMapScreen>
                               child: SizedBox.square(
                                 dimension: 36,
                                 child: Icon(
-                                  personalMarkerCategoryIcon(marker.category),
+                                  personalMarkerCategoryIcon(
+                                    marker.category,
+                                  ),
                                   size: 22,
-                                  color: const Color.fromARGB(255, 209, 19, 19),
+                                  color: const Color.fromARGB(
+                                    255,
+                                    209,
+                                    19,
+                                    19,
+                                  ),
                                 ),
                               ),
                             ),
@@ -1308,7 +1719,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 onStartAreaVertexDrag: _startAreaVertexDrag,
                 onMoveAreaVertex: _moveAreaVertex,
                 onEndAreaVertexDrag: _endAreaVertexDrag,
-                onDeleteAreaVertex: _deleteAreaVertex,
+                onVertexTap: _showVertexMenu,
                 onColorChanged: _setMeasurementColor,
                 onSave: _saveCurrentMeasurement,
                 isSavedMeasurement: _activeSavedMeasurementId != null,
@@ -1339,24 +1750,58 @@ class _GisMapScreenState extends State<GisMapScreen>
                         child: LinearProgressIndicator(minHeight: 3),
                       ),
                     if (overlayState.error case final error?)
-                      Positioned(
-                        left: 16,
-                        right: 16,
-                        bottom: 16,
-                        child: Material(
-                          color: colorScheme.errorContainer,
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Text(
-                              error,
-                              style: TextStyle(
-                                color: colorScheme.onErrorContainer,
+                      ValueListenableBuilder<_MapViewportState>(
+                        valueListenable: _mapViewportState,
+                        builder: (context, viewState, child) {
+                          // Fase 11C/12A: a tile fetch coming back incomplete
+                          // because an on-demand coverage (Santa Fe, Buenos
+                          // Aires) simply isn't downloaded yet is expected,
+                          // not a fault — the dedicated card below already
+                          // explains that. Showing this generic red error on
+                          // top of it would describe the same situation as
+                          // if it were a bug.
+                          final camera =
+                              (_mapEngine as FlutterMapEngine).controller.camera;
+                          final screenSize = MediaQuery.sizeOf(context);
+                          final suppressedForOnDemandCoverage = _coverages.any((
+                            coverage,
+                          ) {
+                            final delivery = coverage.onDemandDelivery;
+                            final anchor = coverage.config.downloadBannerAnchor;
+                            if (delivery == null || anchor == null) {
+                              return false;
+                            }
+                            return delivery.status !=
+                                    PmtilesDeliveryStatus.available &&
+                                _ProvincePmtilesBanner.isCoverageVisible(
+                                  camera,
+                                  screenSize,
+                                  anchor,
+                                );
+                          });
+                          if (suppressedForOnDemandCoverage) {
+                            return const SizedBox.shrink();
+                          }
+                          return Positioned(
+                            left: 16,
+                            right: 16,
+                            bottom: 16,
+                            child: Material(
+                              color: colorScheme.errorContainer,
+                              borderRadius: BorderRadius.circular(8),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Text(
+                                  error,
+                                  style: TextStyle(
+                                    color: colorScheme.onErrorContainer,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
                               ),
-                              textAlign: TextAlign.center,
                             ),
-                          ),
-                        ),
+                          );
+                        },
                       ),
                   ],
                 );
@@ -1371,7 +1816,11 @@ class _GisMapScreenState extends State<GisMapScreen>
             desktopStyle: desktopShell,
           ),
         if (!_mapVisualsPaused)
-          _MapToolHintOverlay(type: _activeToolHint, top: topControlOffset),
+          _MapToolHintOverlay(
+            type: _activeToolHint,
+            top: topControlOffset,
+            hintOverride: _transientMapHint,
+          ),
         if (!_mapVisualsPaused && !showsMeasurementEditor && !desktopShell)
           _buildBottomRightControls(),
         if (!_mapVisualsPaused && !showsMeasurementEditor && desktopShell)
@@ -1402,12 +1851,36 @@ class _GisMapScreenState extends State<GisMapScreen>
             bottomOffset: compactLayout ? 132 : 72,
             rightInset: compactLayout ? 76 : 16,
             onDismiss: () => _selectionPreview.value = null,
+            seriesNameResolverForFeature: _seriesNameResolverForFeature,
           ),
         if (!_mapVisualsPaused)
           _MapViewportOverlay(
             viewStateListenable: _mapViewportState,
             showScale:
                 renderedMeasurementMode == null || !_hasMeasurementPoints,
+          ),
+        for (final undownloadedCoverage in _coverages.where(
+          (coverage) =>
+              coverage.onDemandDelivery != null &&
+              coverage.config.downloadBannerAnchor != null,
+        ))
+          _ProvincePmtilesBanner(
+            key: ValueKey('province-pmtiles-banner-${undownloadedCoverage.id}'),
+            coverageId: undownloadedCoverage.id,
+            delivery: undownloadedCoverage.onDemandDelivery!,
+            anchorPoint: undownloadedCoverage.config.downloadBannerAnchor!,
+            provinceBounds: undownloadedCoverage.bounds,
+            provinceName: _provinceDisplayName(undownloadedCoverage.id),
+            referenceMapAssetPath:
+                undownloadedCoverage.config.referenceMapAsset,
+            viewStateListenable: _mapViewportState,
+            resolveCamera: () =>
+                (_mapEngine as FlutterMapEngine).controller.camera,
+            onDownload: () =>
+                unawaited(undownloadedCoverage.onDemandDelivery!.download()),
+            onDismissedFirstTime: () => _showDownloadLaterHint(
+              _provinceDisplayName(undownloadedCoverage.id),
+            ),
           ),
       ],
     );
@@ -1436,7 +1909,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 viewStateListenable: _mapViewportState,
                 onResetNorth: _animateMapToNorth,
                 desktopStyle: desktopStyle,
-                mapController: desktopStyle ? _mapController : null,
+                mapEngine: desktopStyle ? _mapEngine : null,
               ),
               if (showLayers)
                 _MapChromeSurface(
@@ -1577,6 +2050,8 @@ class _GisMapScreenState extends State<GisMapScreen>
           isVisible = _showReferenceBasemap;
       }
     });
+    _mapEngine.setSoilPolygonsVisible(_showSoilPolygons);
+    _mapEngine.setReferenceBasemapVisible(_showReferenceBasemap);
     _desktopLayersOverlay?.markNeedsBuild();
     unawaited(_persistMapDisplayPreference(preferenceKey, isVisible));
   }
@@ -1592,6 +2067,8 @@ class _GisMapScreenState extends State<GisMapScreen>
       _showSoilPolygons = showSoilPolygons;
       _showReferenceBasemap = showReferenceBasemap;
     });
+    _mapEngine.setSoilPolygonsVisible(_showSoilPolygons);
+    _mapEngine.setReferenceBasemapVisible(_showReferenceBasemap);
   }
 
   Future<void> _persistMapDisplayPreference(String key, bool value) async {
@@ -1861,7 +2338,6 @@ class _GisMapScreenState extends State<GisMapScreen>
       return;
     }
     final mode = _measurementMode!;
-    final wasSavedMeasurement = _activeSavedMeasurementId != null;
     if (_measurementHasUnsavedChanges) {
       final decision = await _showMeasurementDecisionDialog(
         '¿Querés guardar esta medición antes de salir?',
@@ -1875,14 +2351,25 @@ class _GisMapScreenState extends State<GisMapScreen>
         if (!mounted) return;
       }
     }
+    // Checked *after* the possible `_persistMeasurement` above (which sets
+    // `_activeSavedMeasurementId`), not before — otherwise saving a brand
+    // new measurement from the exit dialog was indistinguishable from
+    // discarding one.
+    final isSaved = _activeSavedMeasurementId != null;
     setState(() {
       _setInteractionMode(_InteractionMode.none);
       _draggedAreaVertexIndex = null;
       _suppressNextMapTap = false;
       _activeToolHint = null;
-      if (wasSavedMeasurement) {
+      if (isSaved) {
         _distanceMeasurementPoints.clear();
         _areaMeasurementPoints.clear();
+        _retainedMeasurementMode = null;
+        // `_activeSavedMeasurementId` itself still gets cleared below, same
+        // as before: `_SavedMeasurementLabels` (a FlutterMap-only overlay)
+        // renders whenever it's non-null, *in addition to*
+        // `_SavedMeasurementsLayer`'s own always-on labels — leaving it set
+        // duplicated every saved-measurement label on FlutterMap.
         _activeSavedMeasurementId = null;
         _savedMeasurementGeometrySignature = null;
         _savedMeasurementColorId = null;
@@ -2327,8 +2814,8 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _moveAreaVertex(int index, Offset globalPosition) {
     _suppressNextMapTap = false;
-    final camera = _mapController.camera;
-    if (!_isFiniteCamera(camera) || !_isFiniteOffset(globalPosition)) {
+    final camera = _mapEngine.camera;
+    if (!_isFiniteCameraState(camera) || !_isFiniteOffset(globalPosition)) {
       return;
     }
     final mapContext = _mapKey.currentContext;
@@ -2341,27 +2828,61 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
     final localPosition = renderBox.globalToLocal(globalPosition);
     if (!_isFiniteOffset(localPosition)) return;
-    final point = camera.screenOffsetToLatLng(localPosition);
-    if (!_isFiniteLatLng(point)) {
+    final point = _mapEngine.screenOffsetToLatLng(localPosition);
+    if (point == null) {
       return;
     }
+    _moveAreaVertexTo(index, point);
+  }
+
+  /// Same vertex-move logic as [_moveAreaVertex], but taking the new
+  /// geographic point directly instead of a screen offset — for callers
+  /// that already have the dragged [LatLng] and need no screen<->geo
+  /// projection.
+  ///
+  /// Reached from [_moveAreaVertex] (FlutterMapEngine's `_AreaVertexHandle`
+  /// drag, after projecting the screen offset) and passed as
+  /// `onVertexDragUpdate` to [SoilMapEngine.setMeasurementGeometry], which
+  /// FlutterMapEngine ignores.
+  void _moveAreaVertexTo(int index, LatLng point) {
+    _suppressNextMapTap = false;
+    if (!_pointIsInRange(index, point)) return;
+    setState(() {
+      _tryMoveAreaVertex(index, point);
+    });
+  }
+
+  bool _pointIsInRange(int index, LatLng point) {
+    if (!_isFiniteLatLng(point)) return false;
     final points = _measurementMode == _MeasurementMode.distance
         ? _distanceMeasurementPoints
         : _areaMeasurementPoints;
-    if (index >= points.length) return;
+    return index < points.length;
+  }
+
+  /// Validates and applies moving vertex [index] to [point], mutating the
+  /// active point list in place — but does **not** call `setState` itself,
+  /// so callers control exactly when/how often a rebuild happens. Returns
+  /// false (no mutation) if the move is invalid: out of range, non-finite,
+  /// or — in area mode — would make the polygon self-intersect, in which
+  /// case [_showInvalidMeasurementMessage] fires exactly as before.
+  bool _tryMoveAreaVertex(int index, LatLng point) {
+    if (!_pointIsInRange(index, point)) return false;
+    final points = _measurementMode == _MeasurementMode.distance
+        ? _distanceMeasurementPoints
+        : _areaMeasurementPoints;
     final candidate = List<LatLng>.of(points);
     candidate[index] = point;
     if (_measurementMode == _MeasurementMode.area &&
         _isSelfIntersecting(candidate)) {
       _showInvalidMeasurementMessage();
-      return;
+      return false;
     }
-    setState(() {
-      if (_measurementMode == _MeasurementMode.area) {
-        _invalidateParcelAnalysis();
-      }
-      points[index] = point;
-    });
+    if (_measurementMode == _MeasurementMode.area) {
+      _invalidateParcelAnalysis();
+    }
+    points[index] = point;
+    return true;
   }
 
   void _endAreaVertexDrag() {
@@ -2384,6 +2905,107 @@ class _GisMapScreenState extends State<GisMapScreen>
       if (isArea) _invalidateParcelAnalysis();
       points.removeAt(index);
     });
+  }
+
+  /// Shows the delete/cancel popup for vertex [index] at screen [position].
+  ///
+  /// Extracted from `_MeasurementLayer` (which owned this for
+  /// FlutterMapEngine's `_AreaVertexHandle.onTap`) so it can also be reached
+  /// through [SoilMapEngine.setMeasurementGeometry]'s `onVertexTap` — one
+  /// menu, identical text, styling and delete behavior on every engine.
+  Future<void> _showVertexMenu(int index, Offset position) async {
+    final isArea = _measurementMode == _MeasurementMode.area;
+    final points = isArea ? _areaMeasurementPoints : _distanceMeasurementPoints;
+    final pointCount = points.length;
+    final minimumPointCount = isArea ? 3 : 1;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) {
+      return;
+    }
+    final desktop = isSuelosArDesktopPlatform(context);
+    final colorScheme = Theme.of(context).colorScheme;
+    var deleted = false;
+    final selection = await showMenu<_VertexMenuOption>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      elevation: desktop ? 8 : null,
+      color: desktop ? colorScheme.surfaceContainerLow : null,
+      surfaceTintColor: desktop ? Colors.transparent : null,
+      shadowColor: desktop ? colorScheme.shadow.withValues(alpha: 0.2) : null,
+      shape: desktop
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                color: colorScheme.outlineVariant.withValues(alpha: 0.65),
+              ),
+            )
+          : null,
+      menuPadding: desktop ? const EdgeInsets.symmetric(vertical: 8) : null,
+      items: desktop
+          ? [
+              PopupMenuItem(
+                key: const ValueKey('delete-area-vertex'),
+                value: _VertexMenuOption.delete,
+                enabled: pointCount > minimumPointCount,
+                height: 48,
+                onTap: pointCount > minimumPointCount
+                    ? () {
+                        deleted = true;
+                        _deleteAreaVertex(index);
+                      }
+                    : null,
+                child: Row(
+                  children: [
+                    Icon(
+                      AppIcons.delete,
+                      size: 19,
+                      color: pointCount > minimumPointCount
+                          ? colorScheme.error
+                          : colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 12),
+                    const Flexible(child: Text('Eliminar vértice')),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: _VertexMenuOption.cancel,
+                height: 48,
+                child: Row(
+                  children: [
+                    Icon(AppIcons.close, size: 19),
+                    SizedBox(width: 12),
+                    Flexible(child: Text('Cancelar')),
+                  ],
+                ),
+              ),
+            ]
+          : [
+              PopupMenuItem(
+                key: const ValueKey('delete-area-vertex'),
+                value: _VertexMenuOption.delete,
+                enabled: pointCount > minimumPointCount,
+                onTap: pointCount > minimumPointCount
+                    ? () {
+                        deleted = true;
+                        _deleteAreaVertex(index);
+                      }
+                    : null,
+                child: const Text('Eliminar vértice'),
+              ),
+              const PopupMenuItem(
+                value: _VertexMenuOption.cancel,
+                child: Text('Cancelar'),
+              ),
+            ],
+    );
+    if (!deleted && selection == _VertexMenuOption.delete) {
+      _deleteAreaVertex(index);
+    }
   }
 
   void _invalidateParcelAnalysis() {
@@ -2670,7 +3292,10 @@ class _GisMapScreenState extends State<GisMapScreen>
           if (intersection.areaSquareMeters <= 0.01) continue;
 
           final feature = polygon.feature;
-          final series = GisSoilSeries.fromProperties(feature.properties);
+          final series = _resolveSeriesDisplayNames(
+            feature,
+            GisSoilSeries.fromProperties(feature.properties),
+          );
           final builder = builders.putIfAbsent(
             feature.id,
             () => _ParcelIntersectionBuilder(
@@ -2872,9 +3497,9 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _moveMapToLocation(GisLocation location) {
     if (!_isMapReady) return;
-    final zoom = _mapController.camera.zoom;
+    final zoom = _mapEngine.camera.zoom;
     if (!_isFiniteLatLng(location.point) || !_isFiniteNumber(zoom)) return;
-    _mapController.move(location.point, zoom);
+    _mapEngine.move(location.point, zoom);
   }
 
   GisFeature? _storeCurrentLocationFeatureIfVisible(LatLng point) {
@@ -2891,8 +3516,97 @@ class _GisMapScreenState extends State<GisMapScreen>
     return feature;
   }
 
-  void _updateMapViewportState(MapCamera camera) {
-    if (!_isFiniteCamera(camera)) {
+  /// [MultiCoverageRepository]'s `isCoverageAvailable` callback for any
+  /// on-demand coverage (Santa Fe, Buenos Aires — Fase 11B/12A). Re-probes
+  /// the real delivery state (covers the case where a previous session
+  /// already finished the download, satisfying the offline-persistence
+  /// requirement) rather than trusting whatever [delivery] happened to hold
+  /// at construction time.
+  Future<bool> _checkOnDemandAvailable(PmtilesDelivery delivery) async {
+    await delivery.checkStatus();
+    return delivery.status == PmtilesDeliveryStatus.available;
+  }
+
+  /// [MultiCoverageRepository]'s `isCoverageAvailable` callback for every
+  /// coverage with no on-demand delivery of its own (none today, now that
+  /// both registered provinces are on-demand — Fase 12A — but kept for any
+  /// future coverage that stays always-bundled). These have only a local
+  /// PMTiles copy that Configuración's provincial maps manager can delete;
+  /// a real disk check (never creating the file, only observing whether
+  /// it's already there) replaces the old assumption that such a coverage
+  /// was always available.
+  Future<bool> _isBundledCoverageLocallyAvailable(MapCoverage coverage) {
+    return pmtilesAssetIsCachedLocally(assetPath: coverage.config.pmtilesAsset);
+  }
+
+  /// Re-checks every non-on-demand coverage's local availability — Fase
+  /// 11D bugfix. On-demand coverages already have their own live update the
+  /// moment their status changes ([_handleOnDemandStatusChanged], via each
+  /// [PmtilesDelivery]'s [ChangeNotifier]); a coverage with no delivery
+  /// object has no such notifier, so instead this runs whenever the map
+  /// stops being occluded (see [_updateMapOcclusion]) — in particular,
+  /// right after Configuración's provincial maps manager (which can
+  /// delete a coverage's local copy) is popped back to this screen. Only
+  /// reloads tiles if something actually changed, and only rebuilds the
+  /// affected coverages' repositories, never all of them.
+  Future<void> _refreshBundledCoverageAvailability() async {
+    final repository = _repository;
+    if (repository is! MultiCoverageRepository) return;
+    var changed = false;
+    for (final coverage in _coverages) {
+      if (coverage.onDemandDelivery != null) continue;
+      final isAvailable = await _isBundledCoverageLocallyAvailable(coverage);
+      final didChange = isAvailable
+          ? await repository.markCoverageAvailable(coverage.id)
+          : await repository.markCoverageUnavailable(coverage.id);
+      changed = changed || didChange;
+    }
+    if (changed && mounted) _reloadVisibleTilesAfterCoverageChange();
+  }
+
+  /// Reacts to an on-demand [delivery] transitioning to `available` —
+  /// either right after a download finishes, or from the startup probe
+  /// (see `initState`) finding a previously-completed download. Brings
+  /// [coverageId] into the active [MultiCoverageRepository] set and forces
+  /// the already-visible tiles to reload, so the polygons appear
+  /// immediately without the user having to pan, zoom, or reopen the
+  /// screen.
+  void _handleOnDemandStatusChanged(
+    String coverageId,
+    PmtilesDelivery delivery,
+  ) {
+    if (delivery.status != PmtilesDeliveryStatus.available) {
+      return;
+    }
+    final repository = _repository;
+    if (repository is! MultiCoverageRepository) return;
+    unawaited(
+      repository.markCoverageAvailable(coverageId).then((_) {
+        if (mounted) _reloadVisibleTilesAfterCoverageChange();
+      }),
+    );
+  }
+
+  /// Bypasses [_loadVisibleTiles]'s usual "same tiles as last time, skip"
+  /// short-circuit: clears every cached rendered tile and the visible/
+  /// prefetch coordinate sets it compares against, then re-requests the
+  /// current viewport so newly-available Santa Fe features actually reach
+  /// the screen instead of being masked by stale cache entries.
+  void _reloadVisibleTilesAfterCoverageChange() {
+    for (final tile in _renderedTileCache.values) {
+      tile.dispose();
+    }
+    _renderedTileCache.clear();
+    _visibleTileCoordinates = {};
+    _prefetchedTileCoordinates = {};
+    final engine = _mapEngine;
+    if (engine is FlutterMapEngine) {
+      unawaited(_loadVisibleTiles(engine.controller.camera, _archiveInfo));
+    }
+  }
+
+  void _updateMapViewportState(SoilMapCameraState camera) {
+    if (!_isFiniteCameraState(camera)) {
       return;
     }
     final nextState = _MapViewportState(
@@ -2908,7 +3622,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _animateMapToNorth() {
-    final startRotation = _mapController.camera.rotation;
+    final startRotation = _mapEngine.camera.rotation;
     if (startRotation.abs() < 0.01) return;
 
     _northRotationAnimation?.dispose();
@@ -2922,7 +3636,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       end: 0,
     ).animate(CurvedAnimation(parent: controller, curve: Curves.easeOutCubic));
     controller.addListener(() {
-      if (mounted) _mapController.rotate(animation.value);
+      if (mounted) _mapEngine.rotate(animation.value);
     });
     controller.addStatusListener((status) {
       if (status == AnimationStatus.completed &&
@@ -3410,11 +4124,52 @@ class _GisMapScreenState extends State<GisMapScreen>
       selectedMarker.latitude,
       selectedMarker.longitude,
     );
-    final zoom = _mapController.camera.zoom;
+    final zoom = _mapEngine.camera.zoom;
     if (markerPoint != null && _isFiniteNumber(zoom)) {
-      _mapController.move(markerPoint, zoom);
+      _mapEngine.move(markerPoint, zoom);
     }
     await _showPersonalMarkerDetails(selectedMarker);
+  }
+
+  /// Consumes [_pendingPersonalMarkerFocusId] (set from
+  /// [GisMapScreen.focusPersonalMarkerId] in `initState`) once both the map
+  /// surface and the saved markers are ready. Called from both readiness
+  /// signals — the map's `onReady` and [_loadPersonalMarkers]'s completion —
+  /// since either can resolve first; the pending id is only cleared once
+  /// both are true, so whichever signal comes second applies the focus.
+  void _consumePendingPersonalMarkerFocusIfReady() {
+    final pendingId = _pendingPersonalMarkerFocusId;
+    if (pendingId == null || !_isMapReady || !_personalMarkersLoaded) return;
+    _pendingPersonalMarkerFocusId = null;
+    _centerOnPersonalMarkerOnOpen(pendingId);
+  }
+
+  /// Centers the camera on the saved personal marker with [markerId] at a
+  /// fixed [_externalPersonalMarkerFocusZoom] — nothing else. Used only for
+  /// [GisMapScreen.focusPersonalMarkerId] (this screen opened *already
+  /// targeting* a marker, e.g. from `HomeScreen`'s "Marcadores" shortcut).
+  ///
+  /// Deliberately does not call [_focusPersonalMarker] or
+  /// [_showPersonalMarkerDetails]: unlike picking a marker from *inside* a
+  /// running GIS session (see [_openPersonalMarkers]), the first thing the
+  /// user sees on entering GIS this way must be the plain map centered on
+  /// the point — not an already-open details panel/bottom sheet, and not
+  /// the marker marked "selected". The pin itself still renders normally
+  /// (this screen always draws every entry in [_personalMarkers]); the user
+  /// can tap it manually to open its details, same as any other marker.
+  void _centerOnPersonalMarkerOnOpen(String markerId) {
+    PersonalMarker? marker;
+    for (final candidate in _personalMarkers) {
+      if (candidate.id == markerId) {
+        marker = candidate;
+        break;
+      }
+    }
+    if (marker == null) return;
+    final markerPoint = _safeLatLng(marker.latitude, marker.longitude);
+    if (markerPoint != null) {
+      _mapEngine.move(markerPoint, _externalPersonalMarkerFocusZoom);
+    }
   }
 
   Future<void> _openMeasurements() async {
@@ -3437,11 +4192,11 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _focusSavedMeasurement(SavedMeasurement measurement) {
     if (measurement.geometry.isEmpty) return;
-    final targetCamera = CameraFit.coordinates(
-      coordinates: measurement.geometry,
+    final targetCamera = _mapEngine.fitBounds(
+      measurement.geometry,
       padding: const EdgeInsets.all(72),
       maxZoom: 16,
-    ).fit(_mapController.camera);
+    );
     _animateMapToPosition(targetCamera.center, targetCamera.zoom);
     setState(() {
       _closeDesktopPanel();
@@ -3453,9 +4208,9 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _focusPersonalMarker(PersonalMarker marker) {
     final markerPoint = _safeLatLng(marker.latitude, marker.longitude);
-    final zoom = _mapController.camera.zoom;
+    final zoom = _mapEngine.camera.zoom;
     if (markerPoint != null && _isFiniteNumber(zoom)) {
-      _mapController.move(markerPoint, zoom);
+      _mapEngine.move(markerPoint, zoom);
     }
     setState(() {
       _closeDesktopPanel();
@@ -3498,7 +4253,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   void _animateMapToPosition(LatLng targetCenter, double targetZoom) {
-    final startCamera = _mapController.camera;
+    final startCamera = _mapEngine.camera;
     final startCenter = startCamera.center;
     final startZoom = startCamera.zoom;
     if (!_isFiniteLatLng(startCenter) ||
@@ -3524,7 +4279,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       if (center == null || !_isFiniteNumber(zoom)) {
         return;
       }
-      _mapController.move(center, zoom);
+      _mapEngine.move(center, zoom);
     });
     animation.addStatusListener((status) {
       if (status != AnimationStatus.completed &&
@@ -3587,7 +4342,10 @@ class _GisMapScreenState extends State<GisMapScreen>
         );
       }
 
-      final series = GisSoilSeries.fromProperties(feature.properties);
+      final series = _resolveSeriesDisplayNames(
+        feature,
+        GisSoilSeries.fromProperties(feature.properties),
+      );
       for (final soilSeries in series) {
         final normalizedName = _normalizeSearchText(soilSeries.name);
         final seriesKey = 'series:$normalizedName';
@@ -3632,7 +4390,7 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   void _animateMapToSearchResult(_SoilSeriesSearchEntry entry) {
     final targetCenter = entry.center;
-    final startCamera = _mapController.camera;
+    final startCamera = _mapEngine.camera;
     final startCenter = startCamera.center;
     final startZoom = startCamera.zoom;
     final targetZoom = startZoom < 12 ? 12.0 : startZoom;
@@ -3662,7 +4420,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       if (center == null || !_isFiniteNumber(zoom)) {
         return;
       }
-      _mapController.move(center, zoom);
+      _mapEngine.move(center, zoom);
     });
     animation.addStatusListener((status) {
       if (status == AnimationStatus.completed ||
@@ -3821,14 +4579,14 @@ class _GisMapScreenState extends State<GisMapScreen>
     return double.tryParse(value?.toString() ?? '');
   }
 
-  void _handleMapTap(TapPosition tapPosition, LatLng point) {
+  Future<void> _handleMapTap(SoilMapTapDetails details) async {
+    final tapOffset = details.screenOffset;
+    final point = details.point;
     if (_suppressNextMapTap) {
       _suppressNextMapTap = false;
       return;
     }
-    final savedMeasurement = _findSavedMeasurementAt(
-      tapPosition.relative ?? tapPosition.global,
-    );
+    final savedMeasurement = _findSavedMeasurementAt(tapOffset);
     if (savedMeasurement != null) {
       if (savedMeasurement.id != _activeSavedMeasurementId) {
         unawaited(_requestSelectSavedMeasurement(savedMeasurement));
@@ -3840,7 +4598,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       if (_measurementMode == _MeasurementMode.area) {
         final candidate = List<LatLng>.of(_areaMeasurementPoints);
         final edgeIndex = _nearestMeasurementEdgeIndex(
-          tapPosition.relative,
+          tapOffset,
           _areaMeasurementPoints,
           closed: true,
         );
@@ -3862,7 +4620,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       } else {
         setState(() {
           final edgeIndex = _nearestMeasurementEdgeIndex(
-            tapPosition.relative,
+            tapOffset,
             _distanceMeasurementPoints,
             closed: false,
           );
@@ -3889,6 +4647,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
 
     final feature = _findFeatureAt(point);
+    if (!mounted) return;
     if (feature == null) {
       _selectionPreview.value = null;
       if (_highlightedSavedMeasurementId != null) {
@@ -3927,10 +4686,10 @@ class _GisMapScreenState extends State<GisMapScreen>
           ? points.length
           : points.length - 1;
       for (var index = 0; index < segmentCount; index++) {
-        final start = _mapController.camera.latLngToScreenOffset(points[index]);
-        final end = _mapController.camera.latLngToScreenOffset(
+        final start = _mapEngine.latLngToScreenOffset(points[index])!;
+        final end = _mapEngine.latLngToScreenOffset(
           points[(index + 1) % points.length],
-        );
+        )!;
         if (_distanceToSegment(tapOffset, start, end) <= 10) {
           return measurement;
         }
@@ -4061,6 +4820,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _personalMarkers
         ..clear()
         ..addAll(markers);
+      _personalMarkersLoaded = true;
     });
   }
 
@@ -4328,10 +5088,10 @@ class _GisMapScreenState extends State<GisMapScreen>
     int? nearestIndex;
     final segmentCount = closed ? points.length : points.length - 1;
     for (var index = 0; index < segmentCount; index++) {
-      final start = _mapController.camera.latLngToScreenOffset(points[index]);
-      final end = _mapController.camera.latLngToScreenOffset(
+      final start = _mapEngine.latLngToScreenOffset(points[index])!;
+      final end = _mapEngine.latLngToScreenOffset(
         points[(index + 1) % points.length],
-      );
+      )!;
       final distance = _distanceToSegment(tapOffset, start, end);
       if (distance < nearestDistance) {
         nearestDistance = distance;
@@ -4364,12 +5124,25 @@ class _GisMapScreenState extends State<GisMapScreen>
         tile.updateSelection(feature.id);
       }
     }
+    _mapEngine.setSelectedSoilFeature(feature.id);
   }
 
   Future<void> _showFeatureAttributes(GisFeature feature) {
     _selectionPreview.value = null;
-    final series = GisSoilSeries.fromProperties(feature.properties);
-    final matchesFuture = _findSeriesPdfs(series);
+    // PDF resolution needs the raw SERIE* value (e.g. "RSA cc") — Santa
+    // Fe's SantaFeSeriesResolver extracts the series *code* from it.
+    // `series` below is a separate, display-only copy with names already
+    // resolved ("Río Salado") for the title/labels/favorites; resolving
+    // PDFs from that renamed copy instead of `rawSeries` was Fase 6B's
+    // bug: extractSeriesCode("Río Salado") reads "Río" as the code, which
+    // isn't in the index, so the PDF lookup silently came back null ("no
+    // disponible") even though RSA's real code resolves fine. `rawSeries`
+    // and `series` stay the same length/order (one maps onto the other
+    // element-by-element), so `matches[index]` still lines up with
+    // `series[index]` wherever they're both used below.
+    final rawSeries = GisSoilSeries.fromProperties(feature.properties);
+    final series = _resolveSeriesDisplayNames(feature, rawSeries);
+    final matchesFuture = _findSeriesPdfs(feature, rawSeries);
 
     return _showMapBottomSheet<void>(
       isScrollControlled: true,
@@ -4417,16 +5190,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                       alignment: Alignment.centerRight,
                       child: Padding(
                         padding: const EdgeInsets.only(right: 8),
-                        child: IconButton(
-                          tooltip: isFavorite
-                              ? 'Quitar de favoritos'
-                              : 'Agregar a favoritos',
-                          icon: Icon(
-                            AppIcons.star,
-                            color: isFavorite
-                                ? Theme.of(context).colorScheme.primary
-                                : null,
-                          ),
+                        child: _GisFavoriteStarButton(
+                          isFavorite: isFavorite,
                           onPressed: () {
                             setBottomSheetState(() {
                               _toggleFavorite(feature, series);
@@ -4487,7 +5252,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                         child: Text('No hay series disponibles.'),
                       ),
                     if (series.isNotEmpty)
-                      FutureBuilder<List<String?>>(
+                      FutureBuilder<List<SeriesPdfLocation?>>(
                         future: matchesFuture,
                         builder: (context, snapshot) {
                           if (snapshot.connectionState !=
@@ -4500,7 +5265,10 @@ class _GisMapScreenState extends State<GisMapScreen>
 
                           final matches =
                               snapshot.data ??
-                              List<String?>.filled(series.length, null);
+                              List<SeriesPdfLocation?>.filled(
+                                series.length,
+                                null,
+                              );
 
                           return Column(
                             children: [
@@ -4588,31 +5356,59 @@ class _GisMapScreenState extends State<GisMapScreen>
     return value.isEmpty ? 'Sin datos' : value;
   }
 
-  Future<List<String?>> _findSeriesPdfs(List<GisSoilSeries> series) {
+  /// Applies [feature]'s coverage's [ProvinceConfig.seriesNameResolver] to
+  /// every series' raw `SERIE*` value — a no-op for Buenos Aires
+  /// ([IdentitySeriesNameResolver] returns its input unchanged), and for
+  /// Santa Fe turns a raw code like `"CER cc"` into its real name
+  /// (`"Cerrillos"`) once the resolver has preloaded, falling back to the
+  /// raw code until then or if unresolved — never invents a name. See
+  /// Fase 4B report section F point 9, and Fase 6 Parte 6 for why this now
+  /// looks up the resolver per-feature instead of one fixed resolver.
+  List<GisSoilSeries> _resolveSeriesDisplayNames(
+    GisFeature feature,
+    List<GisSoilSeries> series,
+  ) {
+    return _applySeriesNameResolver(
+      series,
+      _seriesNameResolverForFeature(feature),
+    );
+  }
+
+  Future<List<SeriesPdfLocation?>> _findSeriesPdfs(
+    GisFeature feature,
+    List<GisSoilSeries> series,
+  ) {
+    // Real multi-coverage path: resolver picked per the tapped feature's
+    // coverage. Otherwise (a test fake `repository`, or `provinceConfig`
+    // forcing a single coverage): _seriesResolver, which already correctly
+    // wraps whatever `pdfSeriesRepository`/`seriesResolver` was injected —
+    // see initState's precedence comment.
+    final repository = _repository;
+    final resolver = repository is MultiCoverageRepository
+        ? repository.coverageForFeatureId(feature.id).config.seriesResolver
+        : _seriesResolver;
     return Future.wait(
-      series.map(
-        (soilSeries) => _pdfSeriesRepository.findPdfForSeries(soilSeries.name),
-      ),
+      series.map((soilSeries) => resolver.resolve(soilSeries)),
     );
   }
 
   Widget _buildSeriesTile(
     BuildContext bottomSheetContext,
     GisSoilSeries series,
-    String? assetPath,
+    SeriesPdfLocation? location,
   ) {
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: const Icon(AppIcons.pdf),
       title: Text(series.displayLabel),
-      trailing: assetPath == null
+      trailing: location == null
           ? const SizedBox(
               width: 120,
               child: Text('Memoria no disponible', textAlign: TextAlign.end),
             )
           : FilledButton.tonal(
               onPressed: () {
-                _openSeriesPdf(bottomSheetContext, series, assetPath);
+                _openSeriesPdf(bottomSheetContext, series, location);
               },
               child: const Text('Abrir PDF'),
             ),
@@ -4622,7 +5418,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   Future<void> _openSeriesPdf(
     BuildContext bottomSheetContext,
     GisSoilSeries series,
-    String assetPath,
+    SeriesPdfLocation location,
   ) async {
     if (bottomSheetContext.mounted) {
       await Navigator.of(bottomSheetContext).maybePop();
@@ -4634,8 +5430,10 @@ class _GisMapScreenState extends State<GisMapScreen>
     await openLocalPdfViewer(
       context,
       title: series.name,
-      assetPath: assetPath,
+      assetPath: location.assetPath,
       unavailableMessage: 'Serie no disponible.',
+      initialPage: location.startPage,
+      lastPage: location.endPage,
     );
   }
 }
@@ -5503,16 +6301,16 @@ class _DesktopCloseButtonState extends State<_DesktopCloseButton> {
 
 /// The Favoritos entry's icon in the GIS toolbar (both
 /// [_DesktopMapPanelAction] and [_DesktopMapRailButton]) — reuses the exact
-/// visual language already established for Favorites everywhere else
-/// (Cartas de Suelo, the Favoritos screen): a filled star in
-/// [ColorScheme.primary] sitting in a soft circular
-/// [ColorScheme.primaryContainer] badge when active, an outline star with
-/// no badge otherwise, and the same pop-in scale transition. Here "active"
-/// means this toolbar's Favoritos section is the one currently selected,
-/// not that a polygon is favorited — same visual grammar, different
-/// trigger. Every sibling tool (Capas, Buscar, Mediciones, Marcadores, Mi
-/// ubicación, medir distancia/área, agregar marcador) keeps rendering its
-/// own plain icon, untouched.
+/// visual language [_GisFavoriteStarButton] already established for
+/// Favorites everywhere else (Cartas de Suelo, the Favoritos screen, the
+/// polygon info panel): a filled star in [ColorScheme.primary] sitting in a
+/// soft circular [ColorScheme.primaryContainer] badge when active, an
+/// outline star with no badge otherwise, and the same pop-in scale
+/// transition. Here "active" means this toolbar's Favoritos section is the
+/// one currently selected, not that a polygon is favorited — same visual
+/// grammar, different trigger. Every sibling tool (Capas, Buscar,
+/// Mediciones, Marcadores, Mi ubicación, medir distancia/área, agregar
+/// marcador) keeps rendering its own plain icon, untouched.
 class _FavoriteToolbarIcon extends StatelessWidget {
   const _FavoriteToolbarIcon({
     required this.active,
@@ -5575,10 +6373,10 @@ class _DesktopMapPanelAction extends StatefulWidget {
 
   /// True only for the Favoritos entry — swaps its icon for
   /// [_FavoriteToolbarIcon] so it reads as part of the same Favorites
-  /// system as Cartas de Suelo/the Favoritos screen (filled star + soft
-  /// circular badge when selected) instead of this row's generic icon
-  /// treatment. Every other action keeps rendering [icon] plainly,
-  /// unchanged.
+  /// system as Cartas de Suelo/the Favoritos screen/the polygon info panel
+  /// (filled star + soft circular badge when selected) instead of this
+  /// row's generic icon treatment. Every other action keeps rendering
+  /// [icon] plainly, unchanged.
   final bool isFavoritesAction;
 
   @override
@@ -6809,9 +7607,83 @@ class _DesktopContextPanel extends StatelessWidget {
   }
 }
 
+/// Top-level twin of `_GisMapScreenState._resolveSeriesDisplayNames` — for
+/// the standalone widget classes below that receive a resolver directly
+/// (via a `seriesNameResolverForFeature` callback) instead of reading
+/// coverage state off `_GisMapScreenState`. See that method's doc comment;
+/// the logic must stay identical (a no-op for [IdentitySeriesNameResolver]).
+List<GisSoilSeries> _applySeriesNameResolver(
+  List<GisSoilSeries> series,
+  SeriesNameResolver resolver,
+) {
+  if (resolver is IdentitySeriesNameResolver) return series;
+  return series
+      .map(
+        (soilSeries) => GisSoilSeries(
+          name: resolver.resolve(soilSeries.name),
+          percentage: soilSeries.percentage,
+        ),
+      )
+      .toList(growable: false);
+}
+
+/// Favorite toggle for the GIS info panel, matching Cartas de suelo's star
+/// (Fase 9 visual tweak): outline + neutral color when not favorited; a
+/// soft green circular backing behind a filled, accent-green star when it
+/// is. One implementation shared by both the mobile bottom sheet and the
+/// desktop/wide-window panel below, so Android and Windows render it
+/// identically without any per-platform branching.
+class _GisFavoriteStarButton extends StatelessWidget {
+  const _GisFavoriteStarButton({
+    required this.isFavorite,
+    required this.onPressed,
+  });
+
+  final bool isFavorite;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return IconButton(
+      tooltip: isFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos',
+      onPressed: onPressed,
+      icon: AnimatedSwitcher(
+        duration: AppMotion.duration(
+          context,
+          const Duration(milliseconds: 220),
+          reduced: const Duration(milliseconds: 60),
+        ),
+        switchInCurve: Curves.easeOutBack,
+        switchOutCurve: Curves.easeIn,
+        transitionBuilder: (child, animation) =>
+            ScaleTransition(scale: animation, child: child),
+        child: Container(
+          key: ValueKey(isFavorite),
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: isFavorite
+                ? colorScheme.primaryContainer.withValues(alpha: 0.55)
+                : Colors.transparent,
+          ),
+          child: Icon(
+            AppIcons.star,
+            color: isFavorite
+                ? colorScheme.primary
+                : colorScheme.onSurfaceVariant,
+            fill: isFavorite ? 1 : 0,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _DesktopMapInformationPanel extends StatelessWidget {
   const _DesktopMapInformationPanel({
     required this.feature,
+    required this.seriesNameResolverForFeature,
     required this.measurement,
     required this.marker,
     required this.onOpenFeatureDetails,
@@ -6831,6 +7703,8 @@ class _DesktopMapInformationPanel extends StatelessWidget {
   });
 
   final GisFeature? feature;
+  final SeriesNameResolver Function(GisFeature feature)
+  seriesNameResolverForFeature;
   final SavedMeasurement? measurement;
   final PersonalMarker? marker;
   final VoidCallback? onOpenFeatureDetails;
@@ -6854,7 +7728,10 @@ class _DesktopMapInformationPanel extends StatelessWidget {
     final unitSymbol = feature?.properties['SIMBC']?.toString().trim();
     final title = switch ((feature, measurement, marker)) {
       (final GisFeature value, _, _) =>
-        GisSoilSeries.fromProperties(value.properties).firstOrNull?.name ??
+        _applySeriesNameResolver(
+              GisSoilSeries.fromProperties(value.properties),
+              seriesNameResolverForFeature(value),
+            ).firstOrNull?.name ??
             _featureValue(value, 'Nombre_UC'),
       (_, final SavedMeasurement value, _) => value.name,
       (_, _, final PersonalMarker value) => value.name,
@@ -6902,12 +7779,9 @@ class _DesktopMapInformationPanel extends StatelessWidget {
                     icon: const Icon(AppIcons.library, size: 18),
                     label: const Text('Ver información'),
                   ),
-                  IconButton.filledTonal(
-                    tooltip: featureIsFavorite
-                        ? 'Quitar de favoritos'
-                        : 'Agregar a favoritos',
+                  _GisFavoriteStarButton(
+                    isFavorite: featureIsFavorite,
                     onPressed: onToggleFeatureFavorite,
-                    icon: Icon(featureIsFavorite ? Icons.star : AppIcons.star),
                   ),
                 ],
               ),
@@ -7068,18 +7942,45 @@ enum _MapToolHintType { measureDistance, measureArea, marker, markerActive }
 enum _VertexMenuOption { delete, cancel }
 
 class _MapToolHintOverlay extends StatelessWidget {
-  const _MapToolHintOverlay({required this.type, required this.top});
+  const _MapToolHintOverlay({
+    required this.type,
+    required this.top,
+    this.hintOverride,
+  });
 
   final _MapToolHintType? type;
   final double top;
 
+  /// Fase 11D UX: when set, takes over this same overlay slot instead of
+  /// [type] — a timer-driven one-off hint (see
+  /// `_GisMapScreenState._showTemporaryMapHint`) rather than one tied to
+  /// an active tool mode. Kept as a plain override on the existing
+  /// overlay, not a second one, so two hint pills can never stack. Unlike
+  /// [type]-driven hints, this one may carry a tappable span (e.g. a
+  /// "Configuración" link), so it's the only case where this overlay
+  /// isn't fully non-interactive — see [build]'s `IgnorePointer.ignoring`.
+  final (IconData, InlineSpan)? hintOverride;
+
   @override
   Widget build(BuildContext context) {
+    final overrideValue = hintOverride;
+    final Widget child = overrideValue != null
+        ? _MapHintPill(
+            key: const ValueKey('tool-hint-override'),
+            icon: overrideValue.$1,
+            richText: overrideValue.$2,
+          )
+        : type == null
+        ? const SizedBox.shrink(key: ValueKey('tool-hint-empty'))
+        : _MapToolHintCard(key: ValueKey(type), type: type!);
     return Positioned(
       top: top,
       left: 16,
       right: 16,
       child: IgnorePointer(
+        // Mode-driven tool hints stay fully click-through, as before; only
+        // the timer-driven override may contain a tappable link.
+        ignoring: overrideValue == null,
         child: Center(
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
@@ -7087,9 +7988,7 @@ class _MapToolHintOverlay extends StatelessWidget {
             switchOutCurve: Curves.easeInCubic,
             transitionBuilder: (child, animation) =>
                 FadeTransition(opacity: animation, child: child),
-            child: type == null
-                ? const SizedBox.shrink(key: ValueKey('tool-hint-empty'))
-                : _MapToolHintCard(key: ValueKey(type), type: type!),
+            child: child,
           ),
         ),
       ),
@@ -7104,8 +8003,6 @@ class _MapToolHintCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final (icon, text) = switch (type) {
       _MapToolHintType.measureDistance || _MapToolHintType.measureArea => (
         AppIcons.ruler,
@@ -7120,7 +8017,36 @@ class _MapToolHintCard extends StatelessWidget {
         'Modo de marcador activo.',
       ),
     };
+    return _MapHintPill(icon: icon, text: text);
+  }
+}
 
+/// The pill card itself — position, animation and sizing live in
+/// [_MapToolHintOverlay]; this is just its content, shared between
+/// [_MapToolHintCard] (tool-mode hints) and [_MapToolHintOverlay.override]
+/// (Fase 11D's timer-driven ones), so both look and behave identically.
+class _MapHintPill extends StatelessWidget {
+  const _MapHintPill({required this.icon, this.text, this.richText, super.key})
+    : assert(
+        (text == null) != (richText == null),
+        'Provide exactly one of text or richText.',
+      );
+
+  final IconData icon;
+  final String? text;
+
+  /// Alternative to [text] for hints that need an inline tappable span
+  /// (e.g. a "Configuración" link) — same pill, just richer content.
+  final InlineSpan? richText;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final textStyle = theme.textTheme.labelLarge?.copyWith(
+      color: colorScheme.onSurface,
+      fontWeight: FontWeight.w600,
+    );
     return Material(
       color: Colors.white,
       elevation: 3,
@@ -7129,7 +8055,13 @@ class _MapToolHintCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(20),
       clipBehavior: Clip.antiAlias,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 38, maxHeight: 40),
+        constraints: BoxConstraints(
+          minHeight: 38,
+          // Plain tool hints stay single-line at a fixed height; a
+          // richText hint (e.g. the "Configuración" link) may wrap to a
+          // second line on narrow screens instead of truncating.
+          maxHeight: richText == null ? 40 : 64,
+        ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14),
           child: Row(
@@ -7138,15 +8070,19 @@ class _MapToolHintCard extends StatelessWidget {
               Icon(icon, size: 17, color: colorScheme.onSurfaceVariant),
               const SizedBox(width: 8),
               Flexible(
-                child: Text(
-                  text,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelLarge?.copyWith(
-                    color: colorScheme.onSurface,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                child: richText != null
+                    ? Text.rich(
+                        richText!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: textStyle,
+                      )
+                    : Text(
+                        text!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textStyle,
+                      ),
               ),
             ],
           ),
@@ -7163,6 +8099,11 @@ class _CurrentLocationLayer extends StatelessWidget {
   });
 
   static const Color _locationBlue = Color(0xFF1976D2);
+
+  // Below this, a circle drawn at its true geographic radius would be hard
+  // to see or read as an intentional shape rather than a rendering
+  // artifact — kept modest, just past the 28px location dot itself.
+  static const double _minimumAccuracyCircleRadius = 24;
 
   final GisLocation location;
   final bool showAccuracyCircle;
@@ -7181,17 +8122,40 @@ class _CurrentLocationLayer extends StatelessWidget {
       child: Stack(
         children: [
           if (hasAccuracyCircle)
-            CircleLayer(
-              circles: [
-                CircleMarker(
-                  point: location.point,
-                  radius: accuracy,
-                  useRadiusInMeter: true,
-                  color: _locationBlue.withValues(alpha: 0.12),
-                  borderColor: _locationBlue.withValues(alpha: 0.42),
-                  borderStrokeWidth: 1,
-                ),
-              ],
+            Builder(
+              builder: (context) {
+                // `useRadiusInMeter: true` draws the circle at its real
+                // geographic size, which is correct but means a fixed
+                // number of meters shrinks to just a few screen pixels (or
+                // less) once zoomed out — effectively invisible outside a
+                // close zoom. This keeps that real-size circle whenever
+                // it's already legible, and only switches to a fixed pixel
+                // radius when the real one would render smaller than that
+                // — so the circle only ever grows relative to the true
+                // precision, never shrinks it into looking more precise
+                // than it is.
+                final camera = MapCamera.of(context);
+                final metersPerPixel = _metersPerPixelAt(camera);
+                final radiusInPixels = metersPerPixel > 0
+                    ? accuracy / metersPerPixel
+                    : 0.0;
+                final useTrueRadius =
+                    radiusInPixels >= _minimumAccuracyCircleRadius;
+                return CircleLayer(
+                  circles: [
+                    CircleMarker(
+                      point: location.point,
+                      radius: useTrueRadius
+                          ? accuracy
+                          : _minimumAccuracyCircleRadius,
+                      useRadiusInMeter: useTrueRadius,
+                      color: _locationBlue.withValues(alpha: 0.12),
+                      borderColor: _locationBlue.withValues(alpha: 0.42),
+                      borderStrokeWidth: 1,
+                    ),
+                  ],
+                );
+              },
             ),
           MarkerLayer(
             markers: [
@@ -7222,6 +8186,15 @@ class _CurrentLocationLayer extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// Standard Web Mercator meters-per-pixel at [camera]'s zoom and
+  /// latitude (256px tiles: `earth circumference / 256 = 156543.03392`).
+  static double _metersPerPixelAt(MapCamera camera) {
+    final latitudeRadians = camera.center.latitude * math.pi / 180;
+    return 156543.03392 *
+        math.cos(latitudeRadians).abs() /
+        math.pow(2, camera.zoom);
   }
 }
 
@@ -7768,7 +8741,7 @@ class _MeasurementLayer extends StatelessWidget {
     required this.onStartAreaVertexDrag,
     required this.onMoveAreaVertex,
     required this.onEndAreaVertexDrag,
-    required this.onDeleteAreaVertex,
+    required this.onVertexTap,
     required this.onColorChanged,
     required this.onSave,
     required this.isSavedMeasurement,
@@ -7783,9 +8756,6 @@ class _MeasurementLayer extends StatelessWidget {
     required this.onExport,
   });
 
-  static const Distance _distance = Distance(roundResult: false);
-  static const double _wgs84AuthalicRadius = 6371007.1809;
-
   final _MeasurementMode mode;
   final bool isEditing;
   final List<LatLng> distancePoints;
@@ -7795,7 +8765,7 @@ class _MeasurementLayer extends StatelessWidget {
   final void Function(int index, Offset globalPosition) onStartAreaVertexDrag;
   final void Function(int index, Offset globalPosition) onMoveAreaVertex;
   final VoidCallback onEndAreaVertexDrag;
-  final ValueChanged<int> onDeleteAreaVertex;
+  final void Function(int index, Offset position) onVertexTap;
   final ValueChanged<MeasurementColorOption> onColorChanged;
   final VoidCallback onSave;
   final bool isSavedMeasurement;
@@ -8134,164 +9104,25 @@ class _MeasurementLayer extends StatelessWidget {
         onDragStart: (position) => onStartAreaVertexDrag(index, position),
         onDragUpdate: (position) => onMoveAreaVertex(index, position),
         onDragEnd: onEndAreaVertexDrag,
-        onTap: (position) => _showVertexMenu(
-          context,
-          index,
-          position,
-          pointCount: keyPrefix == 'area'
-              ? areaPoints.length
-              : distancePoints.length,
-          minimumPointCount: keyPrefix == 'area' ? 3 : 1,
-        ),
+        onTap: (position) => onVertexTap(index, position),
       ),
     );
   }
 
-  Future<void> _showVertexMenu(
-    BuildContext context,
-    int index,
-    Offset position, {
-    required int pointCount,
-    required int minimumPointCount,
-  }) async {
-    final overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox?;
-    if (overlay == null) {
-      return;
-    }
-    final desktop = isSuelosArDesktopPlatform(context);
-    final colorScheme = Theme.of(context).colorScheme;
-    var deleted = false;
-    final selection = await showMenu<_VertexMenuOption>(
-      context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromLTWH(position.dx, position.dy, 1, 1),
-        Offset.zero & overlay.size,
-      ),
-      elevation: desktop ? 8 : null,
-      color: desktop ? colorScheme.surfaceContainerLow : null,
-      surfaceTintColor: desktop ? Colors.transparent : null,
-      shadowColor: desktop ? colorScheme.shadow.withValues(alpha: 0.2) : null,
-      shape: desktop
-          ? RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(
-                color: colorScheme.outlineVariant.withValues(alpha: 0.65),
-              ),
-            )
-          : null,
-      menuPadding: desktop ? const EdgeInsets.symmetric(vertical: 8) : null,
-      items: desktop
-          ? [
-              PopupMenuItem(
-                key: const ValueKey('delete-area-vertex'),
-                value: _VertexMenuOption.delete,
-                enabled: pointCount > minimumPointCount,
-                height: 48,
-                onTap: pointCount > minimumPointCount
-                    ? () {
-                        deleted = true;
-                        onDeleteAreaVertex(index);
-                      }
-                    : null,
-                child: Row(
-                  children: [
-                    Icon(
-                      AppIcons.delete,
-                      size: 19,
-                      color: pointCount > minimumPointCount
-                          ? colorScheme.error
-                          : colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 12),
-                    const Flexible(child: Text('Eliminar vértice')),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: _VertexMenuOption.cancel,
-                height: 48,
-                child: Row(
-                  children: [
-                    Icon(AppIcons.close, size: 19),
-                    SizedBox(width: 12),
-                    Flexible(child: Text('Cancelar')),
-                  ],
-                ),
-              ),
-            ]
-          : [
-              PopupMenuItem(
-                key: const ValueKey('delete-area-vertex'),
-                value: _VertexMenuOption.delete,
-                enabled: pointCount > minimumPointCount,
-                onTap: pointCount > minimumPointCount
-                    ? () {
-                        deleted = true;
-                        onDeleteAreaVertex(index);
-                      }
-                    : null,
-                child: const Text('Eliminar vértice'),
-              ),
-              const PopupMenuItem(
-                value: _VertexMenuOption.cancel,
-                child: Text('Cancelar'),
-              ),
-            ],
-    );
-    if (!deleted && selection == _VertexMenuOption.delete) {
-      onDeleteAreaVertex(index);
-    }
-  }
+  static String _formatDistance(double meters) =>
+      formatMeasurementDistance(meters);
 
-  static String _formatDistance(double meters) {
-    if (meters < 1000) {
-      return '${meters.round()} m';
-    }
-    return '${(meters / 1000).toStringAsFixed(1)} km';
-  }
+  static String _formatArea(double squareMeters) =>
+      formatMeasurementArea(squareMeters);
 
-  static String _formatArea(double squareMeters) {
-    if (squareMeters < 10000) {
-      return '${squareMeters.round()} m²';
-    }
-    return '${(squareMeters / 10000).toStringAsFixed(1)} ha';
-  }
+  static double _calculatePerimeter(List<LatLng> points) =>
+      calculateMeasurementPerimeter(points);
 
-  static double _calculatePerimeter(List<LatLng> points) {
-    var perimeter = 0.0;
-    for (var index = 0; index < points.length; index++) {
-      perimeter += _distance(
-        points[index],
-        points[(index + 1) % points.length],
-      );
-    }
-    return perimeter;
-  }
+  static double _calculatePathDistance(List<LatLng> points) =>
+      calculateMeasurementPathDistance(points);
 
-  static double _calculatePathDistance(List<LatLng> points) {
-    var distance = 0.0;
-    for (var index = 1; index < points.length; index++) {
-      distance += _distance(points[index - 1], points[index]);
-    }
-    return distance;
-  }
-
-  static double _calculateArea(List<LatLng> points) {
-    var sum = 0.0;
-    for (var index = 0; index < points.length; index++) {
-      final current = points[index];
-      final next = points[(index + 1) % points.length];
-      sum +=
-          _toRadians(next.longitude - current.longitude) *
-          (2 +
-              math.sin(_toRadians(current.latitude)) +
-              math.sin(_toRadians(next.latitude)));
-    }
-    return (sum * _wgs84AuthalicRadius * _wgs84AuthalicRadius / 2).abs();
-  }
-
-  static double _toRadians(double degrees) => degrees * math.pi / 180;
+  static double _calculateArea(List<LatLng> points) =>
+      calculateMeasurementArea(points);
 }
 
 class _MeasurementPanel extends StatelessWidget {
@@ -8758,6 +9589,12 @@ bool _isFiniteCamera(MapCamera camera) {
       _isFiniteNumber(camera.rotation);
 }
 
+bool _isFiniteCameraState(SoilMapCameraState camera) {
+  return _isFiniteLatLng(camera.center) &&
+      _isFiniteNumber(camera.zoom) &&
+      _isFiniteNumber(camera.rotation);
+}
+
 bool _isFiniteOffset(Offset offset) {
   return _isFiniteNumber(offset.dx) && _isFiniteNumber(offset.dy);
 }
@@ -8772,12 +9609,15 @@ class _SelectionPreviewOverlay extends StatelessWidget {
     required this.bottomOffset,
     required this.rightInset,
     required this.onDismiss,
+    required this.seriesNameResolverForFeature,
   });
 
   final ValueListenable<GisFeature?> featureListenable;
   final double bottomOffset;
   final double rightInset;
   final VoidCallback onDismiss;
+  final SeriesNameResolver Function(GisFeature feature)
+  seriesNameResolverForFeature;
 
   @override
   Widget build(BuildContext context) {
@@ -8813,6 +9653,8 @@ class _SelectionPreviewOverlay extends StatelessWidget {
                       key: ValueKey('selection-preview-${feature.id}'),
                       feature: feature,
                       onDismiss: onDismiss,
+                      seriesNameResolverForFeature:
+                          seriesNameResolverForFeature,
                     ),
             );
           },
@@ -8892,17 +9734,23 @@ class _SelectionPreviewCard extends StatelessWidget {
   const _SelectionPreviewCard({
     required this.feature,
     required this.onDismiss,
+    required this.seriesNameResolverForFeature,
     super.key,
   });
 
   final GisFeature feature;
   final VoidCallback onDismiss;
+  final SeriesNameResolver Function(GisFeature feature)
+  seriesNameResolverForFeature;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final series = GisSoilSeries.fromProperties(feature.properties);
+    final series = _applySeriesNameResolver(
+      GisSoilSeries.fromProperties(feature.properties),
+      seriesNameResolverForFeature(feature),
+    );
     final seriesName = series.isEmpty ? 'Serie sin datos' : series.first.name;
     final capability = _propertyValue(feature, 'CAP_USO') ?? 'Sin datos';
     final area = _availableArea(feature);
@@ -9031,7 +9879,7 @@ class _MapCompassControl extends StatefulWidget {
     required this.viewStateListenable,
     required this.onResetNorth,
     this.desktopStyle = false,
-    this.mapController,
+    this.mapEngine,
   });
 
   final ValueListenable<_MapViewportState> viewStateListenable;
@@ -9046,19 +9894,18 @@ class _MapCompassControl extends StatefulWidget {
   final bool desktopStyle;
 
   /// Only read when [desktopStyle] is true, to drive drag-to-rotate.
-  /// Deliberately the same [MapController] the rest of this screen already
-  /// drives (`_mapController`/`_animateMapToNorth`) — every drag step
-  /// reads [MapController.camera]'s live rotation and writes back through
-  /// [MapController.rotate], the same flutter_map API the existing reset-
-  /// to-north animation already uses. There is no locally tracked
-  /// rotation value here that could drift from the real camera: the
-  /// glyph's own angle still comes exclusively from
-  /// [viewStateListenable], which [MapController.rotate] itself feeds
-  /// (via this screen's existing `onPositionChanged`/`onMapEvent` →
-  /// `_updateMapViewportState` pipeline) — a drag step and any other
-  /// rotation source (a reset, a two-finger gesture) update the exact
-  /// same state the same way.
-  final MapController? mapController;
+  /// Deliberately the same [SoilMapEngine] the rest of this screen already
+  /// drives (`_mapEngine`/`_animateMapToNorth`) — every drag step reads
+  /// [SoilMapEngine.camera]'s live rotation and writes back through
+  /// [SoilMapEngine.rotate], the same engine API the existing reset-to-
+  /// north animation already uses. There is no locally tracked rotation
+  /// value here that could drift from the real camera: the glyph's own
+  /// angle still comes exclusively from [viewStateListenable], which
+  /// [SoilMapEngine.rotate] itself feeds (via this screen's existing
+  /// `onPositionChanged`/`onMapEvent` → `_updateMapViewportState`
+  /// pipeline) — a drag step and any other rotation source (a reset, a
+  /// two-finger gesture) update the exact same state the same way.
+  final SoilMapEngine? mapEngine;
 
   @override
   State<_MapCompassControl> createState() => _MapCompassControlState();
@@ -9087,10 +9934,10 @@ class _MapCompassControlState extends State<_MapCompassControl> {
   }
 
   void _handleDragUpdate(DragUpdateDetails details) {
-    final mapController = widget.mapController;
-    if (mapController == null) return;
-    final currentRotation = mapController.camera.rotation;
-    mapController.rotate(
+    final mapEngine = widget.mapEngine;
+    if (mapEngine == null) return;
+    final currentRotation = mapEngine.camera.rotation;
+    mapEngine.rotate(
       currentRotation + details.delta.dx * _dragDegreesPerPixel,
     );
   }
@@ -9324,6 +10171,529 @@ class _CompassGlyphPainter extends CustomPainter {
   @override
   bool shouldRepaint(_CompassGlyphPainter oldDelegate) {
     return oldDelegate.color != color;
+  }
+}
+
+/// Best-effort, easily-extended display name for a coverage's card —
+/// Fase 11C: "no hardcodear Santa Fe" inside the widget below, which takes
+/// this as a plain parameter instead of assuming any one province. Fase
+/// 12A added Buenos Aires as a second on-demand province, needing its own
+/// real entry here too.
+String _provinceDisplayName(String coverageId) {
+  return switch (coverageId) {
+    'santa_fe' => 'Santa Fe',
+    'buenos_aires' => 'Buenos Aires',
+    _ => coverageId,
+  };
+}
+
+/// Persists, per on-demand coverage, which delivery-status the user has
+/// already closed its download notice for — SharedPreferences so it
+/// survives closing and reopening the map (an in-memory-only flag doesn't).
+/// A status change (e.g. notInstalled -> error) makes a previous dismissal
+/// stale, so the notice can reappear if the situation actually changed.
+/// Keyed by coverage id (Fase 12A) so Santa Fe and Buenos Aires each keep
+/// their own independent dismissal — Santa Fe's key is byte-identical to
+/// what it always was (`gis.province_notice_dismissed.santa_fe`).
+abstract final class _ProvinceNoticeDismissal {
+  static String _key(String coverageId) =>
+      'gis.province_notice_dismissed.$coverageId';
+
+  static Future<String?> read(String coverageId) async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getString(_key(coverageId));
+  }
+
+  static Future<void> write(String coverageId, String statusName) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_key(coverageId), statusName);
+  }
+}
+
+/// Reads a province's real boundary polygon from the same reference-
+/// basemap asset `OfflineReferenceMapLayer` already uses
+/// ([ProvinceConfig.referenceMapAsset]) — its `provincialBoundaries` layer,
+/// sourced from IGN's real `ign:provincia` WFS layer (see that asset's own
+/// `source` field), not a rectangle standing in for the province. Returns
+/// null — no outline, never a fabricated shape — if there's no reference
+/// map asset, or the load/parse fails for any reason.
+abstract final class _ProvinceBoundaryLoader {
+  static Future<List<List<LatLng>>?> load(String? assetPath) async {
+    if (assetPath == null) return null;
+    try {
+      final raw = await rootBundle.loadString(assetPath);
+      final decoded = jsonDecode(raw) as Map<String, Object?>;
+      final layers = decoded['layers'] as Map<String, Object?>?;
+      final rings = layers?['provincialBoundaries'] as List<Object?>?;
+      if (rings == null || rings.isEmpty) return null;
+      return rings
+          .map(
+            (ring) => (ring as List<Object?>)
+                .map(
+                  (point) => LatLng(
+                    ((point as List<Object?>)[1]! as num).toDouble(),
+                    (point[0]! as num).toDouble(),
+                  ),
+                )
+                .toList(growable: false),
+          )
+          .toList(growable: false);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// Fase 11C/12A: fixed map annotation for a coverage whose soil-polygon
+/// PMTiles isn't available yet — anchored to [anchorPoint] via
+/// [MapCamera.latLngToScreenOffset], the same way a map marker's info
+/// window would be. Deliberately has no "keep on screen" or "avoid the
+/// controls" logic: its position is only ever a function of that fixed
+/// coordinate and the current camera, nothing else — panning moves it
+/// exactly as it moves the province, and it simply isn't repositioned if
+/// that puts it partly off-screen or under a control. On Windows — always
+/// bundled, see `windows/CMakeLists.txt` — [delivery]'s status is always
+/// `available` and this never renders.
+///
+/// Shared by every on-demand province (Santa Fe, then Buenos Aires — Fase
+/// 12A extracted this from a Santa-Fe-only widget once a second province
+/// needed the exact same banner, contour, dismissal and download flow).
+///
+/// Visible exactly when [anchorPoint] itself is inside the viewport — no
+/// zoom threshold, no grace period once it's left the screen. Its on-screen
+/// SIZE never changes either: [_ProvincePmtilesBannerState._cardMaxWidth]
+/// is a fixed logical-pixel width regardless of zoom, so this behaves like
+/// a marker overlay, not a scaled map layer.
+class _ProvincePmtilesBanner extends StatefulWidget {
+  const _ProvincePmtilesBanner({
+    super.key,
+    required this.coverageId,
+    required this.delivery,
+    required this.anchorPoint,
+    required this.provinceBounds,
+    required this.provinceName,
+    required this.referenceMapAssetPath,
+    required this.viewStateListenable,
+    required this.resolveCamera,
+    required this.onDownload,
+    required this.onDismissedFirstTime,
+  });
+
+  /// Which coverage this banner is for — namespaces the persisted
+  /// dismissal (see [_ProvinceNoticeDismissal]) so Santa Fe and Buenos
+  /// Aires each keep their own independent "closed" state. Also used as
+  /// this widget's [Key] at the call site, so its identity (and the
+  /// in-flight boundary/dismissal loads in its [State]) survives sibling
+  /// widgets appearing/disappearing elsewhere in the same [Stack] —
+  /// without a key, a keyless list item can be torn down and recreated
+  /// purely because an unrelated sibling's presence changed, restarting
+  /// this widget's async loads before they ever get to render anything.
+  final String coverageId;
+
+  /// This province's on-demand delivery object — the single source of
+  /// truth for [PmtilesDeliveryStatus] this banner reads and drives. Gates
+  /// both the download CARD and the boundary/shadow (see [build]): once
+  /// [PmtilesDeliveryStatus.available], the real polygons are the
+  /// province's representation, so neither renders any more, regardless of
+  /// spatial visibility or card-dismissal state.
+  final PmtilesDelivery delivery;
+
+  /// A real point inside the province — see [ProvinceConfig.
+  /// downloadBannerAnchor] for why a real, roughly-central town is used
+  /// instead of the archive's data-derived center or the boundary
+  /// polygon's centroid. Only used to position/gate the download CARD.
+  final LatLng anchorPoint;
+
+  /// The province's real geographic extent — used only for the spatial half
+  /// of the boundary/shadow's visibility (does it overlap the current
+  /// viewport at all), completely independent of [anchorPoint] and
+  /// dismissal state. The other half is [delivery]'s availability — see
+  /// [_isProvinceBoundsVisible] and [build].
+  final GeoBounds provinceBounds;
+
+  final String provinceName;
+
+  /// Same asset [_ProvinceBoundaryLoader] reads the real outline from —
+  /// passed in rather than looked up here so this widget doesn't need a
+  /// [MapCoverage] of its own, just like [ProvinceConfig].referenceMapAsset
+  /// already flows into `OfflineReferenceMapLayer` elsewhere on this screen.
+  final String? referenceMapAssetPath;
+  final ValueListenable<_MapViewportState> viewStateListenable;
+
+  /// Live camera accessor (not a snapshot) — null when the active engine
+  /// isn't [FlutterMapEngine] and so exposes no equivalent projection here
+  /// (e.g. a test fake); the annotation simply doesn't render rather than
+  /// crashing or guessing a position.
+  final MapCamera? Function() resolveCamera;
+  final VoidCallback onDownload;
+
+  /// Fires the very first time the user closes this notice with the `×` —
+  /// never again after that, even across app restarts (see
+  /// [_ProvincePmtilesBannerState._dismiss]). Fase 11D UX: lets the screen
+  /// show a one-off temporary hint explaining where to find the download
+  /// later, without this widget needing to know anything about how that
+  /// hint is displayed.
+  final VoidCallback onDismissedFirstTime;
+
+  /// Whether [anchor] currently projects inside the visible screen — the
+  /// only thing that decides the download CARD's visibility (never the
+  /// boundary/shadow — see [_isProvinceBoundsVisible]). No zoom threshold:
+  /// at any zoom level, once this point scrolls off-screen the card
+  /// disappears, and it reappears the moment it's back in view.
+  static bool isCoverageVisible(
+    MapCamera? camera,
+    Size screenSize,
+    LatLng anchor,
+  ) {
+    if (camera == null || screenSize.isEmpty) return false;
+    final offset = camera.latLngToScreenOffset(anchor);
+    return offset.dx >= 0 &&
+        offset.dx <= screenSize.width &&
+        offset.dy >= 0 &&
+        offset.dy <= screenSize.height;
+  }
+
+  /// Whether the province's real extent ([provinceBounds]) overlaps the
+  /// camera's current visible geographic area at all — the spatial half of
+  /// the boundary/shadow's visibility (see [build] for the other half,
+  /// [delivery]'s availability). Deliberately not based on any single point
+  /// (unlike [isCoverageVisible]): a large province can have its center
+  /// off-screen while still being partially visible, and this must still
+  /// show the boundary in that case. [MapCamera.visibleBounds] already
+  /// accounts for zoom, pan and rotation, so this has no explicit zoom
+  /// threshold of its own — zooming out only ever grows the visible area,
+  /// so a province that was visible stays visible until it's genuinely
+  /// entirely off-screen.
+  static bool _isProvinceBoundsVisible(
+    MapCamera? camera,
+    GeoBounds provinceBounds,
+  ) {
+    if (camera == null) return false;
+    final visible = camera.visibleBounds;
+    return GeoBounds(
+      minLatitude: visible.south,
+      maxLatitude: visible.north,
+      minLongitude: visible.west,
+      maxLongitude: visible.east,
+    ).intersects(provinceBounds);
+  }
+
+  @override
+  State<_ProvincePmtilesBanner> createState() => _ProvincePmtilesBannerState();
+}
+
+class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
+  static const double _cardMaxWidth = 200;
+
+  // Persisted (SharedPreferences) rather than kept only in memory — the
+  // close must survive panning away and back, and closing/reopening the
+  // map — for as long as this province's delivery status stays the same as
+  // it was when the user dismissed it.
+  String? _dismissedStatusName;
+
+  // The province's real boundary ring(s) in plain LatLng — reprojected to
+  // screen space fresh on every build (camera can rotate/zoom/pan), never
+  // recomputed from anything but the camera itself.
+  List<List<LatLng>>? _boundaryRings;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.delivery.addListener(_handleDeliveryChanged);
+    unawaited(_loadDismissal());
+    unawaited(_loadBoundary());
+  }
+
+  @override
+  void dispose() {
+    widget.delivery.removeListener(_handleDeliveryChanged);
+    super.dispose();
+  }
+
+  void _handleDeliveryChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadDismissal() async {
+    final dismissed = await _ProvinceNoticeDismissal.read(widget.coverageId);
+    if (mounted && dismissed != _dismissedStatusName) {
+      setState(() => _dismissedStatusName = dismissed);
+    }
+  }
+
+  Future<void> _loadBoundary() async {
+    final rings = await _ProvinceBoundaryLoader.load(
+      widget.referenceMapAssetPath,
+    );
+    if (mounted && rings != null) {
+      setState(() => _boundaryRings = rings);
+    }
+  }
+
+  void _dismiss(PmtilesDeliveryStatus status) {
+    final isFirstEverDismissal = _dismissedStatusName == null;
+    setState(() => _dismissedStatusName = status.name);
+    unawaited(_ProvinceNoticeDismissal.write(widget.coverageId, status.name));
+    if (isFirstEverDismissal) widget.onDismissedFirstTime();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<_MapViewportState>(
+      valueListenable: widget.viewStateListenable,
+      builder: (context, viewState, child) {
+        // No camera to project against — nothing to anchor to, so render
+        // nothing rather than guess a screen position. Both the boundary
+        // and the card need a camera, so this is the one gate they still
+        // share.
+        final camera = widget.resolveCamera();
+        if (camera == null) return const SizedBox.shrink();
+        final screenSize = MediaQuery.sizeOf(context);
+
+        // Four independent facts, kept separate on purpose (see class docs):
+        // 1. PMTiles availability — the only thing that should ever hide
+        //    the boundary/shadow outright, regardless of geography.
+        // 2. Spatial visibility — does the province's real extent overlap
+        //    the viewport at all (unrelated to availability or dismissal).
+        // 3. Card dismissal — only ever gates the download card.
+        // 4. The real soil polygons themselves — rendered elsewhere
+        //    (the tile pipeline), entirely untouched by this widget.
+        final status = widget.delivery.status;
+        final isAvailable = status == PmtilesDeliveryStatus.available;
+
+        // Boundary/shadow visibility: available PMTiles hides it outright —
+        // the real polygons are the province's representation once they're
+        // there. Otherwise, purely spatial: does its real extent overlap
+        // the viewport, independent of the download card's dismissal state.
+        final showBoundary =
+            !isAvailable &&
+            _boundaryRings != null &&
+            _ProvincePmtilesBanner._isProvinceBoundsVisible(
+              camera,
+              widget.provinceBounds,
+            );
+
+        // Download card visibility: unchanged from before — only while
+        // not yet available, not dismissed for the current status, and
+        // its own anchor point is on screen.
+        final showCard =
+            !isAvailable &&
+            _dismissedStatusName != status.name &&
+            _ProvincePmtilesBanner.isCoverageVisible(
+              camera,
+              screenSize,
+              widget.anchorPoint,
+            );
+
+        if (!showBoundary && !showCard) {
+          return const SizedBox.shrink();
+        }
+
+        return Stack(
+          children: [
+            // Subtle outline + darkening tracing the province's real
+            // boundary — see _ProvinceBoundaryLoader. Nothing is drawn if
+            // that data isn't available; a rectangle is never substituted
+            // for it.
+            if (showBoundary)
+              IgnorePointer(
+                child: CustomPaint(
+                  size: screenSize,
+                  painter: _ProvinceHighlightPainter(
+                    rings: _boundaryRings!
+                        .map(
+                          (ring) => ring
+                              .map(camera.latLngToScreenOffset)
+                              .toList(growable: false),
+                        )
+                        .toList(growable: false),
+                    fillColor: Theme.of(
+                      context,
+                    ).colorScheme.scrim.withValues(alpha: 0.10),
+                    borderColor: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.45),
+                  ),
+                ),
+              ),
+            if (showCard)
+              Builder(
+                builder: (context) {
+                  // A fixed, real point inside the province (see
+                  // widget.anchorPoint), reprojected against the live
+                  // camera on every build — exactly the same relationship
+                  // a map marker has to its own position. No clamping, no
+                  // "keep on screen": if this lands under a control or
+                  // off-screen, it stays there, because the geography —
+                  // not screen tidiness — decides where it goes.
+                  final anchor = camera.latLngToScreenOffset(
+                    widget.anchorPoint,
+                  );
+                  return Positioned(
+                    left: anchor.dx - _cardMaxWidth / 2,
+                    top: anchor.dy + 8,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: _cardMaxWidth,
+                      ),
+                      child: _ProvincePmtilesBannerCard(
+                        provinceName: widget.provinceName,
+                        onDownload: widget.onDownload,
+                        onClose: () => _dismiss(status),
+                      ),
+                    ),
+                  );
+                },
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Paints the province's real boundary ring(s) (projected screen points,
+/// one list per ring — see [_ProvinceBoundaryLoader]), each closed into its
+/// own subpath of the same [ui.Path] so multi-ring boundaries (e.g. an
+/// offshore island) all fill and stroke together in one pass.
+class _ProvinceHighlightPainter extends CustomPainter {
+  const _ProvinceHighlightPainter({
+    required this.rings,
+    required this.fillColor,
+    required this.borderColor,
+  });
+
+  final List<List<Offset>> rings;
+  final Color fillColor;
+  final Color borderColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = ui.Path();
+    for (final ring in rings) {
+      if (ring.length < 3) continue;
+      path.addPolygon(ring, true);
+    }
+    canvas.drawPath(path, Paint()..color = fillColor);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = borderColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ProvinceHighlightPainter oldDelegate) {
+    return !listEquals(oldDelegate.rings, rings) ||
+        oldDelegate.fillColor != fillColor ||
+        oldDelegate.borderColor != borderColor;
+  }
+}
+
+class _ProvincePmtilesBannerCard extends StatelessWidget {
+  const _ProvincePmtilesBannerCard({
+    required this.provinceName,
+    required this.onDownload,
+    required this.onClose,
+  });
+
+  final String provinceName;
+  final VoidCallback onDownload;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    // Same floating-card language as the home screen's module cards
+    // (surfaceContainerLow + a faint shadow, not a heavy elevated panel):
+    // a light, compact card, not a banner or HUD.
+    return Material(
+      color: colorScheme.surfaceContainerLow,
+      elevation: 2,
+      shadowColor: colorScheme.shadow.withValues(alpha: 0.16),
+      borderRadius: BorderRadius.circular(14),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Text(
+                      provinceName,
+                      style: textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 26,
+                  height: 26,
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 26,
+                      minHeight: 26,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(
+                      backgroundColor: colorScheme.surfaceContainerHighest
+                          .withValues(alpha: 0.55),
+                      shape: const CircleBorder(),
+                    ),
+                    tooltip: 'Cerrar',
+                    onPressed: onClose,
+                    icon: Icon(
+                      AppIcons.close,
+                      size: 14,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 10),
+              child: Text(
+                'Datos de suelo',
+                style: textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            FilledButton.tonal(
+              onPressed: onDownload,
+              style: FilledButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 9,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                textStyle: textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              child: const Text('Descargar'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

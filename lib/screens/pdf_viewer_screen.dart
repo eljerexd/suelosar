@@ -21,11 +21,39 @@ class PdfViewerScreen extends StatefulWidget {
   const PdfViewerScreen({
     required this.title,
     required this.assetPath,
+    this.initialPage,
+    this.lastPage,
+    this.onPageChanged,
     super.key,
   });
 
   final String title;
   final String assetPath;
+
+  /// 1-based physical PDF page to open on, and — whenever [lastPage] is
+  /// also set — the lower bound of the page range the user is confined to.
+  /// Optional and additive — Buenos Aires callers never pass this, so they
+  /// keep opening at whatever page pdfrx defaults to (page 1), unchanged.
+  /// Introduced for Santa Fe's single consolidated PDF, where a series
+  /// lives at an arbitrary page range instead of being its own file (see
+  /// SantaFeSeriesRepository).
+  final int? initialPage;
+
+  /// 1-based physical PDF page where the selected series ends. When both
+  /// this and [initialPage] are set, the viewer clamps all navigation —
+  /// swipe/scroll, keyboard, mouse wheel, and any programmatic `goTo*`
+  /// call alike, since they all funnel through pdfrx's `normalizeMatrix`
+  /// hook — to `[initialPage, lastPage]`, so the consolidated PDF's other
+  /// series never become reachable and the series feels like its own
+  /// independent document. If either is null, no range is enforced.
+  final int? lastPage;
+
+  /// Notified with the current 1-based page number whenever it changes
+  /// (including the initial jump to [initialPage], once applied). Optional;
+  /// existing callers are unaffected. This is also the hook a future phase
+  /// would use to implement the [lastPage] boundary (clamp back via
+  /// `PdfViewerController.goToPage` when the reported page exceeds it).
+  final ValueChanged<int>? onPageChanged;
 
   @override
   State<PdfViewerScreen> createState() => _PdfViewerScreenState();
@@ -42,7 +70,18 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     false,
   );
   bool _pdfOpenLogged = false;
+  bool _initialPageApplied = false;
   Timer? _mobileScrollbarHideTimer;
+
+  // FASE 9 — prueba de hipótesis (Windows Release PDF en blanco): PdfViewer
+  // .asset() no expone `maxSizeToCacheOnMemory`, así que los bytes del
+  // asset se cargan acá y se sirven a través de PdfDocumentRefCustom, el
+  // único punto de la API pública de pdfrx donde ese parámetro es
+  // configurable. Ver PdfDocumentRefCustom más abajo para el porqué del
+  // valor elegido.
+  late final Future<Uint8List> _pdfBytesFuture = rootBundle
+      .load(widget.assetPath)
+      .then((data) => data.buffer.asUint8List());
 
   @override
   void initState() {
@@ -77,9 +116,84 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 
   void _handleViewerReady() {
     _handleControllerChanged();
+    _applyInitialPageIfNeeded();
     if (_pdfOpenLogged) return;
     _pdfOpenLogged = true;
     unawaited(AnalyticsService.instance.logPdfOpened());
+  }
+
+  void _applyInitialPageIfNeeded() {
+    final initialPage = widget.initialPage;
+    if (initialPage == null || _initialPageApplied) return;
+    _initialPageApplied = true;
+    unawaited(
+      _pdfController.goToPage(pageNumber: initialPage, duration: Duration.zero),
+    );
+  }
+
+  void _handlePageChanged(int? pageNumber) {
+    if (pageNumber != null) widget.onPageChanged?.call(pageNumber);
+  }
+
+  /// Whether [PdfViewerScreen.initialPage] and [PdfViewerScreen.lastPage]
+  /// are both set, so navigation should be confined to that page range.
+  /// Buenos Aires callers never set either, so this is always false there
+  /// and the viewer behaves exactly as before.
+  bool get _hasPageRange => widget.initialPage != null && widget.lastPage != null;
+
+  /// Restricts the viewer's pan/scroll matrix to the vertical span of pages
+  /// `[initialPage, lastPage]`. Every matrix change — swipe/scroll, arrow
+  /// keys, mouse wheel, and programmatic `goTo*` calls — is routed through
+  /// pdfrx's `normalizeMatrix` hook before being applied
+  /// (`PdfViewerController.value` setter / `_makeMatrixInSafeRange` in
+  /// pdfrx 2.4.7), so this one function is enough to cover all of them; no
+  /// per-gesture or per-button handling is needed.
+  ///
+  /// The horizontal axis is left clamped to the full document width
+  /// (pdfrx's own default), since the consolidated PDF's pages share one
+  /// horizontal layout and Santa Fe doesn't need to restrict panning there.
+  ///
+  /// Builds the result directly from [PdfMatrix4Ext]'s public `xZoomed`/
+  /// `yZoomed`/`zoom` members — the same primitives pdfrx's own
+  /// `_calcMatrixFor` composes a matrix from — rather than going through
+  /// [PdfViewerController], so the clamp is pure and needs no attached,
+  /// ready document to run (and so it stays correct even if this callback
+  /// ever fires before the controller reports ready).
+  Matrix4 _clampToPageRange(
+    Matrix4 matrix,
+    Size viewSize,
+    PdfPageLayout layout,
+    PdfViewerController? controller,
+  ) {
+    final pageLayouts = layout.pageLayouts;
+    if (pageLayouts.isEmpty) return matrix;
+    final minIndex = (widget.initialPage! - 1).clamp(0, pageLayouts.length - 1);
+    final maxIndex = (widget.lastPage! - 1).clamp(0, pageLayouts.length - 1);
+    final rangeTop = pageLayouts[minIndex].top;
+    final rangeBottom = pageLayouts[maxIndex].bottom;
+
+    final zoom = matrix.zoom;
+    final position = matrix.calcPosition(viewSize);
+    final hw = viewSize.width / 2 / zoom;
+    final hh = viewSize.height / 2 / zoom;
+
+    final x = _clampOrCenter(position.dx, hw, layout.documentSize.width - hw);
+    final y = _clampOrCenter(position.dy, rangeTop + hh, rangeBottom - hh);
+    if (x == position.dx && y == position.dy) return matrix;
+
+    return matrix.clone()
+      ..xZoomed = -x * zoom + viewSize.width / 2
+      ..yZoomed = -y * zoom + viewSize.height / 2;
+  }
+
+  /// Clamps [value] to `[lower, upper]`. If the range is inverted (the
+  /// content spans less than the viewport — e.g. a short series fully
+  /// visible while zoomed out), centers within it instead, matching the
+  /// fallback pdfrx's own default boundary clamp uses for an undersized
+  /// document.
+  static double _clampOrCenter(double value, double lower, double upper) {
+    if (lower > upper) return (lower + upper) / 2;
+    return value.clamp(lower, upper).toDouble();
   }
 
   bool get _usesAutoHideScrollbar =>
@@ -160,29 +274,57 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 
   Widget _buildViewer({required bool desktop}) {
     final showScrollThumb = desktop || _usesAutoHideScrollbar;
-    return PdfViewer.asset(
-      widget.assetPath,
-      controller: _pdfController,
-      params: PdfViewerParams(
-        backgroundColor: const Color(0xFFF5F5F5),
-        underflowAnchor: PdfPageAnchor.center,
-        sizeDelegateProvider: _SuelosArPdfSizeDelegateProvider(
-          desktop: desktop,
-        ),
-        onViewerReady: (_, _) => _handleViewerReady(),
-        viewerOverlayBuilder: showScrollThumb
-            ? (context, _, _) => [
-                PdfViewerScrollThumb(
-                  controller: _pdfController,
-                  orientation: ScrollbarOrientation.right,
-                  thumbSize: const Size(12, 64),
-                  margin: 4,
-                  thumbBuilder: (context, size, _, _) =>
-                      _buildScrollThumb(context, size, desktop: desktop),
-                ),
-              ]
-            : null,
-      ),
+    return FutureBuilder<Uint8List>(
+      future: _pdfBytesFuture,
+      builder: (context, snapshot) {
+        final bytes = snapshot.data;
+        if (bytes == null) return const SizedBox.shrink();
+        return PdfViewer(
+          PdfDocumentRefCustom(
+            fileSize: bytes.length,
+            sourceName: widget.assetPath,
+            // FASE 9 — prueba de hipótesis: forzar el umbral de "cachear en
+            // memoria" muy por encima de cualquier PDF de SuelosAR (el más
+            // grande hoy, el consolidado de Santa Fe, pesa ~3,2 MB), para que
+            // pdfrx siempre use FPDF_LoadMemDocument y nunca la ruta "on
+            // demand" (PdfiumFileAccessHelperWin32 en Windows).
+            maxSizeToCacheOnMemory: 20 * 1024 * 1024,
+            read: (buffer, position, size) {
+              if (position + size > bytes.length) {
+                size = bytes.length - position;
+                if (size < 0) return -1;
+              }
+              for (var i = 0; i < size; i++) {
+                buffer[i] = bytes[position + i];
+              }
+              return size;
+            },
+          ),
+          controller: _pdfController,
+          params: PdfViewerParams(
+            backgroundColor: const Color(0xFFF5F5F5),
+            underflowAnchor: PdfPageAnchor.center,
+            sizeDelegateProvider: _SuelosArPdfSizeDelegateProvider(
+              desktop: desktop,
+            ),
+            onViewerReady: (_, _) => _handleViewerReady(),
+            onPageChanged: _handlePageChanged,
+            normalizeMatrix: _hasPageRange ? _clampToPageRange : null,
+            viewerOverlayBuilder: showScrollThumb
+                ? (context, _, _) => [
+                    PdfViewerScrollThumb(
+                      controller: _pdfController,
+                      orientation: ScrollbarOrientation.right,
+                      thumbSize: const Size(12, 64),
+                      margin: 4,
+                      thumbBuilder: (context, size, _, _) =>
+                          _buildScrollThumb(context, size, desktop: desktop),
+                    ),
+                  ]
+                : null,
+          ),
+        );
+      },
     );
   }
 
@@ -436,6 +578,8 @@ Future<bool> openLocalPdfViewer(
   required String title,
   required String assetPath,
   required String unavailableMessage,
+  int? initialPage,
+  int? lastPage,
 }) async {
   if (isSuelosArCompactAndroidPortrait(context)) {
     FocusManager.instance.primaryFocus?.unfocus();
@@ -456,7 +600,12 @@ Future<bool> openLocalPdfViewer(
   if (!context.mounted) return false;
   await Navigator.of(context).push(
     InstantPopMaterialPageRoute<void>(
-      builder: (_) => PdfViewerScreen(title: title, assetPath: assetPath),
+      builder: (_) => PdfViewerScreen(
+        title: title,
+        assetPath: assetPath,
+        initialPage: initialPage,
+        lastPage: lastPage,
+      ),
     ),
   );
   return true;

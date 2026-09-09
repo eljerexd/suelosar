@@ -39,6 +39,12 @@ MEDIUM_MAX_ZOOM="${MEDIUM_MAX_ZOOM:-10}"
 INTERMEDIATE_MAX_ZOOM="${INTERMEDIATE_MAX_ZOOM:-12}"
 SOURCE_SHAPEFILE="${SOURCE_SHAPEFILE:-}"
 SOURCE_SRS="${SOURCE_SRS:-}"
+# Comma-separated subset of the required attributes below that may be
+# present as an empty column (schema still enforced) instead of needing at
+# least one populated sample. Empty by default: every dataset that does not
+# set this — including Buenos Aires — keeps the exact original behavior,
+# since required_attributes minus an empty set is required_attributes.
+OPTIONAL_ATTRIBUTES="${OPTIONAL_ATTRIBUTES:-}"
 
 [[ -d "${INPUT_DIR}" ]] || fail "Input directory not found: ${INPUT_DIR}"
 [[ -d "${OUTPUT_DIR}" ]] || fail "Output directory not found: ${OUTPUT_DIR}"
@@ -137,13 +143,13 @@ ogr2ogr \
   -lco SPATIAL_INDEX=YES
 
 log "Validating repaired geometries"
-python3 - "${VALIDATED_DATA}" "${LAYER_NAME}" "${ATTRIBUTE_SAMPLES}" <<'PY'
+python3 - "${VALIDATED_DATA}" "${LAYER_NAME}" "${ATTRIBUTE_SAMPLES}" "${OPTIONAL_ATTRIBUTES}" <<'PY'
 import json
 import sys
 
 from osgeo import ogr
 
-dataset_path, layer_name, samples_path = sys.argv[1:4]
+dataset_path, layer_name, samples_path, optional_attributes_csv = sys.argv[1:5]
 dataset = ogr.Open(dataset_path, 0)
 if dataset is None:
     raise SystemExit(f"Unable to open validated dataset: {dataset_path}")
@@ -177,6 +183,20 @@ if missing_fields:
         "Required source attributes are missing: " + ", ".join(missing_fields)
     )
 
+# Attributes listed here must still exist as columns (checked above) but are
+# allowed to be empty on every feature — for datasets whose source genuinely
+# has no data for that attribute (documented per-dataset, not invented).
+optional_attributes = {
+    name.strip() for name in optional_attributes_csv.split(",") if name.strip()
+}
+unknown_optional = sorted(optional_attributes - required_attributes)
+if unknown_optional:
+    raise SystemExit(
+        "OPTIONAL_ATTRIBUTES lists unknown attributes: "
+        + ", ".join(unknown_optional)
+    )
+attributes_needing_samples = required_attributes - optional_attributes
+
 attribute_samples = {}
 for feature in layer:
     geometry = feature.GetGeometryRef()
@@ -186,7 +206,7 @@ for feature in layer:
         invalid_count += 1
     else:
         representative_point = geometry.PointOnSurface()
-        for attribute in required_attributes - attribute_samples.keys():
+        for attribute in attributes_needing_samples - attribute_samples.keys():
             value = feature.GetField(attribute)
             if value is not None and str(value).strip():
                 attribute_samples[attribute] = [
@@ -200,7 +220,7 @@ if missing_count or invalid_count:
         f"{missing_count} missing."
     )
 
-missing_samples = sorted(required_attributes - attribute_samples.keys())
+missing_samples = sorted(attributes_needing_samples - attribute_samples.keys())
 if missing_samples:
     raise SystemExit(
         "Required attributes have no populated source values: "
@@ -349,7 +369,8 @@ python3 /usr/local/bin/validate_map.py \
   "${LAYER_NAME}" \
   "${MIN_ZOOM}" \
   "${MAX_ZOOM}" \
-  "${ATTRIBUTE_SAMPLES}"
+  "${ATTRIBUTE_SAMPLES}" \
+  "${OPTIONAL_ATTRIBUTES}"
 
 python3 - "${TEMP_OUTPUT}" <<'PY'
 import sys

@@ -72,10 +72,11 @@ def sample_zoom(archive, layer_name, zoom):
 
 
 def main():
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 7:
         fail(
             "Usage: validate_map.py "
-            "ARCHIVE LAYER_NAME MIN_ZOOM MAX_ZOOM ATTRIBUTE_SAMPLES"
+            "ARCHIVE LAYER_NAME MIN_ZOOM MAX_ZOOM ATTRIBUTE_SAMPLES "
+            "OPTIONAL_ATTRIBUTES"
         )
 
     archive = Path(sys.argv[1])
@@ -83,6 +84,21 @@ def main():
     expected_min_zoom = int(sys.argv[3])
     expected_max_zoom = int(sys.argv[4])
     samples_path = Path(sys.argv[5])
+    # Same OPTIONAL_ATTRIBUTES mechanism as build_map.sh: attributes listed
+    # here are allowed to have no populated sample (dataset genuinely has no
+    # source data for them) and are skipped by the presence check below.
+    # Empty by default, so datasets that never set it — including Buenos
+    # Aires — validate exactly as before.
+    optional_attributes = {
+        name.strip() for name in sys.argv[6].split(",") if name.strip()
+    }
+    unknown_optional = sorted(optional_attributes - REQUIRED_ATTRIBUTES)
+    if unknown_optional:
+        fail(
+            "OPTIONAL_ATTRIBUTES lists unknown attributes: "
+            + ", ".join(unknown_optional)
+        )
+    attributes_to_check = REQUIRED_ATTRIBUTES - optional_attributes
 
     with archive.open("rb") as source:
         header = source.read(127)
@@ -114,7 +130,7 @@ def main():
         attribute_samples = json.load(samples_file)
 
     missing_attributes = []
-    for attribute in sorted(REQUIRED_ATTRIBUTES):
+    for attribute in sorted(attributes_to_check):
         longitude, latitude = attribute_samples[attribute]
         x, y = tile_coordinates(
             longitude,
@@ -139,7 +155,8 @@ def main():
     print(
         "[SuelosAR GIS] PMTiles validation passed: "
         f"layer={layer_name}, zooms={expected_min_zoom}-{expected_max_zoom}, "
-        f"required_attributes={len(REQUIRED_ATTRIBUTES)}."
+        f"checked_attributes={len(attributes_to_check)}, "
+        f"optional_attributes={sorted(optional_attributes)}."
     )
 
 

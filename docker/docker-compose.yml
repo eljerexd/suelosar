@@ -20,6 +20,7 @@ services:
       INTERMEDIATE_MAX_ZOOM: ${INTERMEDIATE_MAX_ZOOM:-12}
       SOURCE_SHAPEFILE: ${SOURCE_SHAPEFILE:-}
       SOURCE_SRS: ${SOURCE_SRS:-}
+      OPTIONAL_ATTRIBUTES: ${OPTIONAL_ATTRIBUTES:-}
     volumes:
       - type: bind
         source: ./input

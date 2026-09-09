@@ -10,6 +10,38 @@
       "templateFor": "",
       "flutterMode": "debug",
       "toolArgs": [
+        "--flavor",
+        "prod",
+        "--dart-define-from-file=.vscode/supabase.env.json"
+      ]
+    },
+    {
+      "name": "SuelosAR Beta",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "cwd": "${workspaceFolder}",
+      "templateFor": "",
+      "preLaunchTask": "invalidate-beta-debug-build-cache",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--flavor",
+        "beta",
+        "--dart-define-from-file=.vscode/supabase.env.json"
+      ]
+    },
+    {
+      "name": "SuelosAR Alpha",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "cwd": "${workspaceFolder}",
+      "templateFor": "",
+      "preLaunchTask": "invalidate-beta-debug-build-cache",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--flavor",
+        "beta",
         "--dart-define-from-file=.vscode/supabase.env.json"
       ]
     }

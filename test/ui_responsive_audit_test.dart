@@ -10,6 +10,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:suelosar/gis/gis_feature.dart';
 import 'package:suelosar/models/saved_measurement.dart';
+import 'package:suelosar/models/soil_card.dart';
 import 'package:suelosar/models/soil_map.dart';
 import 'package:suelosar/gis/gis_layer.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
@@ -33,7 +34,16 @@ void main() {
     'home': const HomeScreen(),
     'settings': const SettingsScreen(),
     'favorites': const FavoritesScreen(),
-    'soil maps': const SoilMapsScreen(),
+    // Stubbed loaders: this smoke test only checks that the layout doesn't
+    // throw/overflow, never actual catalog content, so it doesn't need
+    // real `rootBundle` reads — and leaving those real reads in flight when
+    // the widget is torn down without waiting for them (this loop doesn't)
+    // has been observed to wedge a later test's own real asset load in the
+    // same process.
+    'soil maps': SoilMapsScreen(
+      soilMapsLoader: () async => const <SoilMap>[],
+      santaFeCardsLoader: () async => const <SoilCard>[],
+    ),
     'personal markers': const PersonalMarkersScreen(),
   }.entries) {
     testWidgets('${entry.key} fits a narrow phone with enlarged text', (
@@ -134,16 +144,15 @@ void main() {
             soilMapsLoader: () async => const <SoilMap>[
               SoilMap(name: 'Azul', pdf: 'Azul.pdf'),
             ],
+            // Stubbed like soilMapsLoader above: this test is about keyboard
+            // inset layout, not catalog content, and doesn't need a real
+            // `rootBundle` read.
+            santaFeCardsLoader: () async => const <SoilCard>[],
           ),
         ),
       );
-      for (var attempt = 0; attempt < 250; attempt++) {
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 20)),
-        );
-        await tester.pump();
-        if (find.text('Todas las cartas').evaluate().isNotEmpty) break;
-      }
+      await tester.pump();
+      await tester.pump();
       expect(find.text('Todas las cartas'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
@@ -198,10 +207,12 @@ void main() {
             soilMapsLoader: () async => const <SoilMap>[
               SoilMap(name: 'Azul', pdf: 'Azul.pdf'),
             ],
+            santaFeCardsLoader: () async => const <SoilCard>[],
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump();
       await tester.tap(find.byType(SearchBar));
 
       for (final inset in <double>[80, 140, 180]) {
@@ -217,7 +228,7 @@ void main() {
 
       tester.view.viewInsets = FakeViewPadding.zero;
       await tester.pump();
-      expect(find.text('Memorias descriptivas'), findsOneWidget);
+      expect(find.text('Cartas de suelo'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -560,7 +571,11 @@ void main() {
     );
     expect(find.byKey(const ValueKey('desktop-map-rail-markers')), findsOne);
     expect(find.byKey(const ValueKey('desktop-map-rail-favorites')), findsOne);
-    expect(find.byKey(const ValueKey('desktop-map-rail-location')), findsOne);
+    // "Mi ubicación" is deliberately NOT a rail entry any more: on the
+    // desktop shell it moved out of the side panel into its own floating
+    // bottom-right control, so it is asserted by tooltip rather than by a
+    // `desktop-map-rail-location` key, which no longer exists.
+    expect(find.byTooltip('Mi ubicación'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('desktop-map-rail-layers')));
     await tester.pumpAndSettle();
     expect(find.text('Capas'), findsOneWidget);
