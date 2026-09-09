@@ -45,6 +45,13 @@ abstract final class AppIcons {
   static const IconData device = Icons.devices_outlined;
   static const IconData upload = Icons.cloud_upload_outlined;
   static const IconData download = Icons.cloud_download_outlined;
+
+  /// Lucide's plain download arrow. Deliberately separate from
+  /// [download] (Material's cloud glyph), which Configuración and
+  /// Sincronización already show and must keep: only the GIS province
+  /// download card uses this lighter stroke arrow, to match the Lucide
+  /// set the rest of the map chrome draws from.
+  static const IconData downloadArrow = LucideIcons.download;
   static const IconData connection = Icons.wifi_outlined;
   static const IconData queue = Icons.format_list_numbered_rounded;
   static const IconData refresh = Icons.refresh_rounded;

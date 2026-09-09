@@ -44,6 +44,18 @@
         "beta",
         "--dart-define-from-file=.vscode/supabase.env.json"
       ]
+    },
+    {
+      "name": "SuelosAR Windows",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "cwd": "${workspaceFolder}",
+      "deviceId": "windows",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--dart-define-from-file=.vscode/supabase.env.json"
+      ]
     }
   ]
 }

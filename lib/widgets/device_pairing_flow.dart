@@ -522,12 +522,35 @@ class _DevicePairingFlowState extends State<_DevicePairingFlow> {
       ? error.message
       : 'No se pudo completar la vinculación.';
 
+  /// Formats how long a pairing session still has left.
+  ///
+  /// Pairing windows are minutes long, so `MM:SS` is the normal shape. It is
+  /// not the only possible one, though: the countdown is
+  /// `expiresAt - DateTime.now()`, so a device whose clock is behind the
+  /// server's — or a session issued with a longer window — yields hours or
+  /// days. The previous version always padded `inMinutes` into the minutes
+  /// slot, which turned those cases into readouts like `15089:02` (a real
+  /// 15,089 minutes, formatted as if it were minutes-and-seconds). Anything
+  /// an hour or over now carries its own hour (and day) field instead, so
+  /// the text stays readable and, when it does look wrong, looks wrong in a
+  /// way that points at the clock rather than at the formatter.
   String _remainingText(DateTime expiresAt) {
     final remaining = expiresAt.difference(DateTime.now());
     if (remaining.isNegative) return '00:00';
-    final minutes = remaining.inMinutes.toString().padLeft(2, '0');
+
     final seconds = (remaining.inSeconds % 60).toString().padLeft(2, '0');
-    return '$minutes:$seconds';
+    final minutes = remaining.inMinutes % 60;
+    if (remaining.inHours < 1) {
+      return '${minutes.toString().padLeft(2, '0')}:$seconds';
+    }
+
+    final paddedMinutes = minutes.toString().padLeft(2, '0');
+    final hours = remaining.inHours % 24;
+    if (remaining.inDays < 1) {
+      return '$hours:$paddedMinutes:$seconds';
+    }
+    return '${remaining.inDays} d ${hours.toString().padLeft(2, '0')}:'
+        '$paddedMinutes:$seconds';
   }
 }
 

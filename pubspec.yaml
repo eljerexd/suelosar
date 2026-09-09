@@ -34,7 +34,7 @@ dependencies:
   flutter_lucide: ^1.11.0
   flutter_map: 8.3.1
   latlong2: ^0.9.1
-  pdfrx: ^2.4.7
+  pdfrx: 2.6.1
   syncfusion_flutter_pdf: ^33.2.15
   pmtiles: 2.0.0
   vector_tile: 4.0.0

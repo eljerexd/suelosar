@@ -25,6 +25,7 @@ class ProvinceConfig {
     this.referenceMapAsset,
     this.preloadSeriesNames,
     this.downloadBannerAnchor,
+    this.pmtilesDownloadSizeBytes,
   });
 
   final String id;
@@ -71,6 +72,21 @@ class ProvinceConfig {
   /// center or the boundary polygon's centroid.
   final LatLng? downloadBannerAnchor;
 
+  /// On-disk size of [pmtilesAsset], in bytes — what the on-demand
+  /// download card shows before the archive exists on the device.
+  ///
+  /// Declared here rather than measured because it has to be known
+  /// *before* downloading: on Android the archive ships as a deferred
+  /// component, so there is no local file to read a length from until
+  /// the download this number is describing has already happened.
+  ///
+  /// Must be re-read from the real asset whenever that asset is
+  /// regenerated (`tool/optimize_buenos_aires_pmtiles.dart`), alongside
+  /// its `.sha256` companion. Null for a province whose size is not
+  /// known — the card then simply omits the size line rather than
+  /// showing a guess.
+  final int? pmtilesDownloadSizeBytes;
+
   static final ProvinceConfig buenosAires = ProvinceConfig(
     id: 'buenos_aires',
     pmtilesAsset: AssetPaths.gisPmTiles,
@@ -90,6 +106,9 @@ class ProvinceConfig {
     // middle of the province, the same reasoning Santa Fe's anchor uses
     // below (Fase 12A: Buenos Aires becomes on-demand too).
     downloadBannerAnchor: const LatLng(-36.2333, -61.1167),
+    // assets/maps/soil_polygons.pmtiles — 158,646,380 bytes (151 MB),
+    // the optimized archive tracked by soil_polygons.pmtiles.sha256.
+    pmtilesDownloadSizeBytes: 158646380,
   );
 
   /// Center/bounds read directly from the validated PMTiles archive's own
@@ -134,6 +153,9 @@ class ProvinceConfig {
       // download-banner widget itself in Fase 12A, once Buenos Aires needed
       // an equivalent anchor and this stopped being Santa-Fe-only data.
       downloadBannerAnchor: const LatLng(-31.2503, -61.4867),
+      // assets/maps/santa_fe_soil_polygons.pmtiles — 65,985,455 bytes
+      // (63 MB), tracked by santa_fe_soil_polygons.pmtiles.sha256.
+      pmtilesDownloadSizeBytes: 65985455,
     );
   }
 }
