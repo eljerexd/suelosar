@@ -482,6 +482,15 @@ class _GisMapScreenState extends State<GisMapScreen>
   /// few seconds later, unlike [_activeToolHint] (which clears when its
   /// tool mode ends) — a fresh call restarts the timer rather than
   /// stacking.
+  /// How long a timer-driven map hint stays up. Shared with
+  /// [_MapHintPill.timeout] so the progress bar drawn into the pill's bottom
+  /// edge and the timer that actually removes the hint are driven by one
+  /// value — the bar cannot drift out of sync because there is nothing to
+  /// drift from.
+  static const Duration _transientMapHintDuration = Duration(
+    milliseconds: 4500,
+  );
+
   void _showTemporaryMapHint({
     required IconData icon,
     required InlineSpan text,
@@ -489,7 +498,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (!mounted) return;
     _transientMapHintTimer?.cancel();
     setState(() => _transientMapHint = (icon, text));
-    _transientMapHintTimer = Timer(const Duration(milliseconds: 4500), () {
+    _transientMapHintTimer = Timer(_transientMapHintDuration, () {
       if (mounted) setState(() => _transientMapHint = null);
       _transientMapHintLinkRecognizer?.dispose();
       _transientMapHintLinkRecognizer = null;
@@ -1820,6 +1829,7 @@ class _GisMapScreenState extends State<GisMapScreen>
             type: _activeToolHint,
             top: topControlOffset,
             hintOverride: _transientMapHint,
+            hintOverrideTimeout: _transientMapHintDuration,
           ),
         if (!_mapVisualsPaused && !showsMeasurementEditor && !desktopShell)
           _buildBottomRightControls(),
@@ -7946,6 +7956,7 @@ class _MapToolHintOverlay extends StatelessWidget {
     required this.type,
     required this.top,
     this.hintOverride,
+    this.hintOverrideTimeout,
   });
 
   final _MapToolHintType? type;
@@ -7961,6 +7972,11 @@ class _MapToolHintOverlay extends StatelessWidget {
   /// isn't fully non-interactive — see [build]'s `IgnorePointer.ignoring`.
   final (IconData, InlineSpan)? hintOverride;
 
+  /// Lifetime of [hintOverride], passed straight through to the pill so it
+  /// can draw its countdown. Only ever set for the timer-driven hint;
+  /// mode-driven tool hints leave it null and render no bar.
+  final Duration? hintOverrideTimeout;
+
   @override
   Widget build(BuildContext context) {
     final overrideValue = hintOverride;
@@ -7969,6 +7985,7 @@ class _MapToolHintOverlay extends StatelessWidget {
             key: const ValueKey('tool-hint-override'),
             icon: overrideValue.$1,
             richText: overrideValue.$2,
+            timeout: hintOverrideTimeout,
           )
         : type == null
         ? const SizedBox.shrink(key: ValueKey('tool-hint-empty'))
@@ -8026,11 +8043,16 @@ class _MapToolHintCard extends StatelessWidget {
 /// [_MapToolHintCard] (tool-mode hints) and [_MapToolHintOverlay.override]
 /// (Fase 11D's timer-driven ones), so both look and behave identically.
 class _MapHintPill extends StatelessWidget {
-  const _MapHintPill({required this.icon, this.text, this.richText, super.key})
-    : assert(
-        (text == null) != (richText == null),
-        'Provide exactly one of text or richText.',
-      );
+  const _MapHintPill({
+    required this.icon,
+    this.text,
+    this.richText,
+    this.timeout,
+    super.key,
+  }) : assert(
+         (text == null) != (richText == null),
+         'Provide exactly one of text or richText.',
+       );
 
   final IconData icon;
   final String? text;
@@ -8038,6 +8060,17 @@ class _MapHintPill extends StatelessWidget {
   /// Alternative to [text] for hints that need an inline tappable span
   /// (e.g. a "Configuración" link) — same pill, just richer content.
   final InlineSpan? richText;
+
+  /// How long this hint will stay up, when it is one that disappears on its
+  /// own. Non-null only for the timer-driven hint, and always the very same
+  /// [Duration] that timer uses, so the bar finishes exactly as the hint is
+  /// removed. Null for tool-mode hints, which stay for as long as the mode
+  /// is active and therefore have nothing to count down — they get no bar.
+  final Duration? timeout;
+
+  static const double _radius = 18;
+  static const double _progressHeight = 3;
+  static const double _glassBlur = 10;
 
   @override
   Widget build(BuildContext context) {
@@ -8047,45 +8080,130 @@ class _MapHintPill extends StatelessWidget {
       color: colorScheme.onSurface,
       fontWeight: FontWeight.w600,
     );
-    return Material(
-      color: Colors.white,
-      elevation: 3,
-      shadowColor: colorScheme.shadow.withValues(alpha: 0.16),
-      surfaceTintColor: Colors.transparent,
-      borderRadius: BorderRadius.circular(20),
-      clipBehavior: Clip.antiAlias,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          minHeight: 38,
-          // Plain tool hints stay single-line at a fixed height; a
-          // richText hint (e.g. the "Configuración" link) may wrap to a
-          // second line on narrow screens instead of truncating.
-          maxHeight: richText == null ? 40 : 64,
+    final countdown = timeout;
+
+    final content = ConstrainedBox(
+      constraints: BoxConstraints(
+        minHeight: 38,
+        // Plain tool hints stay single-line at a fixed height; a
+        // richText hint (e.g. the "Configuración" link) may wrap to a
+        // second line on narrow screens instead of truncating.
+        maxHeight: richText == null ? 40 : 64,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 17, color: colorScheme.onSurfaceVariant),
+            const SizedBox(width: 8),
+            Flexible(
+              child: richText != null
+                  ? Text.rich(
+                      richText!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: textStyle,
+                    )
+                  : Text(
+                      text!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textStyle,
+                    ),
+            ),
+          ],
         ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 17, color: colorScheme.onSurfaceVariant),
-              const SizedBox(width: 8),
-              Flexible(
-                child: richText != null
-                    ? Text.rich(
-                        richText!,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: textStyle,
-                      )
-                    : Text(
-                        text!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: textStyle,
-                      ),
-              ),
-            ],
+      ),
+    );
+
+    // Same warm matte glass as the province download card: one small blur
+    // scoped to the pill's own rounded rect, with the cream surface still
+    // carrying most of the fill so the text never competes with map detail.
+    // The shadow lives on the outer DecoratedBox because ClipRRect would
+    // otherwise clip it away.
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(_radius),
+        boxShadow: [
+          BoxShadow(
+            color: colorScheme.shadow.withValues(alpha: 0.16),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
           ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(_radius),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: _glassBlur, sigmaY: _glassBlur),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: colorScheme.surface.withValues(alpha: 0.84),
+              borderRadius: BorderRadius.circular(_radius),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.55),
+                width: 0.8,
+              ),
+            ),
+            child: Stack(
+              children: [
+                // Reserves the bar's own height so it never overlaps the
+                // text: the bar is part of the pill's bottom edge, not a
+                // strip laid on top of its content.
+                Padding(
+                  padding: EdgeInsets.only(
+                    bottom: countdown == null ? 0 : _progressHeight,
+                  ),
+                  child: content,
+                ),
+                if (countdown != null)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _MapHintProgressBar(duration: countdown),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The hint's remaining time, drawn straight into the pill's bottom edge.
+///
+/// Grows from the centre outwards to the full width over [duration], which
+/// is the same value driving the timer that removes the hint — this widget
+/// starts no timer of its own, it just animates once from 0 to 1. Clipped
+/// by the pill's own [ClipRRect] and painted with no shadow or radius of
+/// its own, so it reads as part of the surface rather than a bar sitting
+/// under it.
+class _MapHintProgressBar extends StatelessWidget {
+  const _MapHintProgressBar({required this.duration});
+
+  final Duration duration;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: duration,
+      curve: Curves.linear,
+      builder: (context, value, child) => Align(
+        alignment: Alignment.center,
+        child: FractionallySizedBox(
+          widthFactor: value.clamp(0, 1),
+          child: child,
+        ),
+      ),
+      child: SizedBox(
+        height: _MapHintPill._progressHeight,
+        child: ColoredBox(
+          color: colorScheme.primary.withValues(alpha: 0.75),
         ),
       ),
     );
