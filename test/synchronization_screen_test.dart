@@ -53,7 +53,6 @@ void main() {
       SynchronizationScreen(service: service, pairingService: pairingService),
     );
     await tester.pump(const Duration(milliseconds: 50));
-    expect(find.text('Error de inicializaci\u00f3n'), findsOneWidget);
 
     await tester.scrollUntilVisible(
       find.text('Avanzado'),
@@ -62,6 +61,7 @@ void main() {
     );
     await tester.tap(find.text('Avanzado'));
     await tester.pumpAndSettle();
+    expect(find.text('Error de inicializaci\u00f3n'), findsOneWidget);
     expect(
       find.text('AuthException: anonymous sign-in failed'),
       findsOneWidget,
@@ -107,6 +107,13 @@ void main() {
       SynchronizationScreen(service: service, pairingService: pairingService),
     );
     await tester.pump(const Duration(milliseconds: 50));
+    await tester.scrollUntilVisible(
+      find.text('Avanzado'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Avanzado'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('Sincronizar ahora'),
       300,
@@ -488,6 +495,14 @@ void main() {
     expect(pairingService.peerCount, 0);
     expect(find.text('Sin vincular'), findsOneWidget);
     expect(find.text('No hay dispositivos vinculados.'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('Avanzado'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Avanzado'));
+    await tester.pumpAndSettle();
     expect(
       tester
           .widget<FilledButton>(
@@ -606,16 +621,17 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('Sincronización'), findsOneWidget);
-    expect(find.text('Cambios pendientes'), findsWidgets);
+    expect(find.text('Este dispositivo'), findsOneWidget);
     expect(find.text('Dispositivo de prueba'), findsWidgets);
     expect(find.textContaining('15 jul 2026'), findsOneWidget);
     expect(find.text('Actual'), findsNothing);
     expect(find.text('No hay dispositivos vinculados.'), findsOneWidget);
     expect(find.text('Agregar dispositivo'), findsOneWidget);
     expect(find.text('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), findsNothing);
+    // Diagnostic info stays hidden behind "Avanzado" until expanded.
+    expect(find.text('Cambios pendientes'), findsNothing);
+    expect(find.byTooltip('Copiar UUID completo'), findsNothing);
     expect(tester.takeException(), isNull);
-
-    expect(find.byTooltip('Copiar UUID completo'), findsOneWidget);
 
     await tester.scrollUntilVisible(
       find.text('Avanzado'),
@@ -624,11 +640,16 @@ void main() {
     );
     await tester.tap(find.text('Avanzado'));
     await tester.pumpAndSettle();
+    expect(find.text('Cambios pendientes'), findsWidgets);
+    expect(find.byTooltip('Copiar UUID completo'), findsOneWidget);
     expect(find.text('FakeSyncBackendAdapter'), findsOneWidget);
     expect(find.text('30 s'), findsOneWidget);
     expect(find.text('{"markers":{"uuid":"cursor"}}'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
+    // The ExpansionTile's expanded state carries over from the pump
+    // above (same widget/service instances, resize-only re-pump), so
+    // "Avanzado" is already open here — no need to tap it again.
     await _pumpAtSize(
       tester,
       const Size(1440, 900),
@@ -685,6 +706,13 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 50));
 
+    await tester.scrollUntilVisible(
+      find.text('Avanzado'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Avanzado'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('Limpiar cola local'),
       300,
