@@ -124,3 +124,26 @@ afterEvaluate {
         enabled = false
     }
 }
+
+// Required by Play Store Deferred Components, and only by them.
+//
+// AndroidManifest declares io.flutter.embedding.android.FlutterPlayStoreSplitApplication
+// as the application class; that class extends Play Core's
+// SplitCompatApplication, which calls SplitCompat.install() so an on-demand
+// module installed at runtime becomes visible to this process. Without the
+// dependency the superclass is absent, R8 drops the Flutter class with it, and
+// the app dies on launch with ClassNotFoundException before any Dart runs —
+// reproduced on a clean emulator with bundletool --local-testing.
+//
+// The monolithic com.google.android.play:core, NOT the newer split artifacts.
+// Flutter 3.47.2's PlayStoreDeferredComponentManager is compiled against the
+// legacy surface: it calls SplitInstallManager.startInstall() expecting a
+// com.google.android.play.core.tasks.Task. feature-delivery:2.1.0 returns a
+// com.google.android.gms.tasks.Task instead, so the app builds and launches
+// but dies the moment a download is requested, with
+// NoSuchMethodError: No interface method startInstall(...) — reproduced on a
+// clean emulator. Flutter's own deferred-components fixture pins this same
+// artifact. Revisit if the engine ever migrates.
+dependencies {
+    implementation("com.google.android.play:core:1.10.3")
+}

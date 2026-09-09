@@ -37,26 +37,41 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
     _status = value;
     notifyListeners();
   }
+  /// How long a single install request may stay outstanding before it is
+  /// treated as failed.
+  ///
+  /// [DeferredComponent.installDeferredComponent]'s future resolves only when
+  /// Play finishes the whole install, and it never resolves at all if the
+  /// session stalls — for example when Play is waiting on a confirmation this
+  /// app does not surface. Without a bound, that leaves the UI on a spinner
+  /// with nothing to end it. Deliberately generous: this archive is ~63 MB,
+  /// so a slow connection legitimately needs several minutes.
+  static const Duration _installTimeout = Duration(minutes: 10);
+
+  /// Whether this province's deferred component is present in the running
+  /// process.
+  ///
+  /// Probes the tiny `.sha256` companion rather than the archive itself. Both
+  /// ship in the same deferred component, so their availability is identical,
+  /// but the companion is ~65 bytes against the archive's ~63 MB — the
+  /// previous check loaded the entire PMTiles into memory just to answer a
+  /// yes/no question, which is slow at best and an out-of-memory risk on a
+  /// mid-range device. Deliberately not cached: `rootBundle.load` does not
+  /// memoise failures, so this keeps returning false until the component is
+  /// really installed and true from then on.
+  Future<bool> _isComponentInstalled() async {
+    try {
+      await rootBundle.load(AssetPaths.santaFeGisPmTilesVersion);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// Checks whether the component is already installed, without triggering
   /// a download. Non-Android platforms are always `available` (Windows
-  /// bundles the file directly; no other platform is shipped yet).
-  ///
-  /// Flutter's public `DeferredComponent` API (`installDeferredComponent`/
-  /// `uninstallDeferredComponent`) exposes no "is it installed" query and no
-  /// download-progress callback — so the only way to tell without starting
-  /// a download is to probe the asset load itself: once a deferred
-  /// component is installed, its assets become loadable through the exact
-  /// same `rootBundle` key they'd use if they had never been deferred.
-  ///
-  /// In a debug build this probe would actually succeed immediately —
-  /// deferred-component assets are bundled like any other asset outside a
-  /// real release/profile build (confirmed Fase 11B), so `rootBundle.load`
-  /// finds Santa Fe's PMTiles regardless of any real Play Asset Delivery
-  /// state. Left as a no-op under [kDebugMode] so [download]'s simulation
-  /// (see below) is the only thing driving [status] there — otherwise this
-  /// would flip to `available` the instant it's called and the
-  /// "not downloaded" UI could never be seen with a plain `flutter run`.
+  /// bundles the file directly). See [BuenosAiresPmtilesDelivery.checkStatus]
+  /// for why this is a no-op under [kDebugMode].
   @override
   Future<void> checkStatus() async {
     if (!Platform.isAndroid) {
@@ -64,23 +79,20 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
       return;
     }
     if (kDebugMode) return;
+    // An in-flight download owns the status until it finishes; a concurrent
+    // poll must not overwrite it. [download] deliberately does not route
+    // through here for exactly that reason — it probes directly.
     if (_status == SantaFePmtilesStatus.downloading) return;
-    try {
-      await rootBundle.load(AssetPaths.santaFeGisPmTiles);
+    if (await _isComponentInstalled()) {
       _setStatus(SantaFePmtilesStatus.available);
-    } catch (_) {
-      if (_status != SantaFePmtilesStatus.available) {
-        _setStatus(SantaFePmtilesStatus.notInstalled);
-      }
+    } else if (_status != SantaFePmtilesStatus.available) {
+      _setStatus(SantaFePmtilesStatus.notInstalled);
     }
   }
 
   /// Requests the download. No-op on non-Android platforms, where the data
-  /// is already bundled. Writes straight to disk via Play's own delivery
-  /// mechanism — this never loads the archive into memory. In a debug
-  /// build, simulates the same status timeline instead (see
-  /// [_simulateDevDownload]) — production and `flutter build appbundle`
-  /// are completely unaffected, since [kDebugMode] is false there.
+  /// is already bundled. See [BuenosAiresPmtilesDelivery.download] for the
+  /// identical debug-simulation reasoning.
   @override
   Future<void> download() async {
     if (!Platform.isAndroid) return;
@@ -93,12 +105,21 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
     try {
       await DeferredComponent.installDeferredComponent(
         componentName: _componentName,
+      ).timeout(_installTimeout);
+      // Probed directly rather than through [checkStatus], which refuses to
+      // run while the status is still `downloading` — as it is here. Routing
+      // through it left the status untouched and the caller then read it as
+      // a failure, so a perfectly successful install could never report
+      // `available`.
+      _setStatus(
+        await _isComponentInstalled()
+            ? SantaFePmtilesStatus.available
+            : SantaFePmtilesStatus.error,
       );
-      await checkStatus();
-      if (_status != SantaFePmtilesStatus.available) {
-        _setStatus(SantaFePmtilesStatus.error);
-      }
     } catch (_) {
+      // Covers both a rejected install and the timeout above. Either way the
+      // status leaves `downloading`, so the UI can never sit on a spinner
+      // with nothing left to end it.
       _setStatus(SantaFePmtilesStatus.error);
     }
   }

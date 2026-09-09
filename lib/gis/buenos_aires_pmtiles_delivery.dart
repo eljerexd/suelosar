@@ -37,6 +37,36 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
     _status = value;
     notifyListeners();
   }
+  /// How long a single install request may stay outstanding before it is
+  /// treated as failed.
+  ///
+  /// [DeferredComponent.installDeferredComponent]'s future resolves only when
+  /// Play finishes the whole install, and it never resolves at all if the
+  /// session stalls — for example when Play is waiting on a confirmation this
+  /// app does not surface. Without a bound, that leaves the UI on a spinner
+  /// with nothing to end it. Deliberately generous: this archive is ~151 MB,
+  /// so a slow connection legitimately needs several minutes.
+  static const Duration _installTimeout = Duration(minutes: 10);
+
+  /// Whether this province's deferred component is present in the running
+  /// process.
+  ///
+  /// Probes the tiny `.sha256` companion rather than the archive itself. Both
+  /// ship in the same deferred component, so their availability is identical,
+  /// but the companion is ~65 bytes against the archive's ~151 MB — the
+  /// previous check loaded the entire PMTiles into memory just to answer a
+  /// yes/no question, which is slow at best and an out-of-memory risk on a
+  /// mid-range device. Deliberately not cached: `rootBundle.load` does not
+  /// memoise failures, so this keeps returning false until the component is
+  /// really installed and true from then on.
+  Future<bool> _isComponentInstalled() async {
+    try {
+      await rootBundle.load(AssetPaths.gisPmTilesVersion);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// Checks whether the component is already installed, without triggering
   /// a download. Non-Android platforms are always `available` (Windows
@@ -49,14 +79,14 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
       return;
     }
     if (kDebugMode) return;
+    // An in-flight download owns the status until it finishes; a concurrent
+    // poll must not overwrite it. [download] deliberately does not route
+    // through here for exactly that reason — it probes directly.
     if (_status == PmtilesDeliveryStatus.downloading) return;
-    try {
-      await rootBundle.load(AssetPaths.gisPmTiles);
+    if (await _isComponentInstalled()) {
       _setStatus(PmtilesDeliveryStatus.available);
-    } catch (_) {
-      if (_status != PmtilesDeliveryStatus.available) {
-        _setStatus(PmtilesDeliveryStatus.notInstalled);
-      }
+    } else if (_status != PmtilesDeliveryStatus.available) {
+      _setStatus(PmtilesDeliveryStatus.notInstalled);
     }
   }
 
@@ -75,12 +105,21 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
     try {
       await DeferredComponent.installDeferredComponent(
         componentName: _componentName,
+      ).timeout(_installTimeout);
+      // Probed directly rather than through [checkStatus], which refuses to
+      // run while the status is still `downloading` — as it is here. Routing
+      // through it left the status untouched and the caller then read it as
+      // a failure, so a perfectly successful install could never report
+      // `available`.
+      _setStatus(
+        await _isComponentInstalled()
+            ? PmtilesDeliveryStatus.available
+            : PmtilesDeliveryStatus.error,
       );
-      await checkStatus();
-      if (_status != PmtilesDeliveryStatus.available) {
-        _setStatus(PmtilesDeliveryStatus.error);
-      }
     } catch (_) {
+      // Covers both a rejected install and the timeout above. Either way the
+      // status leaves `downloading`, so the UI can never sit on a spinner
+      // with nothing left to end it.
       _setStatus(PmtilesDeliveryStatus.error);
     }
   }
