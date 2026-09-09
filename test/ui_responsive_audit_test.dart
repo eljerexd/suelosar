@@ -571,7 +571,11 @@ void main() {
     );
     expect(find.byKey(const ValueKey('desktop-map-rail-markers')), findsOne);
     expect(find.byKey(const ValueKey('desktop-map-rail-favorites')), findsOne);
-    expect(find.byKey(const ValueKey('desktop-map-rail-location')), findsOne);
+    // "Mi ubicación" is deliberately NOT a rail entry any more: on the
+    // desktop shell it moved out of the side panel into its own floating
+    // bottom-right control, so it is asserted by tooltip rather than by a
+    // `desktop-map-rail-location` key, which no longer exists.
+    expect(find.byTooltip('Mi ubicación'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('desktop-map-rail-layers')));
     await tester.pumpAndSettle();
     expect(find.text('Capas'), findsOneWidget);
