@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../constants/asset_paths.dart';
 import 'pmtiles_delivery.dart';
+import 'pmtiles_delivery_channel.dart';
 
 /// Kept as the name this file has always used — Fase 12A extracted the
 /// actual enum into the shared [PmtilesDeliveryStatus] (identical values,
@@ -60,6 +62,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   /// memoise failures, so this keeps returning false until the component is
   /// really installed and true from then on.
   Future<bool> _isComponentInstalled() async {
+    await PmtilesDeliveryChannel.ensureAssetsVisible();
     try {
       await rootBundle.load(AssetPaths.santaFeGisPmTilesVersion);
       return true;
@@ -93,6 +96,11 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   /// Requests the download. No-op on non-Android platforms, where the data
   /// is already bundled. See [BuenosAiresPmtilesDelivery.download] for the
   /// identical debug-simulation reasoning.
+  ///
+  /// Goes through [PmtilesDeliveryChannel] — this app's own Play Feature
+  /// Delivery bridge — rather than Flutter's `DeferredComponent` API, which
+  /// reaches Play through a manager compiled against the legacy
+  /// com.google.android.play:core that Google Play rejects for targetSdk 34+.
   @override
   Future<void> download() async {
     if (!Platform.isAndroid) return;
@@ -103,9 +111,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
     }
     _setStatus(SantaFePmtilesStatus.downloading);
     try {
-      await DeferredComponent.installDeferredComponent(
-        componentName: _componentName,
-      ).timeout(_installTimeout);
+      await _runInstall();
       // Probed directly rather than through [checkStatus], which refuses to
       // run while the status is still `downloading` — as it is here. Routing
       // through it left the status untouched and the caller then read it as
@@ -117,10 +123,71 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
             : SantaFePmtilesStatus.error,
       );
     } catch (_) {
-      // Covers both a rejected install and the timeout above. Either way the
-      // status leaves `downloading`, so the UI can never sit on a spinner
-      // with nothing left to end it.
+      // Covers a rejected install, a cancelled session and the timeout below.
+      // Either way the status leaves `downloading`, so the UI can never sit on
+      // a spinner with nothing left to end it.
       _setStatus(SantaFePmtilesStatus.error);
+    }
+  }
+
+  /// Runs one install session to a terminal state.
+  ///
+  /// The subscription is opened *before* the install request, not after: Play
+  /// can reach a terminal state almost immediately — a module already cached
+  /// on the device, or bundletool's local-testing harness, both complete in
+  /// well under the round trip — and a listener attached afterwards would miss
+  /// that update and then wait out the full timeout.
+  ///
+  /// Intermediate states (`pending`, `downloading`, `installing`, and
+  /// `requiresUserConfirmation` while the user answers Play's prompt) all mean
+  /// "still working"; only [PmtilesInstallStatus.isTerminal] ends the wait,
+  /// and the timeout bounds everything else.
+  Future<void> _runInstall() async {
+    final completer = Completer<void>();
+    var sessionId = -1;
+
+    void settle(PmtilesInstallUpdate update) {
+      if (completer.isCompleted) return;
+      if (update.status == PmtilesInstallStatus.installed) {
+        completer.complete();
+      } else {
+        completer.completeError(
+          PmtilesInstallException(update.status.name, update.errorCode),
+        );
+      }
+    }
+
+    // Updates that arrive before the session id is known are matched by
+    // module name instead, which is what makes the early-completion case
+    // above work.
+    final pending = <PmtilesInstallUpdate>[];
+    final subscription = PmtilesDeliveryChannel.updates.listen(
+      (update) {
+        if (!update.modules.contains(_componentName)) return;
+        if (sessionId == -1) {
+          pending.add(update);
+          if (update.status.isTerminal) settle(update);
+          return;
+        }
+        if (update.sessionId == sessionId && update.status.isTerminal) {
+          settle(update);
+        }
+      },
+      onError: (Object error) {
+        if (!completer.isCompleted) completer.completeError(error);
+      },
+    );
+
+    try {
+      sessionId = await PmtilesDeliveryChannel.install(_componentName);
+      // 0 means the module was already installed and Play opened no session.
+      if (sessionId == 0) return;
+      for (final update in pending) {
+        if (update.status.isTerminal) settle(update);
+      }
+      await completer.future.timeout(_installTimeout);
+    } finally {
+      await subscription.cancel();
     }
   }
 
@@ -146,9 +213,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
       return;
     }
     try {
-      await DeferredComponent.uninstallDeferredComponent(
-        componentName: _componentName,
-      );
+      await PmtilesDeliveryChannel.uninstall(_componentName);
     } catch (_) {
       // Best-effort: the component may already be uninstalled, or the
       // request itself can fail transiently — either way there is nothing

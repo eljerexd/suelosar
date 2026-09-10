@@ -733,6 +733,12 @@ class _ProvinceCartographyManagerState
     if (Platform.isAndroid) {
       for (final coverage in MapCoverage.all) {
         coverage.onDemandDelivery?.addListener(_handleDeliveryChanged);
+        // Each delivery starts every launch assuming nothing is installed and
+        // only learns otherwise when something asks. Until this screen asked,
+        // it showed provinces downloaded in an earlier session as missing —
+        // and offered to download them again — unless the GIS map happened to
+        // have been opened first, which is what used to do the asking.
+        unawaited(coverage.onDemandDelivery?.checkStatus());
       }
       unawaited(_refreshSizes());
     }

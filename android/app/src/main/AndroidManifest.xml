@@ -5,7 +5,7 @@
 
     <application
         android:label="@string/app_name"
-        android:name="io.flutter.embedding.android.FlutterPlayStoreSplitApplication"
+        android:name=".SuelosArApplication"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
