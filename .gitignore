@@ -66,3 +66,5 @@ app.*.map.json
 /tmp/
 /flutter_*.png
 node_modules/
+# Diagnostic logcat captures (never part of the repo).
+suelosar_diag.txt

@@ -60,9 +60,6 @@ import 'gis_soil_series.dart';
 import 'map_coverage.dart';
 import 'multi_coverage_repository.dart';
 import 'pmtiles_delivery.dart';
-// TEMPORARY: remove together with every PmtilesDiagnostics call once the
-// real-Play PMTiles investigation is closed.
-import 'pmtiles_diagnostics.dart';
 import 'province_config.dart';
 import 'series_resolver.dart';
 import 'widgets/expandable_tools_fab.dart';
@@ -168,6 +165,11 @@ class _GisMapScreenState extends State<GisMapScreen>
   /// closure instance it registered in [initState] with each delivery's
   /// [ChangeNotifier].
   final Map<String, VoidCallback> _onDemandDeliveryListeners = {};
+
+  /// One chain per coverage, so availability updates for the same province
+  /// never overlap — see [_handleOnDemandStatusChanged] for why overlapping
+  /// them could leave a downloaded province out of the queried set.
+  final Map<String, Future<void>> _coverageUpdates = {};
   late final GisLocationService _locationService;
   late final PdfSeriesRepository _pdfSeriesRepository;
   late final List<MapCoverage> _coverages;
@@ -3604,44 +3606,47 @@ class _GisMapScreenState extends State<GisMapScreen>
     PmtilesDelivery delivery,
   ) {
     final repository = _repository;
-    if (repository is! MultiCoverageRepository) {
-      PmtilesDiagnostics.log(
-        'gis: $coverageId -> ${delivery.status.name}, but repository is '
-        '${repository.runtimeType} (not MultiCoverageRepository) — ignored',
-      );
-      return;
-    }
-    final isAvailable = delivery.status == PmtilesDeliveryStatus.available;
-    // TEMPORARY (real-Play investigation): the hand-off from "Play says
-    // installed" to "the map actually queries this province".
-    PmtilesDiagnostics.log(
-      'gis: $coverageId -> ${delivery.status.name} '
-      '(markAvailable=$isAvailable)',
-    );
-    // `downloading` is deliberately treated as not-available here, which is
-    // what it is: the archive is not readable yet, and nothing should be
-    // querying it.
-    final update = isAvailable
-        ? repository.markCoverageAvailable(coverageId)
-        : repository.markCoverageUnavailable(coverageId);
-    unawaited(
-      update
-          .then((changed) {
-            PmtilesDiagnostics.log(
-              'gis: $coverageId repository changed=$changed, '
-              'reloadTiles=${changed && mounted}',
-            );
-            if (changed && mounted) _reloadVisibleTilesAfterCoverageChange();
-          })
-          .catchError((Object error) {
-            // TEMPORARY: today this rejection is swallowed silently, which is
-            // one way a province can be "installed" and still never render.
-            PmtilesDiagnostics.log(
-              'gis: $coverageId repository update FAILED '
-              '${error.runtimeType}: $error',
-            );
-          }),
-    );
+    if (repository is! MultiCoverageRepository) return;
+    // Serialised per coverage, and the status is re-read when the work
+    // actually starts rather than when it was queued.
+    //
+    // A download emits a burst of notifications — one per progress update,
+    // each with the status still `downloading` — and the transition into
+    // `available` is the slow one: it opens and initialises a ~151 MB
+    // archive, several seconds during which more notifications keep landing.
+    // Firing an unserialised mark for each of them let a late `downloading`
+    // or `notInstalled` overlap the in-flight `markCoverageAvailable`, and
+    // whichever finished last won: the province could end up removed from the
+    // queried set — its freshly opened archive closed — while the delivery,
+    // and therefore the UI, said `available`. That is precisely "the download
+    // succeeded, the card says Disponible offline, and the map stays empty".
+    //
+    // Chaining means a burst collapses: by the time each queued update runs,
+    // it reads the status that holds now, so the intermediate ones resolve to
+    // no-ops and only the final state is applied.
+    final previous = _coverageUpdates[coverageId] ?? Future<void>.value();
+    final next = previous
+        .then((_) async {
+          if (!mounted) return;
+          // `downloading` counts as not-available here, which is what it is:
+          // the archive is not readable yet and nothing should query it.
+          final available =
+              delivery.status == PmtilesDeliveryStatus.available;
+          final changed = available
+              ? await repository.markCoverageAvailable(coverageId)
+              : await repository.markCoverageUnavailable(coverageId);
+          if (changed && mounted) _reloadVisibleTilesAfterCoverageChange();
+        })
+        .catchError((Object error, StackTrace stackTrace) {
+          // A coverage whose archive turns out unusable must not break the
+          // chain for every later update of the same province.
+          debugPrint(
+            'GisMapScreen: availability update for "$coverageId" failed: '
+            '$error',
+          );
+        });
+    _coverageUpdates[coverageId] = next;
+    unawaited(next);
   }
 
   /// Bypasses [_loadVisibleTiles]'s usual "same tiles as last time, skip"

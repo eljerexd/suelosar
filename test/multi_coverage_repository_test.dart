@@ -417,6 +417,54 @@ void main() {
         expect((await repo.loadTile(anyTile)).features, isNotEmpty);
       },
     );
+
+    test(
+      'availability updates applied in order converge on the last intent, '
+      'even when becoming available is much slower than becoming unavailable',
+      () async {
+        // Regression: on a real download the delivery emits a burst of
+        // notifications — one per progress update, all still `downloading` —
+        // and the final transition into `available` is the slow one, because
+        // it opens a ~151 MB archive. GisMapScreen used to fire an
+        // unserialised mark for each notification, so a late `downloading`
+        // could overtake the in-flight `markCoverageAvailable` and drop the
+        // province from the queried set while the UI said "Disponible
+        // offline" — a downloaded province that never rendered.
+        //
+        // The screen now chains these per coverage and re-reads the status
+        // when each one runs. This pins the repository half of that contract:
+        // applied in order, the last intent is what holds, the repository for
+        // an available coverage is open, and tiles come back.
+        final built = <_TrackedGisRepository>[];
+        final repo = MultiCoverageRepository(
+          coverages: [everywhereCoverage(ProvinceConfig.buenosAires)],
+          defaultCoverageId: 'buenos_aires',
+          isCoverageAvailable: (_) async => false,
+          repositoryBuilder: (_) {
+            final repository = _TrackedGisRepository(baFeature);
+            built.add(repository);
+            return repository;
+          },
+        );
+        addTearDown(repo.close);
+
+        await repo.initialize();
+        expect((await repo.loadTile(anyTile)).features, isEmpty);
+
+        // downloading -> downloading -> available, as the burst arrives.
+        await repo.markCoverageUnavailable('buenos_aires');
+        await repo.markCoverageUnavailable('buenos_aires');
+        expect(await repo.markCoverageAvailable('buenos_aires'), isTrue);
+
+        expect((await repo.loadTile(anyTile)).features, isNotEmpty);
+        expect(built.last.closed, isFalse);
+
+        // And the mirror: a late delete still wins when it is genuinely last.
+        expect(await repo.markCoverageUnavailable('buenos_aires'), isTrue);
+        expect((await repo.loadTile(anyTile)).features, isEmpty);
+        expect(built.last.closed, isTrue);
+      },
+    );
   });
 }
 

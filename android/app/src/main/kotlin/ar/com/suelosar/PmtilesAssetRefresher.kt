@@ -33,10 +33,7 @@ import io.flutter.embedding.engine.systemchannels.DeferredComponentChannel
 class PmtilesAssetRefresher private constructor() : DeferredComponentManager {
 
     companion object {
-        // TEMPORARY: one tag for every operational and diagnostic line while
-        // the real-Play investigation is open, so the whole flow comes out of
-        // `adb logcat -s SuelosArDiag`.
-        const val TAG = "SuelosArDiag"
+        const val TAG = "SuelosArPad"
 
         @Volatile
         var instance: PmtilesAssetRefresher? = null
@@ -85,6 +82,10 @@ class PmtilesAssetRefresher private constructor() : DeferredComponentManager {
 
     /** Where the current AssetManager came from, for the diagnostic log. */
     private var assetSource: String = "none"
+
+    /** Held whenever the chosen AssetManager belongs to a package context:
+     * the engine keeps only the AssetManager, so its owner has to outlive it. */
+    private var packageContext: Context? = null
 
     override fun setJNI(jni: FlutterJNI) {
         flutterJNI = jni
@@ -203,18 +204,53 @@ class PmtilesAssetRefresher private constructor() : DeferredComponentManager {
         if (cached != null && paths.isNotEmpty() && paths == assetPaths) {
             return cached
         }
-        val built = if (paths.isEmpty()) null else buildAssetManager(paths)
-        if (built != null) {
-            assetManager = built
-            assetPaths = paths
-            assetSource = "splitSourceDirs"
-            return built
+        // Two delivery mechanisms, two different places a module can be, and
+        // no single AssetManager covers both:
+        //
+        //  - Real Play splits land in `ApplicationInfo.splitSourceDirs`, and
+        //    only a freshly built AssetManager over that list sees one that
+        //    arrived after the process started. This is the production path.
+        //  - The splits bundletool's `--local-testing` harness emulates are
+        //    not platform splits at all: they never appear in
+        //    `splitSourceDirs`, and what loads them is SplitCompat patching a
+        //    newly created package context. This is the only path testable
+        //    without Play ownership.
+        //
+        // So build both and pick by measurement rather than by assumption —
+        // whichever actually resolves the province archives wins. Guessing is
+        // what broke local testing: a manager built from `splitSourceDirs`
+        // alone reported success while being blind to every emulated module.
+        // Ordered so ties go to the long-standing behaviour: `maxByOrNull`
+        // keeps the first of equal scores, so the package context — the path
+        // that has always served the emulated splits — only loses when the
+        // split-list manager can demonstrably see more provinces than it.
+        val candidates = buildList {
+            runCatching {
+                val packaged = context.createPackageContext(context.packageName, 0)
+                SplitCompat.install(packaged)
+                packageContext = packaged
+                add("packageContext" to packaged.assets)
+            }
+            if (paths.isNotEmpty()) {
+                buildAssetManager(paths)?.let { add("splitSourceDirs" to it) }
+            }
+            add("appContext" to context.assets)
         }
-        assetManager = context.assets
+
+        val best = candidates.maxByOrNull { provincesVisibleTo(it.second) }
+            ?: ("appContext" to context.assets)
+        assetManager = best.second
         assetPaths = paths
-        assetSource = "appContext(fallback)"
-        return context.assets
+        assetSource = "${best.first}(${provincesVisibleTo(best.second)} provinces)"
+        return best.second
     }
+
+    /** How many province archives [assets] can actually resolve right now. */
+    private fun provincesVisibleTo(assets: AssetManager): Int =
+        PROVINCE_PROBE_ASSETS.count { canOpen(assets, it) }
+
+    private fun canOpen(assets: AssetManager, path: String): Boolean =
+        runCatching { assets.open(path).close() }.isSuccess
 
     /**
      * Builds an AssetManager over [paths] — the base APK plus every installed
@@ -256,78 +292,21 @@ class PmtilesAssetRefresher private constructor() : DeferredComponentManager {
             null
         }
     }
-
-    /**
-     * TEMPORARY — opens [assetPath] through the AssetManager the engine was
-     * last handed, and reports what happened.
-     *
-     * This is the measurement that separates the two candidate explanations:
-     * if Android can open the asset here but Dart's `rootBundle` cannot, the
-     * split is visible to the process and the fault is on the Dart read path;
-     * if it cannot open here either, the split genuinely is not visible and
-     * the fault is in the SplitCompat/AssetManager chain. Deliberately reads
-     * only the declared length — it never pulls the archive into memory.
-     */
-    fun probeAsset(context: Context, assetPath: String): String {
-        // Deliberately the very AssetManager the engine was handed, not some
-        // other view of the app: anything else would answer a question nobody
-        // asked.
-        val source = assetManager ?: context.assets
-        val origin = assetSource
-        return runCatching {
-            source.openFd(assetPath).use { descriptor ->
-                "OK via $origin declaredLength=${descriptor.declaredLength}"
-            }
-        }.getOrElse { fdError ->
-            // Compressed assets have no file descriptor; fall back to a stream
-            // and count without materialising the whole thing.
-            runCatching {
-                source.open(assetPath).use { stream ->
-                    var total = 0L
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val read = stream.read(buffer)
-                        if (read < 0) break
-                        total += read
-                    }
-                    "OK via $origin stream bytes=$total (no fd: ${fdError.message})"
-                }
-            }.getOrElse { streamError ->
-                "FAIL via $origin: ${streamError.javaClass.simpleName}: ${streamError.message}"
-            }
-        }
-    }
-
-    /**
-     * TEMPORARY — dumps everything about the process's split state that the
-     * investigation needs: what Play believes is installed, what the running
-     * process actually has on its ApplicationInfo, and whether the engine's
-     * AssetManager can reach each province's archive.
-     */
-    fun dumpSplitState(context: Context, moment: String, modules: Collection<String>) {
-        runCatching {
-            val info = context.applicationInfo
-            Log.i(
-                TAG,
-                "[$moment] installedModules=$modules" +
-                    " splitNames=${info.splitNames?.toList()}" +
-                    " splitSourceDirs=${info.splitSourceDirs?.toList()}",
-            )
-            for ((label, assetPath) in PROVINCE_ASSETS) {
-                Log.i(TAG, "[$moment] assetManager $label -> ${probeAsset(context, assetPath)}")
-            }
-        }.onFailure { error ->
-            Log.e(TAG, "[$moment] split state dump failed", error)
-        }
-    }
 }
 
 /**
- * TEMPORARY — the two province archives, as the Android AssetManager
- * addresses them. Flutter packs `assets/maps/x.pmtiles` into the APK under
- * `flutter_assets/`, so these are the Dart paths with that prefix.
+ * The two province archives, as the Android AssetManager addresses them.
+ * Flutter packs `assets/maps/x.pmtiles` into the APK under `flutter_assets/`,
+ * so these are the Dart paths with that prefix.
  */
 private val PROVINCE_ASSETS = listOf(
-    "buenosAires" to "flutter_assets/assets/maps/soil_polygons.pmtiles",
-    "santaFe" to "flutter_assets/assets/maps/santa_fe_soil_polygons.pmtiles",
+    "flutter_assets/assets/maps/soil_polygons.pmtiles",
+    "flutter_assets/assets/maps/santa_fe_soil_polygons.pmtiles",
 )
+
+/**
+ * The tiny `.sha256` companions of [PROVINCE_ASSETS]. Probing those instead of
+ * the archives keeps [PmtilesAssetRefresher] from streaming ~151 MB just to
+ * answer "is this module visible?".
+ */
+private val PROVINCE_PROBE_ASSETS = PROVINCE_ASSETS.map { "$it.sha256" }
