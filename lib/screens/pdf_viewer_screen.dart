@@ -70,7 +70,6 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     false,
   );
   bool _pdfOpenLogged = false;
-  bool _initialPageApplied = false;
   Timer? _mobileScrollbarHideTimer;
 
   // FASE 9 — prueba de hipótesis (Windows Release PDF en blanco): PdfViewer
@@ -116,19 +115,9 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 
   void _handleViewerReady() {
     _handleControllerChanged();
-    _applyInitialPageIfNeeded();
     if (_pdfOpenLogged) return;
     _pdfOpenLogged = true;
     unawaited(AnalyticsService.instance.logPdfOpened());
-  }
-
-  void _applyInitialPageIfNeeded() {
-    final initialPage = widget.initialPage;
-    if (initialPage == null || _initialPageApplied) return;
-    _initialPageApplied = true;
-    unawaited(
-      _pdfController.goToPage(pageNumber: initialPage, duration: Duration.zero),
-    );
   }
 
   void _handlePageChanged(int? pageNumber) {
@@ -301,6 +290,19 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
             },
           ),
           controller: _pdfController,
+          // Santa Fe's letters live inside one consolidated PDF, so opening a
+          // letter means opening the document at, say, page 214. Handing the
+          // page to pdfrx here — rather than jumping to it once the viewer is
+          // ready — is what makes that invisible: the page number is resolved
+          // during the first layout, and pdfrx holds the document back until
+          // that page's own preview image is cached. The first frame the user
+          // ever sees is the letter itself. Jumping afterwards, however
+          // briefly, meant page 1 (the index) was painted first and the
+          // viewer visibly travelled from there.
+          //
+          // Null for Buenos Aires, whose letters are one file each: 1 is
+          // pdfrx's own default, so nothing changes there.
+          initialPageNumber: widget.initialPage ?? 1,
           params: PdfViewerParams(
             backgroundColor: const Color(0xFFF5F5F5),
             underflowAnchor: PdfPageAnchor.center,
