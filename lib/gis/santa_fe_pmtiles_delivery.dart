@@ -8,9 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/asset_paths.dart';
 import 'pmtiles_delivery.dart';
 import 'pmtiles_delivery_channel.dart';
-// TEMPORARY: remove together with every PmtilesDiagnostics call once the
-// real-Play PMTiles investigation is closed.
-import 'pmtiles_diagnostics.dart';
 
 /// Kept as the name this file has always used — Fase 12A extracted the
 /// actual enum into the shared [PmtilesDeliveryStatus] (identical values,
@@ -129,17 +126,10 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   /// matter.
   Future<bool> _ensureComponentReadable() async {
     for (var attempt = 1; attempt <= _visibilityAttempts; attempt++) {
-      final refreshed = await PmtilesDeliveryChannel.refreshAssets();
+      await PmtilesDeliveryChannel.refreshAssets();
       rootBundle.evict(AssetPaths.santaFeGisPmTilesVersion);
       rootBundle.evict(AssetPaths.santaFeGisPmTiles);
-      final readable = await _probeComponent();
-      // TEMPORARY (real-Play investigation): see BuenosAiresPmtilesDelivery.
-      PmtilesDiagnostics.log(
-        'SF readable attempt $attempt/$_visibilityAttempts: '
-        'refresh=$refreshed rootBundle=$readable '
-        'native=${await PmtilesDiagnostics.probeAsset('flutter_assets/${AssetPaths.santaFeGisPmTilesVersion}')}',
-      );
-      if (readable) return true;
+      if (await _probeComponent()) return true;
       if (attempt < _visibilityAttempts) {
         await Future<void>.delayed(_visibilityRetryDelay);
       }

@@ -8,9 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/asset_paths.dart';
 import 'pmtiles_delivery.dart';
 import 'pmtiles_delivery_channel.dart';
-// TEMPORARY: remove together with every PmtilesDiagnostics call once the
-// real-Play PMTiles investigation is closed.
-import 'pmtiles_diagnostics.dart';
 
 /// Single source of truth for Buenos Aires PMTiles availability — Fase 12A,
 /// following exactly the same pattern already validated for Santa Fe (Fase
@@ -150,19 +147,10 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   /// even once its files were in place.
   Future<bool> _ensureComponentReadable() async {
     for (var attempt = 1; attempt <= _visibilityAttempts; attempt++) {
-      final refreshed = await PmtilesDeliveryChannel.refreshAssets();
+      await PmtilesDeliveryChannel.refreshAssets();
       rootBundle.evict(AssetPaths.gisPmTilesVersion);
       rootBundle.evict(AssetPaths.gisPmTiles);
-      final readable = await _probeComponent();
-      // TEMPORARY (real-Play investigation): the native probe answers whether
-      // Android itself can see the asset, which is what separates "not
-      // visible to the process" from "visible, but the Dart read fails".
-      PmtilesDiagnostics.log(
-        'BA readable attempt $attempt/$_visibilityAttempts: '
-        'refresh=$refreshed rootBundle=$readable '
-        'native=${await PmtilesDiagnostics.probeAsset('flutter_assets/${AssetPaths.gisPmTilesVersion}')}',
-      );
-      if (readable) return true;
+      if (await _probeComponent()) return true;
       if (attempt < _visibilityAttempts) {
         await Future<void>.delayed(_visibilityRetryDelay);
       }

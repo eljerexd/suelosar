@@ -6,9 +6,6 @@ import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_repository.dart';
 import 'map_coverage.dart';
-// TEMPORARY: remove together with every PmtilesDiagnostics call once the
-// real-Play PMTiles investigation is closed.
-import 'pmtiles_diagnostics.dart';
 
 /// Composes several per-province [PmTilesGisRepository] instances behind
 /// the single [GisRepository] interface `GisMapScreen` already talks to —
@@ -141,29 +138,10 @@ class MultiCoverageRepository implements GisRepository {
   /// changed anything — a no-op (returns `false`) if it was already
   /// available — so a caller can skip reloading tiles when nothing did.
   Future<bool> markCoverageAvailable(String coverageId) async {
-    if (_availableCoverageIds.contains(coverageId)) {
-      PmtilesDiagnostics.log('repo: markAvailable $coverageId (already in set)');
-      return false;
-    }
+    if (_availableCoverageIds.contains(coverageId)) return false;
     final coverage = coverages.firstWhere((c) => c.id == coverageId);
-    // TEMPORARY (real-Play investigation): this initialize() is what opens the
-    // archive. If it throws, the coverage never joins the queried set and the
-    // province silently renders nothing — the failure is otherwise unlogged.
-    PmtilesDiagnostics.log('repo: initialize $coverageId start');
-    try {
-      final info = await _repositoryFor(coverage).initialize();
-      PmtilesDiagnostics.log(
-        'repo: initialize $coverageId ok '
-        '(zoom ${info.minZoom}-${info.maxZoom})',
-      );
-    } catch (error) {
-      PmtilesDiagnostics.log(
-        'repo: initialize $coverageId FAILED ${error.runtimeType}: $error',
-      );
-      rethrow;
-    }
+    await _repositoryFor(coverage).initialize();
     _availableCoverageIds.add(coverageId);
-    PmtilesDiagnostics.log('repo: available set now $_availableCoverageIds');
     return true;
   }
 
@@ -190,18 +168,6 @@ class MultiCoverageRepository implements GisRepository {
     return true;
   }
 
-  /// TEMPORARY — caps tile chatter so the interesting lines stay findable.
-  /// A pan can ask for dozens of tiles; the first few of each distinct
-  /// outcome are enough to tell "nothing was queried" from "queried and
-  /// empty" from "queried and rendered".
-  static final _loggedTileOutcomes = <String>{};
-
-  void _logTileOutcome(String message) {
-    final key = message.replaceAll(RegExp(r'\d+'), '#');
-    if (!_loggedTileOutcomes.add(key)) return;
-    PmtilesDiagnostics.log(message);
-  }
-
   @override
   Future<GisLayer> loadTile(GisTileCoordinates coordinates) async {
     // See _initializationFuture's doc comment: wait for an in-flight
@@ -222,14 +188,6 @@ class MultiCoverageRepository implements GisRepository {
         .toList(growable: false);
 
     if (relevant.isEmpty) {
-      // TEMPORARY (real-Play investigation): answers "why are there no
-      // polygons" directly — an empty layer because no available coverage
-      // overlaps this tile, as opposed to a coverage that was queried and
-      // came back with nothing. Throttled: loadTile runs per tile per pan.
-      _logTileOutcome(
-        'tile ${coordinates.zoom}/${coordinates.x}/${coordinates.y}: '
-        'no relevant coverage (available=$_availableCoverageIds)',
-      );
       return GisLayer(id: _tileLayerId(coordinates), name: '', features: const []);
     }
 
@@ -274,19 +232,8 @@ class MultiCoverageRepository implements GisRepository {
     }
 
     if (succeededLayers.isEmpty) {
-      PmtilesDiagnostics.log(
-        'tile ${coordinates.zoom}/${coordinates.x}/${coordinates.y}: '
-        'every relevant coverage failed '
-        '(${relevant.map((c) => c.id).toList()}) '
-        '${lastError.runtimeType}: $lastError',
-      );
       Error.throwWithStackTrace(lastError!, lastStackTrace!);
     }
-    _logTileOutcome(
-      'tile ${coordinates.zoom}/${coordinates.x}/${coordinates.y}: '
-      '${succeededCoverages.map((c) => c.id).toList()} -> '
-      '${succeededLayers.fold<int>(0, (sum, l) => sum + l.features.length)} features',
-    );
 
     final features = <GisFeature>[];
     for (var i = 0; i < succeededCoverages.length; i++) {
