@@ -60,6 +60,9 @@ import 'gis_soil_series.dart';
 import 'map_coverage.dart';
 import 'multi_coverage_repository.dart';
 import 'pmtiles_delivery.dart';
+// TEMPORARY: remove together with every PmtilesDiagnostics call once the
+// real-Play PMTiles investigation is closed.
+import 'pmtiles_diagnostics.dart';
 import 'province_config.dart';
 import 'series_resolver.dart';
 import 'widgets/expandable_tools_fab.dart';
@@ -3576,26 +3579,68 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (changed && mounted) _reloadVisibleTilesAfterCoverageChange();
   }
 
-  /// Reacts to an on-demand [delivery] transitioning to `available` —
-  /// either right after a download finishes, or from the startup probe
-  /// (see `initState`) finding a previously-completed download. Brings
-  /// [coverageId] into the active [MultiCoverageRepository] set and forces
-  /// the already-visible tiles to reload, so the polygons appear
-  /// immediately without the user having to pan, zoom, or reopen the
-  /// screen.
+  /// Keeps the active [MultiCoverageRepository] in step with an on-demand
+  /// [delivery], in both directions.
+  ///
+  /// Into `available`: right after a download finishes, or from the startup
+  /// probe (see `initState`) finding a previously-completed download. The
+  /// coverage joins the queried set and the visible tiles reload, so the
+  /// polygons appear without the user having to pan, zoom or reopen.
+  ///
+  /// Out of `available`: the province was deleted from Configuración's
+  /// provincial maps manager, possibly while this screen sat underneath it.
+  /// This used to return early on anything that was not `available`, so the
+  /// repository kept the coverage in its set with its archive still open and
+  /// went on serving its polygons — a deleted province stayed on the map
+  /// until the screen was rebuilt from scratch. Dropping it is the mirror of
+  /// adding it, and [_refreshBundledCoverageAvailability] has always done
+  /// exactly this for coverages that have no delivery object.
+  ///
+  /// Both directions only reload when something actually changed: the
+  /// mark/unmark calls report that, and a redundant reload would throw away
+  /// every rendered tile for nothing.
   void _handleOnDemandStatusChanged(
     String coverageId,
     PmtilesDelivery delivery,
   ) {
-    if (delivery.status != PmtilesDeliveryStatus.available) {
+    final repository = _repository;
+    if (repository is! MultiCoverageRepository) {
+      PmtilesDiagnostics.log(
+        'gis: $coverageId -> ${delivery.status.name}, but repository is '
+        '${repository.runtimeType} (not MultiCoverageRepository) — ignored',
+      );
       return;
     }
-    final repository = _repository;
-    if (repository is! MultiCoverageRepository) return;
+    final isAvailable = delivery.status == PmtilesDeliveryStatus.available;
+    // TEMPORARY (real-Play investigation): the hand-off from "Play says
+    // installed" to "the map actually queries this province".
+    PmtilesDiagnostics.log(
+      'gis: $coverageId -> ${delivery.status.name} '
+      '(markAvailable=$isAvailable)',
+    );
+    // `downloading` is deliberately treated as not-available here, which is
+    // what it is: the archive is not readable yet, and nothing should be
+    // querying it.
+    final update = isAvailable
+        ? repository.markCoverageAvailable(coverageId)
+        : repository.markCoverageUnavailable(coverageId);
     unawaited(
-      repository.markCoverageAvailable(coverageId).then((_) {
-        if (mounted) _reloadVisibleTilesAfterCoverageChange();
-      }),
+      update
+          .then((changed) {
+            PmtilesDiagnostics.log(
+              'gis: $coverageId repository changed=$changed, '
+              'reloadTiles=${changed && mounted}',
+            );
+            if (changed && mounted) _reloadVisibleTilesAfterCoverageChange();
+          })
+          .catchError((Object error) {
+            // TEMPORARY: today this rejection is swallowed silently, which is
+            // one way a province can be "installed" and still never render.
+            PmtilesDiagnostics.log(
+              'gis: $coverageId repository update FAILED '
+              '${error.runtimeType}: $error',
+            );
+          }),
     );
   }
 
@@ -10801,6 +10846,14 @@ class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
                               sizeLabel: sizeBytes == null
                                   ? null
                                   : _formatProvinceDownloadSize(sizeBytes),
+                              isDownloading:
+                                  status == PmtilesDeliveryStatus.downloading,
+                              // Straight off the same delivery object the
+                              // provincial maps manager reads, so the two
+                              // cannot report different figures for the same
+                              // download — right down to sharing the rendered
+                              // "106.4 MB / 158.6 MB" string.
+                              progress: widget.delivery.downloadBytes,
                               showSuccess: _showSuccessAction,
                               onDownload: widget.onDownload,
                               onClose: () => _startDismissExit(status),
@@ -10884,6 +10937,8 @@ class _ProvincePmtilesBannerCard extends StatelessWidget {
   const _ProvincePmtilesBannerCard({
     required this.provinceName,
     required this.sizeLabel,
+    required this.isDownloading,
+    required this.progress,
     required this.showSuccess,
     required this.onDownload,
     required this.onClose,
@@ -10896,6 +10951,14 @@ class _ProvincePmtilesBannerCard extends StatelessWidget {
   /// Pre-formatted real size (e.g. `63 MB`), or null when this province
   /// declares no size — the line is then omitted rather than guessed.
   final String? sizeLabel;
+
+  /// Whether Play currently has a session in flight for this province.
+  final bool isDownloading;
+
+  /// Play's byte counters for that session, or null when it has not reported
+  /// a total yet. Null means "stay indeterminate": the card shows a spinner
+  /// and no figures rather than inventing any.
+  final PmtilesDownloadBytes? progress;
 
   /// Swaps the download action for the success confirmation. Purely
   /// presentational: the owning state drives it after the delivery reports
@@ -11020,13 +11083,41 @@ class _ProvincePmtilesBannerCard extends StatelessWidget {
                                   color: colorScheme.onSurfaceVariant,
                                 ),
                               ),
-                              if (sizeLabel != null) ...[
+                              // While downloading, this line reports the
+                              // download instead of the archive size — the
+                              // size is what you decide with, the progress is
+                              // what you wait on, and only one of the two is
+                              // useful at a time.
+                              if (isDownloading || sizeLabel != null) ...[
                                 const SizedBox(height: 1),
                                 Text(
-                                  sizeLabel!,
+                                  isDownloading
+                                      ? 'Descargando…'
+                                      : sizeLabel!,
                                   style: textTheme.bodySmall?.copyWith(
                                     fontSize: 12.5,
                                     height: 1.2,
+                                    color: colorScheme.onSurfaceVariant
+                                        .withValues(alpha: 0.75),
+                                  ),
+                                ),
+                              ],
+                              // The megabytes go on their own line rather
+                              // than into the action chip: this card is 198px
+                              // wide, and "67% · 106.4 MB / 158.6 MB" on one
+                              // line would either overflow it or force the
+                              // card wider than the design allows. Only
+                              // present while Play has real counters.
+                              if (isDownloading && progress != null) ...[
+                                const SizedBox(height: 1),
+                                Text(
+                                  progress!.label,
+                                  style: textTheme.bodySmall?.copyWith(
+                                    fontSize: 12.5,
+                                    height: 1.2,
+                                    fontFeatures: const [
+                                      ui.FontFeature.tabularFigures(),
+                                    ],
                                     color: colorScheme.onSurfaceVariant
                                         .withValues(alpha: 0.75),
                                   ),
@@ -11071,6 +11162,8 @@ class _ProvincePmtilesBannerCard extends StatelessWidget {
                                 ),
                             child: showSuccess
                                 ? _buildSuccess(colorScheme, textTheme)
+                                : isDownloading
+                                ? _buildDownloading(colorScheme, textTheme)
                                 : _buildDownload(textTheme),
                           ),
                         ),
@@ -11115,6 +11208,55 @@ class _ProvincePmtilesBannerCard extends StatelessWidget {
             Text('Descargar'),
           ],
         ),
+      ),
+    );
+  }
+
+  /// The in-flight state: Play's own progress, and nothing invented.
+  ///
+  /// With a known total the ring is determinate and the percentage is spelled
+  /// out beside it; without one the ring spins and no number is shown, because
+  /// the honest answer there is "working", not a made-up figure. Same chip
+  /// shape as [_buildSuccess], so the action reads as one element moving
+  /// through its states rather than three different controls.
+  Widget _buildDownloading(ColorScheme colorScheme, TextTheme textTheme) {
+    final progress = this.progress;
+    return Container(
+      key: const ValueKey('province-download-progress'),
+      alignment: Alignment.center,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(_actionRadius),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              value: progress?.fraction,
+              strokeWidth: 2,
+              color: colorScheme.primary,
+              backgroundColor: colorScheme.onSurfaceVariant.withValues(
+                alpha: 0.18,
+              ),
+            ),
+          ),
+          if (progress != null) ...[
+            const SizedBox(width: 7),
+            Text(
+              '${progress.percent}%',
+              style: textTheme.labelLarge?.copyWith(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                fontFeatures: const [ui.FontFeature.tabularFigures()],
+                color: colorScheme.onSurface,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

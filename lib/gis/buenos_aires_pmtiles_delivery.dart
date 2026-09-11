@@ -3,10 +3,14 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/asset_paths.dart';
 import 'pmtiles_delivery.dart';
 import 'pmtiles_delivery_channel.dart';
+// TEMPORARY: remove together with every PmtilesDiagnostics call once the
+// real-Play PMTiles investigation is closed.
+import 'pmtiles_diagnostics.dart';
 
 /// Single source of truth for Buenos Aires PMTiles availability — Fase 12A,
 /// following exactly the same pattern already validated for Santa Fe (Fase
@@ -34,21 +38,79 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   @override
   PmtilesDeliveryStatus get status => _status;
 
+  /// The single field both progress getters read, so the percentage and the
+  /// megabytes beside it always describe the same instant.
+  PmtilesDownloadBytes? _downloadBytes;
+
+  @override
+  double? get downloadProgress => _downloadBytes?.fraction;
+
+  @override
+  PmtilesDownloadBytes? get downloadBytes => _downloadBytes;
+
   void _setStatus(PmtilesDeliveryStatus value) {
     if (_status == value) return;
     _status = value;
     notifyListeners();
   }
+
+  void _setDownloadBytes(PmtilesDownloadBytes? value) {
+    if (_downloadBytes == value) return;
+    _downloadBytes = value;
+    notifyListeners();
+  }
+
   /// How long a single install request may stay outstanding before it is
   /// treated as failed.
   ///
-  /// [DeferredComponent.installDeferredComponent]'s future resolves only when
-  /// Play finishes the whole install, and it never resolves at all if the
-  /// session stalls — for example when Play is waiting on a confirmation this
-  /// app does not surface. Without a bound, that leaves the UI on a spinner
-  /// with nothing to end it. Deliberately generous: this archive is ~151 MB,
-  /// so a slow connection legitimately needs several minutes.
+  /// A Play session reaches a terminal state on its own or not at all: it can
+  /// sit indefinitely waiting on a confirmation this app does not surface, and
+  /// nothing else would ever end the wait. Without a bound that leaves the UI
+  /// on a spinner with nothing to stop it. Deliberately generous: this archive
+  /// is ~151 MB, so a slow connection legitimately needs several minutes.
   static const Duration _installTimeout = Duration(minutes: 10);
+
+  /// How hard to insist that a freshly installed module is actually readable.
+  ///
+  /// Play reports INSTALLED once it has committed the install, which is not
+  /// necessarily the instant the assets resolve — the engine's asset handle
+  /// has to be replaced first, and on a real device that can lag the callback
+  /// slightly. Bounded on purpose: roughly two seconds of trying, then the
+  /// download is reported as failed and the user gets the retry action, which
+  /// is far better than a spinner that never ends.
+  static const int _visibilityAttempts = 6;
+  static const Duration _visibilityRetryDelay = Duration(milliseconds: 350);
+
+  /// Records that the user has deleted this province while Play has not
+  /// actually removed the module yet.
+  ///
+  /// `deferredUninstall` is deferred by design: Play accepts the request and
+  /// frees the space at some idle moment of its own choosing, which can be
+  /// minutes or hours away. Until then the module is still installed and its
+  /// assets still read perfectly — so the probe in [checkStatus] would answer
+  /// "installed", overwrite the deletion, and put the province back on the
+  /// map. That is the whole "I deleted it and it is still there, then it
+  /// disappears on its own later" behaviour: nothing was stale, the probe was
+  /// simply answering a different question from the one being asked.
+  ///
+  /// So intent is recorded separately from presence, and outlives the process
+  /// because Play's removal does too.
+  static const String _uninstallPendingKey =
+      'pmtiles_uninstall_pending_buenosAiresPmtiles';
+
+  Future<bool> _isUninstallPending() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(_uninstallPendingKey) ?? false;
+  }
+
+  Future<void> _setUninstallPending(bool value) async {
+    final preferences = await SharedPreferences.getInstance();
+    if (value) {
+      await preferences.setBool(_uninstallPendingKey, true);
+    } else {
+      await preferences.remove(_uninstallPendingKey);
+    }
+  }
 
   /// Whether this province's deferred component is present in the running
   /// process.
@@ -63,12 +125,49 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   /// really installed and true from then on.
   Future<bool> _isComponentInstalled() async {
     await PmtilesDeliveryChannel.ensureAssetsVisible();
+    return _probeComponent();
+  }
+
+  /// The probe itself, with no refresh attached — see [_isComponentInstalled]
+  /// for what it reads and why it reads the `.sha256` and not the archive.
+  Future<bool> _probeComponent() async {
     try {
       await rootBundle.load(AssetPaths.gisPmTilesVersion);
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  /// Refreshes the engine's asset handle and re-probes until the archive is
+  /// really readable, or [_visibilityAttempts] have gone by.
+  ///
+  /// Each attempt is refresh-then-probe in that order: probing first would
+  /// just re-read the stale handle. [rootBundle] is evicted in between
+  /// because it memoises futures per key — including failed ones — so a probe
+  /// from before the download would otherwise keep answering for the rest of
+  /// the process, which is exactly what made the province need an app restart
+  /// even once its files were in place.
+  Future<bool> _ensureComponentReadable() async {
+    for (var attempt = 1; attempt <= _visibilityAttempts; attempt++) {
+      final refreshed = await PmtilesDeliveryChannel.refreshAssets();
+      rootBundle.evict(AssetPaths.gisPmTilesVersion);
+      rootBundle.evict(AssetPaths.gisPmTiles);
+      final readable = await _probeComponent();
+      // TEMPORARY (real-Play investigation): the native probe answers whether
+      // Android itself can see the asset, which is what separates "not
+      // visible to the process" from "visible, but the Dart read fails".
+      PmtilesDiagnostics.log(
+        'BA readable attempt $attempt/$_visibilityAttempts: '
+        'refresh=$refreshed rootBundle=$readable '
+        'native=${await PmtilesDiagnostics.probeAsset('flutter_assets/${AssetPaths.gisPmTilesVersion}')}',
+      );
+      if (readable) return true;
+      if (attempt < _visibilityAttempts) {
+        await Future<void>.delayed(_visibilityRetryDelay);
+      }
+    }
+    return false;
   }
 
   /// Checks whether the component is already installed, without triggering
@@ -87,8 +186,19 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
     // through here for exactly that reason — it probes directly.
     if (_status == PmtilesDeliveryStatus.downloading) return;
     if (await _isComponentInstalled()) {
-      _setStatus(PmtilesDeliveryStatus.available);
-    } else if (_status != PmtilesDeliveryStatus.available) {
+      // Present, but the user asked for it to go and Play has not caught up
+      // yet — see [_uninstallPendingKey]. Deleted is what the user decided;
+      // still-readable is only where Play's queue happens to be.
+      _setStatus(
+        await _isUninstallPending()
+            ? PmtilesDeliveryStatus.notInstalled
+            : PmtilesDeliveryStatus.available,
+      );
+      return;
+    }
+    // Really gone now, so there is nothing left to suppress.
+    await _setUninstallPending(false);
+    if (_status != PmtilesDeliveryStatus.available) {
       _setStatus(PmtilesDeliveryStatus.notInstalled);
     }
   }
@@ -109,16 +219,29 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
       await _simulateDevDownload();
       return;
     }
+    // The user changed their mind before Play got round to removing it, so
+    // the suppression from a previous delete has to go — otherwise the probe
+    // below would succeed and still be overruled.
+    await _setUninstallPending(false);
+    _setDownloadBytes(null);
     _setStatus(PmtilesDeliveryStatus.downloading);
     try {
+      // Leaves the counters on Play's final figures (downloaded == total), so
+      // the UI settles on a real 100% while the engine catches up below,
+      // rather than blanking out at the last moment.
       await _runInstall();
-      // Probed directly rather than through [checkStatus], which refuses to
-      // run while the status is still `downloading` — as it is here. Routing
-      // through it left the status untouched and the caller then read it as
-      // a failure, so a perfectly successful install could never report
-      // `available`.
+      final readable = await _ensureComponentReadable();
+      // Cleared before the status flips, deliberately: listeners act on the
+      // transition into `available` (the GIS map rebuilds its whole tile
+      // cache on it), and clearing afterwards would fire that a second time
+      // for nothing.
+      _setDownloadBytes(null);
+      // Deliberately not [checkStatus], which refuses to run while the status
+      // is still `downloading` — as it is here. Routing through it left the
+      // status untouched and the caller then read it as a failure, so a
+      // perfectly successful install could never report `available`.
       _setStatus(
-        await _isComponentInstalled()
+        readable
             ? PmtilesDeliveryStatus.available
             : PmtilesDeliveryStatus.error,
       );
@@ -126,6 +249,7 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
       // Covers a rejected install, a cancelled session and the timeout below.
       // Either way the status leaves `downloading`, so the UI can never sit on
       // a spinner with nothing left to end it.
+      _setDownloadBytes(null);
       _setStatus(PmtilesDeliveryStatus.error);
     }
   }
@@ -164,6 +288,22 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
     final subscription = PmtilesDeliveryChannel.updates.listen(
       (update) {
         if (!update.modules.contains(_componentName)) return;
+        // Play's own byte counts, passed straight through — nothing here is
+        // estimated or interpolated, and the UI moves exactly when Play says
+        // something moved. Null until it reports a total, which keeps the UI
+        // indeterminate rather than showing a percentage of an unknown.
+        // INSTALLED is included so the counters settle on the real final
+        // figures; the other terminal states are failures with nothing worth
+        // reporting.
+        if (!update.status.isTerminal ||
+            update.status == PmtilesInstallStatus.installed) {
+          _setDownloadBytes(
+            PmtilesDownloadBytes.fromCounts(
+              update.bytesDownloaded,
+              update.totalBytesToDownload,
+            ),
+          );
+        }
         if (sessionId == -1) {
           pending.add(update);
           if (update.status.isTerminal) settle(update);
@@ -205,6 +345,10 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
       _setStatus(PmtilesDeliveryStatus.notInstalled);
       return;
     }
+    // Recorded before Play is even asked, and deliberately not conditional on
+    // Play accepting: from here on the province is deleted as far as this app
+    // is concerned, whatever Play's own queue does about the files.
+    await _setUninstallPending(true);
     try {
       await PmtilesDeliveryChannel.uninstall(_componentName);
     } catch (_) {
@@ -222,6 +366,10 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   Future<void> _simulateDevDownload() async {
     _setStatus(PmtilesDeliveryStatus.downloading);
     await Future<void>.delayed(const Duration(seconds: 2));
+    // Deliberately leaves the byte counters null throughout, so the debug
+    // build shows an indeterminate spinner. Play is what produces those
+    // numbers; inventing a plausible-looking ramp here would make a fake
+    // percentage indistinguishable from a real one.
     _setStatus(PmtilesDeliveryStatus.available);
   }
 

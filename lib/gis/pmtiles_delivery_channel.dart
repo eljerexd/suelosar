@@ -123,10 +123,23 @@ abstract final class PmtilesDeliveryChannel {
   /// would only hide the real answer, which is whatever the probe that
   /// follows finds.
   static Future<void> ensureAssetsVisible() {
-    return _assetsVisible ??= _methods
-        .invokeMethod<bool>('refreshAssets')
-        .then<void>((_) {})
-        .catchError((Object _) {});
+    return _assetsVisible ??= refreshAssets();
+  }
+
+  /// Re-points the engine at an AssetManager that includes everything Play
+  /// has installed, unconditionally.
+  ///
+  /// [ensureAssetsVisible] answers the launch-time question once and caches
+  /// it; this is the one to call after an install, where the whole point is
+  /// that the answer has just changed. Returns whether the Android side
+  /// managed it — false means the caller should retry rather than conclude
+  /// the module is missing.
+  static Future<bool> refreshAssets() async {
+    try {
+      return await _methods.invokeMethod<bool>('refreshAssets') ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Whether Play reports [module] as installed right now.

@@ -908,6 +908,13 @@ class _ProvinceCartographyManagerState
               displayName: _cartographyProvinceDisplayName(coverage.id),
               status: _statusFor(coverage),
               busy: _isBusy(coverage),
+              // The same delivery object the GIS download card reads, so
+              // both surfaces necessarily show the same figures for the same
+              // download — the megabytes are even rendered from the same
+              // string. Null for a province with no on-demand delivery, and
+              // null while Play has yet to report a total — either way the
+              // row stays indeterminate.
+              progress: coverage.onDemandDelivery?.downloadBytes,
               sizeBytes: sizes?[_provinceCacheStem(coverage)],
               onDownload: () => unawaited(_download(coverage)),
               onDelete: () => unawaited(_delete(coverage)),
@@ -923,6 +930,7 @@ class _ProvinceCartographyCard extends StatelessWidget {
     required this.displayName,
     required this.status,
     required this.busy,
+    required this.progress,
     required this.sizeBytes,
     required this.onDownload,
     required this.onDelete,
@@ -931,6 +939,11 @@ class _ProvinceCartographyCard extends StatelessWidget {
   final String displayName;
   final _CartographyStatus status;
   final bool busy;
+
+  /// Play's byte counters for this province's download, or null when there
+  /// is nothing real to show — see [PmtilesDelivery.downloadBytes].
+  final PmtilesDownloadBytes? progress;
+
   final int? sizeBytes;
   final VoidCallback onDownload;
   final VoidCallback onDelete;
@@ -958,10 +971,14 @@ class _ProvinceCartographyCard extends StatelessWidget {
         colorScheme.onSurfaceVariant,
         'No descargada',
       ),
+      // The percentage only appears once Play has reported a total; until
+      // then the row says it is working and leaves it at that. The megabytes
+      // sit on the line above (see [subtitle]), which keeps this one short
+      // enough that it never has to ellipsize.
       _CartographyStatus.downloading => (
         AppIcons.download,
         colorScheme.onSurfaceVariant,
-        'Descargando…',
+        progress == null ? 'Descargando…' : '${progress!.percent}%',
       ),
       _CartographyStatus.error => (
         AppIcons.error,
@@ -987,8 +1004,15 @@ class _ProvinceCartographyCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'Datos de suelos · $sizeLabel',
+                  // While Play is downloading and has real counters, this
+                  // line reports the transfer instead of the archive's size
+                  // on disk — that size is what you decide with, these are
+                  // what you wait on.
+                  progress == null
+                      ? 'Datos de suelos · $sizeLabel'
+                      : 'Descargando · ${progress!.label}',
                   style: textTheme.bodySmall?.copyWith(
+                    fontFeatures: const [FontFeature.tabularFigures()],
                     color: colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -1017,6 +1041,7 @@ class _ProvinceCartographyCard extends StatelessWidget {
           _CartographyActionButton(
             status: status,
             busy: busy,
+            progress: progress,
             onDownload: onDownload,
             onDelete: onDelete,
           ),
@@ -1030,22 +1055,31 @@ class _CartographyActionButton extends StatelessWidget {
   const _CartographyActionButton({
     required this.status,
     required this.busy,
+    required this.progress,
     required this.onDownload,
     required this.onDelete,
   });
 
   final _CartographyStatus status;
   final bool busy;
+  final PmtilesDownloadBytes? progress;
   final VoidCallback onDownload;
   final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     if (busy) {
-      return const SizedBox(
+      // Determinate as soon as Play has a total to divide by; a null value is
+      // what makes CircularProgressIndicator spin, which is exactly the
+      // wanted behaviour while the total is still unknown (and while a
+      // delete, which reports no progress at all, is running).
+      return SizedBox(
         width: 20,
         height: 20,
-        child: CircularProgressIndicator(strokeWidth: 2),
+        child: CircularProgressIndicator(
+          value: progress?.fraction,
+          strokeWidth: 2,
+        ),
       );
     }
 

@@ -155,15 +155,24 @@ la app queda sin Supabase configurado ("Servicio no está configurado"). Android
 tiene flavors (`prod` / `beta`) y ninguno recibe `SUPABASE_URL` /
 `SUPABASE_PUBLISHABLE_KEY` si no se pasan explícitamente.
 
+🔴  Lo mismo vale para el `.aab` que se sube a Google Play, y ahí es peor
+porque no se instala a mano para probarlo: `flutter build appbundle --release
+--flavor prod` sin dart-define sube a Play una app sin sincronización.
+
 🟢  Build Android release correcto (usa el script, no se puede olvidar el dart-define):
 
 powershell -File scripts/build_android_release.ps1 -Flavor prod
 powershell -File scripts/build_android_release.ps1 -Flavor beta
 
+AAB para Google Play (mismo script, -Target appbundle):
+
+powershell -File scripts/build_android_release.ps1 -Flavor prod -Target appbundle
+
 Equivalente manual, por si no se usa el script:
 
 flutter build apk --release --flavor prod --dart-define-from-file=.vscode/supabase.env.json
 flutter build apk --release --flavor beta --dart-define-from-file=.vscode/supabase.env.json
+flutter build appbundle --release --flavor prod --dart-define-from-file=.vscode/supabase.env.json
 
 flutter run -d windows
 

@@ -72,7 +72,13 @@ class PmtilesDeliveryBridge(
         // readable now", so the engine has to be able to see them before that
         // update goes out.
         if (state.status() == SplitInstallSessionStatus.INSTALLED) {
+            // TEMPORARY: the state Play leaves behind the instant it says
+            // INSTALLED, before anything of ours has run.
+            PmtilesAssetRefresher.instance
+                ?.dumpSplitState(context, "installed:before-refresh", manager.installedModules)
             PmtilesAssetRefresher.instance?.refresh(context)
+            PmtilesAssetRefresher.instance
+                ?.dumpSplitState(context, "installed:after-refresh", manager.installedModules)
         }
         emit(state)
         if (state.status() == SplitInstallSessionStatus.REQUIRES_USER_CONFIRMATION) {
@@ -109,6 +115,27 @@ class PmtilesDeliveryBridge(
                 } else {
                     result.success(manager.installedModules.contains(module))
                 }
+            }
+
+            // TEMPORARY — lets the Dart side emit under this same logcat tag,
+            // so one filter shows the whole install/read/render sequence in
+            // order instead of two interleaved streams.
+            "diag" -> {
+                Log.i(TAG, call.argument<String>("message") ?: "")
+                result.success(null)
+            }
+
+            // TEMPORARY — see PmtilesAssetRefresher.probeAsset.
+            "probeAsset" -> {
+                val asset = call.argument<String>("asset")
+                if (asset == null) {
+                    result.error("bad_args", "asset is required", null)
+                    return
+                }
+                result.success(
+                    PmtilesAssetRefresher.instance?.probeAsset(context, asset)
+                        ?: "no refresher",
+                )
             }
 
             "refreshAssets" -> {
@@ -164,15 +191,29 @@ class PmtilesDeliveryBridge(
                     result.error("bad_args", "module is required", null)
                     return
                 }
+                // TEMPORARY: what Play and the process believe right before
+                // the removal request, so a later dump can be compared to it.
+                PmtilesAssetRefresher.instance
+                    ?.dumpSplitState(context, "uninstall:before", manager.installedModules)
                 // Play defers the actual removal to an idle moment; the task
                 // completing only means the request was accepted.
                 manager.deferredUninstall(listOf(module))
                     .addOnSuccessListener {
-                        Log.i(TAG, "uninstall $module requested")
+                        Log.i(TAG, "uninstall $module requested (accepted by Play)")
+                        PmtilesAssetRefresher.instance?.dumpSplitState(
+                            context,
+                            "uninstall:after-accept",
+                            manager.installedModules,
+                        )
                         result.success(true)
                     }
                     .addOnFailureListener { error ->
                         Log.e(TAG, "uninstall $module failed", error)
+                        PmtilesAssetRefresher.instance?.dumpSplitState(
+                            context,
+                            "uninstall:after-failure",
+                            manager.installedModules,
+                        )
                         result.error(
                             "uninstall_failed",
                             error.message ?: "deferredUninstall failed",

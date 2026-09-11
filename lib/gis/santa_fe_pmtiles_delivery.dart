@@ -3,10 +3,14 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants/asset_paths.dart';
 import 'pmtiles_delivery.dart';
 import 'pmtiles_delivery_channel.dart';
+// TEMPORARY: remove together with every PmtilesDiagnostics call once the
+// real-Play PMTiles investigation is closed.
+import 'pmtiles_diagnostics.dart';
 
 /// Kept as the name this file has always used — Fase 12A extracted the
 /// actual enum into the shared [PmtilesDeliveryStatus] (identical values,
@@ -34,21 +38,63 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   @override
   SantaFePmtilesStatus get status => _status;
 
+  /// The single field both progress getters read, so the percentage and the
+  /// megabytes beside it always describe the same instant.
+  PmtilesDownloadBytes? _downloadBytes;
+
+  @override
+  double? get downloadProgress => _downloadBytes?.fraction;
+
+  @override
+  PmtilesDownloadBytes? get downloadBytes => _downloadBytes;
+
   void _setStatus(SantaFePmtilesStatus value) {
     if (_status == value) return;
     _status = value;
     notifyListeners();
   }
+
+  void _setDownloadBytes(PmtilesDownloadBytes? value) {
+    if (_downloadBytes == value) return;
+    _downloadBytes = value;
+    notifyListeners();
+  }
+
   /// How long a single install request may stay outstanding before it is
   /// treated as failed.
   ///
-  /// [DeferredComponent.installDeferredComponent]'s future resolves only when
-  /// Play finishes the whole install, and it never resolves at all if the
-  /// session stalls — for example when Play is waiting on a confirmation this
-  /// app does not surface. Without a bound, that leaves the UI on a spinner
-  /// with nothing to end it. Deliberately generous: this archive is ~63 MB,
-  /// so a slow connection legitimately needs several minutes.
+  /// A Play session reaches a terminal state on its own or not at all: it can
+  /// sit indefinitely waiting on a confirmation this app does not surface, and
+  /// nothing else would ever end the wait. Without a bound that leaves the UI
+  /// on a spinner with nothing to stop it. Deliberately generous: this archive
+  /// is ~63 MB, so a slow connection legitimately needs several minutes.
   static const Duration _installTimeout = Duration(minutes: 10);
+
+  /// How hard to insist that a freshly installed module is actually readable.
+  /// See [BuenosAiresPmtilesDelivery] for the full reasoning — Play reports
+  /// INSTALLED when it commits the install, not when the assets resolve.
+  static const int _visibilityAttempts = 6;
+  static const Duration _visibilityRetryDelay = Duration(milliseconds: 350);
+
+  /// Records that the user deleted this province while Play has not actually
+  /// removed the module yet. See [BuenosAiresPmtilesDelivery] for why intent
+  /// has to be tracked separately from whether the files still read.
+  static const String _uninstallPendingKey =
+      'pmtiles_uninstall_pending_santaFePmtiles';
+
+  Future<bool> _isUninstallPending() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(_uninstallPendingKey) ?? false;
+  }
+
+  Future<void> _setUninstallPending(bool value) async {
+    final preferences = await SharedPreferences.getInstance();
+    if (value) {
+      await preferences.setBool(_uninstallPendingKey, true);
+    } else {
+      await preferences.remove(_uninstallPendingKey);
+    }
+  }
 
   /// Whether this province's deferred component is present in the running
   /// process.
@@ -63,12 +109,42 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   /// really installed and true from then on.
   Future<bool> _isComponentInstalled() async {
     await PmtilesDeliveryChannel.ensureAssetsVisible();
+    return _probeComponent();
+  }
+
+  /// The probe itself, with no refresh attached — see [_isComponentInstalled]
+  /// for what it reads and why it reads the `.sha256` and not the archive.
+  Future<bool> _probeComponent() async {
     try {
       await rootBundle.load(AssetPaths.santaFeGisPmTilesVersion);
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  /// Refreshes the engine's asset handle and re-probes until the archive is
+  /// really readable, or [_visibilityAttempts] have gone by. See
+  /// [BuenosAiresPmtilesDelivery] for why the eviction and the ordering both
+  /// matter.
+  Future<bool> _ensureComponentReadable() async {
+    for (var attempt = 1; attempt <= _visibilityAttempts; attempt++) {
+      final refreshed = await PmtilesDeliveryChannel.refreshAssets();
+      rootBundle.evict(AssetPaths.santaFeGisPmTilesVersion);
+      rootBundle.evict(AssetPaths.santaFeGisPmTiles);
+      final readable = await _probeComponent();
+      // TEMPORARY (real-Play investigation): see BuenosAiresPmtilesDelivery.
+      PmtilesDiagnostics.log(
+        'SF readable attempt $attempt/$_visibilityAttempts: '
+        'refresh=$refreshed rootBundle=$readable '
+        'native=${await PmtilesDiagnostics.probeAsset('flutter_assets/${AssetPaths.santaFeGisPmTilesVersion}')}',
+      );
+      if (readable) return true;
+      if (attempt < _visibilityAttempts) {
+        await Future<void>.delayed(_visibilityRetryDelay);
+      }
+    }
+    return false;
   }
 
   /// Checks whether the component is already installed, without triggering
@@ -87,8 +163,18 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
     // through here for exactly that reason — it probes directly.
     if (_status == SantaFePmtilesStatus.downloading) return;
     if (await _isComponentInstalled()) {
-      _setStatus(SantaFePmtilesStatus.available);
-    } else if (_status != SantaFePmtilesStatus.available) {
+      // Present, but the user asked for it to go and Play has not caught up
+      // yet — see [_uninstallPendingKey].
+      _setStatus(
+        await _isUninstallPending()
+            ? SantaFePmtilesStatus.notInstalled
+            : SantaFePmtilesStatus.available,
+      );
+      return;
+    }
+    // Really gone now, so there is nothing left to suppress.
+    await _setUninstallPending(false);
+    if (_status != SantaFePmtilesStatus.available) {
       _setStatus(SantaFePmtilesStatus.notInstalled);
     }
   }
@@ -109,23 +195,35 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
       await _simulateDevDownload();
       return;
     }
+    // The user changed their mind before Play got round to removing it, so
+    // the suppression from a previous delete has to go — otherwise the probe
+    // below would succeed and still be overruled.
+    await _setUninstallPending(false);
+    _setDownloadBytes(null);
     _setStatus(SantaFePmtilesStatus.downloading);
     try {
+      // Leaves the counters on Play's final figures (downloaded == total), so
+      // the UI settles on a real 100% while the engine catches up below,
+      // rather than blanking out at the last moment.
       await _runInstall();
-      // Probed directly rather than through [checkStatus], which refuses to
-      // run while the status is still `downloading` — as it is here. Routing
-      // through it left the status untouched and the caller then read it as
-      // a failure, so a perfectly successful install could never report
-      // `available`.
+      final readable = await _ensureComponentReadable();
+      // Cleared before the status flips, deliberately: listeners act on the
+      // transition into `available` (the GIS map rebuilds its whole tile
+      // cache on it), and clearing afterwards would fire that a second time
+      // for nothing.
+      _setDownloadBytes(null);
+      // Deliberately not [checkStatus], which refuses to run while the status
+      // is still `downloading` — as it is here. Routing through it left the
+      // status untouched and the caller then read it as a failure, so a
+      // perfectly successful install could never report `available`.
       _setStatus(
-        await _isComponentInstalled()
-            ? SantaFePmtilesStatus.available
-            : SantaFePmtilesStatus.error,
+        readable ? SantaFePmtilesStatus.available : SantaFePmtilesStatus.error,
       );
     } catch (_) {
       // Covers a rejected install, a cancelled session and the timeout below.
       // Either way the status leaves `downloading`, so the UI can never sit on
       // a spinner with nothing left to end it.
+      _setDownloadBytes(null);
       _setStatus(SantaFePmtilesStatus.error);
     }
   }
@@ -164,6 +262,18 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
     final subscription = PmtilesDeliveryChannel.updates.listen(
       (update) {
         if (!update.modules.contains(_componentName)) return;
+        // Play's own byte counts, passed straight through — nothing here is
+        // estimated or interpolated. See [BuenosAiresPmtilesDelivery] for why
+        // INSTALLED is included and the other terminal states are not.
+        if (!update.status.isTerminal ||
+            update.status == PmtilesInstallStatus.installed) {
+          _setDownloadBytes(
+            PmtilesDownloadBytes.fromCounts(
+              update.bytesDownloaded,
+              update.totalBytesToDownload,
+            ),
+          );
+        }
         if (sessionId == -1) {
           pending.add(update);
           if (update.status.isTerminal) settle(update);
@@ -212,6 +322,10 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
       _setStatus(SantaFePmtilesStatus.notInstalled);
       return;
     }
+    // Recorded before Play is even asked, and deliberately not conditional on
+    // Play accepting: from here on the province is deleted as far as this app
+    // is concerned, whatever Play's own queue does about the files.
+    await _setUninstallPending(true);
     try {
       await PmtilesDeliveryChannel.uninstall(_componentName);
     } catch (_) {
@@ -238,6 +352,10 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   Future<void> _simulateDevDownload() async {
     _setStatus(SantaFePmtilesStatus.downloading);
     await Future<void>.delayed(const Duration(seconds: 2));
+    // Deliberately leaves the byte counters null throughout, so the debug
+    // build shows an indeterminate spinner. Play is what produces those
+    // numbers; inventing a plausible-looking ramp here would make a fake
+    // percentage indistinguishable from a real one.
     _setStatus(SantaFePmtilesStatus.available);
   }
 

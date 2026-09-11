@@ -12,6 +12,9 @@ import 'package:vector_tile/vector_tile.dart' as vector_tile;
 
 import 'gis_feature.dart';
 import 'gis_layer.dart';
+// TEMPORARY: remove together with every PmtilesDiagnostics call once the
+// real-Play PMTiles investigation is closed.
+import 'pmtiles_diagnostics.dart';
 
 /// Storage-independent access to spatial map tiles.
 abstract interface class GisRepository {
@@ -277,7 +280,22 @@ class PmTilesGisRepository implements GisRepository {
     required String versionAssetPath,
     required Future<Directory> Function() supportDirectoryProvider,
   }) async {
-    final version = (await assetBundle.loadString(versionAssetPath)).trim();
+    // TEMPORARY (real-Play investigation): this is the exact read that has to
+    // succeed for a province to render, and today its failure is invisible —
+    // the caller turns any exception into "no polygons" with nothing logged.
+    PmtilesDiagnostics.log('archive: loadString start $versionAssetPath');
+    final String version;
+    try {
+      version = (await assetBundle.loadString(versionAssetPath)).trim();
+    } catch (error) {
+      PmtilesDiagnostics.log(
+        'archive: loadString FAILED $versionAssetPath '
+        '${error.runtimeType}: $error '
+        '| native probe: ${await PmtilesDiagnostics.probeAsset('flutter_assets/$versionAssetPath')}',
+      );
+      rethrow;
+    }
+    PmtilesDiagnostics.log('archive: loadString ok, version=$version');
     if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(version)) {
       throw const FormatException('Invalid PMTiles version hash.');
     }
@@ -303,6 +321,9 @@ class PmTilesGisRepository implements GisRepository {
     );
     if (await target.exists()) {
       if (await target.length() > 127) {
+        PmtilesDiagnostics.log(
+          'archive: reusing cached ${target.path} (${await target.length()} bytes)',
+        );
         return target;
       }
       await target.delete();
@@ -313,7 +334,28 @@ class PmTilesGisRepository implements GisRepository {
       await temporary.delete();
     }
 
-    final data = await assetBundle.load(assetPath);
+    // TEMPORARY (real-Play investigation): the ~151 MB read. Timed and
+    // reported because a failure here leaves the province marked available
+    // with no polygons on screen — exactly the reported Buenos Aires symptom.
+    PmtilesDiagnostics.log(
+      'archive: rootBundle.load start $assetPath '
+      '| native probe: ${await PmtilesDiagnostics.probeAsset('flutter_assets/$assetPath')}',
+    );
+    final loadWatch = Stopwatch()..start();
+    final ByteData data;
+    try {
+      data = await assetBundle.load(assetPath);
+    } catch (error) {
+      PmtilesDiagnostics.log(
+        'archive: rootBundle.load FAILED $assetPath after '
+        '${loadWatch.elapsedMilliseconds}ms ${error.runtimeType}: $error',
+      );
+      rethrow;
+    }
+    PmtilesDiagnostics.log(
+      'archive: rootBundle.load ok $assetPath '
+      'bytes=${data.lengthInBytes} in ${loadWatch.elapsedMilliseconds}ms',
+    );
     final bytes = data.buffer.asUint8List(
       data.offsetInBytes,
       data.lengthInBytes,

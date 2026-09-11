@@ -43,14 +43,26 @@
 # datos necesarios para confirmar que se esta por instalar el build
 # correcto.
 #
+# -Target elige el artefacto: "apk" (por defecto, para instalar y probar) o
+# "appbundle" (el .aab que se sube a Google Play). El .aab necesita esta
+# misma proteccion y durante un tiempo no la tuvo: el script solo compilaba
+# APKs, asi que cada `flutter build appbundle` se escribia a mano, sin
+# --dart-define-from-file, y subia a Play una app sin Supabase configurado
+# aunque el APK equivalente funcionara. Ese fue exactamente el sintoma
+# reportado en 1.6.0.
+#
 # Uso:
 #   powershell -File scripts/build_android_release.ps1 -Flavor prod
 #   powershell -File scripts/build_android_release.ps1 -Flavor beta
+#   powershell -File scripts/build_android_release.ps1 -Flavor prod -Target appbundle
 
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("prod", "beta")]
-    [string]$Flavor
+    [string]$Flavor,
+
+    [ValidateSet("apk", "appbundle")]
+    [string]$Target = "apk"
 )
 
 $ErrorActionPreference = "Stop"
@@ -79,7 +91,8 @@ try {
         "build\app\intermediates\incremental\merge$($flavorVariant)JniLibFolders",
         "build\app\intermediates\merged_native_libs\$flavorVariant",
         "build\app\intermediates\stripped_native_libs\$flavorVariant",
-        "build\app\outputs\apk\$Flavor"
+        "build\app\outputs\apk\$Flavor",
+        "build\app\outputs\bundle\$flavorVariant"
     )) {
         $path = Join-Path $repoRoot $relativePath
         if (Test-Path $path) {
@@ -89,24 +102,31 @@ try {
 
     $buildStart = Get-Date
 
-    flutter build apk --release --flavor $Flavor "--dart-define-from-file=.vscode/supabase.env.json"
+    flutter build $Target --release --flavor $Flavor "--dart-define-from-file=.vscode/supabase.env.json"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
 
     # --- Validacion obligatoria post-build --------------------------------
-    $apkPath = Join-Path $repoRoot "build\app\outputs\flutter-apk\app-$Flavor-release.apk"
+    if ($Target -eq "appbundle") {
+        $artifactPath = Join-Path $repoRoot "build\app\outputs\bundle\$flavorVariant\app-$Flavor-release.aab"
+        $artifactKind = "AAB"
+    }
+    else {
+        $artifactPath = Join-Path $repoRoot "build\app\outputs\flutter-apk\app-$Flavor-release.apk"
+        $artifactKind = "APK"
+    }
 
-    if (-not (Test-Path $apkPath)) {
-        Write-Error "El build reporto exito pero no se encontro el APK esperado en $apkPath."
+    if (-not (Test-Path $artifactPath)) {
+        Write-Error "El build reporto exito pero no se encontro el $artifactKind esperado en $artifactPath."
         exit 1
     }
 
-    $apkFile = Get-Item $apkPath
+    $apkFile = Get-Item $artifactPath
 
     if ($apkFile.LastWriteTime -le $buildStart) {
         Write-Error (
-            "El APK en $apkPath tiene fecha $($apkFile.LastWriteTime), anterior al " +
+            "El $artifactKind en $artifactPath tiene fecha $($apkFile.LastWriteTime), anterior al " +
             "inicio de este build ($buildStart). Esto significa que se reutilizo un " +
             "artefacto desactualizado en vez de generarse uno nuevo - la invalidacion " +
             "de cache selectiva no fue suficiente esta vez."
@@ -114,7 +134,7 @@ try {
         exit 1
     }
 
-    $sha256 = (Get-FileHash -Path $apkPath -Algorithm SHA256).Hash
+    $sha256 = (Get-FileHash -Path $artifactPath -Algorithm SHA256).Hash
 
     $versionLine = Select-String -Path (Join-Path $repoRoot "pubspec.yaml") -Pattern '^version:\s*(\S+)' | Select-Object -First 1
     $versionRaw = if ($versionLine) { $versionLine.Matches[0].Groups[1].Value } else { "desconocida" }
@@ -125,10 +145,11 @@ try {
 
     Write-Host ""
     Write-Host "==================== BUILD VERIFICADO ====================" -ForegroundColor Green
+    Write-Host "Artefacto:     $artifactKind"
     Write-Host "Flavor:        $Flavor"
     Write-Host "versionName:   $versionName"
     Write-Host "versionCode:   $versionCode"
-    Write-Host "Ruta:          $apkPath"
+    Write-Host "Ruta:          $artifactPath"
     Write-Host "LastWriteTime: $($apkFile.LastWriteTime)  (build iniciado: $buildStart)"
     Write-Host "Tamano:        $([math]::Round($apkFile.Length / 1MB, 1)) MB ($($apkFile.Length) bytes)"
     Write-Host "SHA-256:       $sha256"
