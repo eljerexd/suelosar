@@ -54,26 +54,28 @@ archive changes.
 is still the primary, authoritative artifact. It carries all 36 attributes
 present in the source shapefile.
 
-SuelosAR's own code only ever reads 16 of those 36 attributes (`SIMBC`,
-`CAP_USO`, `Nombre_UC`, `SERIE1`-`SERIE6`, `PORC1`-`PORC6`, `OBJECTID` — see
-`lib/gis/gis_map_screen.dart`, `lib/gis/gis_soil_series.dart`,
-`lib/gis/engine/maplibre_engine.dart`). The remaining 20
-(`FASE1`-`FASE5`, `OBJECTID_1`, `PAISAJE`, `POSIC1`-`POSIC6`, `TIPO`,
-`taxo_2rio`, `taxo_3rio`, `taxo_4rio`, `taxo_5`, `taxo_6`, `taxo_ppal`) are
-dead weight the app never uses.
+SuelosAR's own code only ever reads 18 of those 36 attributes (`SIMBC`,
+`CAP_USO`, `Nombre_UC`, `TIPO`, `PAISAJE`, `SERIE1`-`SERIE6`, `PORC1`-`PORC6`,
+`OBJECTID` — see `lib/gis/gis_map_screen.dart`, `lib/gis/gis_soil_series.dart`,
+`lib/gis/engine/maplibre_engine.dart`; `TIPO` and `PAISAJE` are the polygon
+detail sheet's "Tipo" and "Descripción"). The remaining 18
+(`FASE1`-`FASE5`, `OBJECTID_1`, `POSIC1`-`POSIC6`, `taxo_2rio`, `taxo_3rio`,
+`taxo_4rio`, `taxo_5`, `taxo_6`, `taxo_ppal`) are dead weight the app never
+uses. `test/gis_attribute_contract_test.dart` fails if the map screen starts
+reading an attribute this stage would remove.
 
 A second, independent, versioned stage —
 `tool/optimize_buenos_aires_pmtiles.dart` — takes the pipeline's own output as
-input and writes a **separate** file with only those 20 attributes removed.
+input and writes a **separate** file with only those 18 attributes removed.
 It never touches Tippecanoe, GDAL, or this pipeline's own scripts: it operates
 directly on the already-built PMTiles container and Mapbox Vector Tile
 protobuf structure, using the same `pmtiles`/`vector_tile` Dart packages the
 Flutter app itself uses to read these archives at runtime. Geometry, feature
-ids, zoom levels (z4-z14), bounds, metadata, gzip compression, and the 16 kept
+ids, zoom levels (z4-z14), bounds, metadata, gzip compression, and the 18 kept
 attributes' values are all carried through byte-for-byte unchanged — the tool
 verifies this itself, for every tile, before reporting success.
 
-This reduces Buenos Aires from ~185.6 MiB to ~151.3 MiB (about 18%), with no
+This reduces Buenos Aires from ~185.6 MiB to ~163.8 MiB (about 12%), with no
 change to the map's geometry, precision, or the data the app actually shows.
 
 ### Running it

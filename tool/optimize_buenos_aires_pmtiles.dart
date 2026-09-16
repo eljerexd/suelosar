@@ -33,28 +33,32 @@ import 'package:pmtiles/pmtiles.dart';
 import 'package:pmtiles/src/directory.dart' as pmdir;
 import 'package:vector_tile/raw/raw_vector_tile.dart' as raw;
 
-/// The 16 attributes SuelosAR's own code reads from a Buenos Aires
+/// The 18 attributes SuelosAR's own code reads from a Buenos Aires
 /// feature's properties (`lib/gis/gis_map_screen.dart`,
 /// `lib/gis/gis_soil_series.dart`, `lib/gis/engine/maplibre_engine.dart`) —
 /// everything else in the source dataset's 36-field schema is dead weight
-/// the app never touches.
+/// the app never touches. `TIPO` and `PAISAJE` feed the polygon detail sheet
+/// ("Tipo", and the "Descripción" under "Paisaje"); leaving them out made
+/// both read "Sin datos" for every Buenos Aires polygon.
+/// `test/gis_attribute_contract_test.dart` fails if the map screen ever
+/// reads an attribute that is missing from this set.
 const keptAttributes = {
-  'SIMBC', 'CAP_USO', 'Nombre_UC',
+  'SIMBC', 'CAP_USO', 'Nombre_UC', 'TIPO', 'PAISAJE',
   'SERIE1', 'SERIE2', 'SERIE3', 'SERIE4', 'SERIE5', 'SERIE6',
   'PORC1', 'PORC2', 'PORC3', 'PORC4', 'PORC5', 'PORC6',
   'OBJECTID',
 };
 
-/// The 20 attributes confirmed (by exhaustive grep of `lib/`) to have zero
+/// The 18 attributes confirmed (by exhaustive grep of `lib/`) to have zero
 /// readers anywhere in the app. Not load-bearing for the transformation
 /// itself (anything not in [keptAttributes] is dropped regardless) — kept
 /// here only so [_validateResult] can assert none of them survived, as a
 /// second, independent check against the same intent.
 const droppedAttributes = {
   'FASE1', 'FASE2', 'FASE3', 'FASE4', 'FASE5',
-  'OBJECTID_1', 'PAISAJE',
+  'OBJECTID_1',
   'POSIC1', 'POSIC2', 'POSIC3', 'POSIC4', 'POSIC5', 'POSIC6',
-  'TIPO', 'taxo_2rio', 'taxo_3rio', 'taxo_4rio', 'taxo_5', 'taxo_6', 'taxo_ppal',
+  'taxo_2rio', 'taxo_3rio', 'taxo_4rio', 'taxo_5', 'taxo_6', 'taxo_ppal',
 };
 
 class PmtilesStructureException implements Exception {
@@ -361,7 +365,7 @@ Future<_OptimizationStats> _run(File inputFile, File outputFile) async {
     final strippedMvt = _stripAttributes(decompressed);
 
     // req. "comprobar IDs y geometrías idénticos" + "eliminar únicamente los
-    // 20 atributos": verify this exact tile, right now, deterministically,
+    // 18 atributos no usados": verify this exact tile, right now, deterministically,
     // rather than sampling after the fact -- every tile gets checked, not
     // just a handful.
     _verifyTileTransform(decompressed, strippedMvt, stats);
