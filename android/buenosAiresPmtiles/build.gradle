@@ -52,15 +52,20 @@ android {
         versionName = flutterVersionName
     }
 
-    // Must mirror app/build.gradle.kts's "env" flavor dimension (prod/beta)
-    // — AGP requires a dynamic-feature module to declare the same flavor
-    // dimensions as the base app it depends on.
+    // Must mirror app/build.gradle.kts's "env" flavor dimension
+    // (prod/beta/web) — AGP requires a dynamic-feature module to declare the
+    // same flavor dimensions as the base app it depends on. `web` is never
+    // packaged as a module: it is only built as a standalone APK, where the
+    // PMTiles ship inside the base.
     flavorDimensions "env"
     productFlavors {
         prod {
             dimension "env"
         }
         beta {
+            dimension "env"
+        }
+        web {
             dimension "env"
         }
     }

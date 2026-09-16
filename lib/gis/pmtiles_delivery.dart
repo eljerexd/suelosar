@@ -1,6 +1,22 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show appFlavor;
+
+/// Whether this build gets its province archives through Play Feature
+/// Delivery — true only for the Android Google Play builds (`prod`, `beta`).
+///
+/// The `web` flavor is the standalone APK distributed from SuelosAR's own
+/// site. `flutter build apk` never enables deferred components, so Flutter
+/// packs both provinces' archives into the APK's regular assets, exactly as
+/// if they were listed under `assets:` — they are always present. Treating
+/// that build like Windows (always available, nothing to download, install
+/// or delete) is what keeps it from ever reaching Play's APIs, which cannot
+/// serve an app that was not installed from Play. `appFlavor` is set by
+/// `--flavor` itself, so this needs no extra configuration and cannot drift
+/// from the build that was actually produced.
+bool get usesOnDemandPmtilesDelivery =>
+    Platform.isAndroid && appFlavor != 'web';
 
 /// Availability of an on-demand provincial PMTiles archive — shared shape
 /// for every province delivered this way (Santa Fe, Buenos Aires). Unlike

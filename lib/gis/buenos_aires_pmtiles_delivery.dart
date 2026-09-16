@@ -28,7 +28,7 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
 
   static const String _componentName = 'buenosAiresPmtiles';
 
-  PmtilesDeliveryStatus _status = Platform.isAndroid
+  PmtilesDeliveryStatus _status = usesOnDemandPmtilesDelivery
       ? PmtilesDeliveryStatus.notInstalled
       : PmtilesDeliveryStatus.available;
 
@@ -164,7 +164,7 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   /// for why this is a no-op under [kDebugMode].
   @override
   Future<void> checkStatus() async {
-    if (!Platform.isAndroid) {
+    if (!usesOnDemandPmtilesDelivery) {
       _setStatus(PmtilesDeliveryStatus.available);
       return;
     }
@@ -201,7 +201,7 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   /// com.google.android.play:core that Google Play rejects for targetSdk 34+.
   @override
   Future<void> download() async {
-    if (!Platform.isAndroid) return;
+    if (!usesOnDemandPmtilesDelivery) return;
     if (_status == PmtilesDeliveryStatus.downloading) return;
     if (kDebugMode) {
       await _simulateDevDownload();
@@ -327,7 +327,7 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   /// never arrives.
   @override
   Future<void> uninstall() async {
-    if (!Platform.isAndroid) return;
+    if (!usesOnDemandPmtilesDelivery) return;
     if (_status == PmtilesDeliveryStatus.downloading) return;
     if (kDebugMode) {
       _setStatus(PmtilesDeliveryStatus.notInstalled);

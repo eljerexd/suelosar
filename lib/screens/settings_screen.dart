@@ -76,15 +76,17 @@ class SettingsScreen extends StatelessWidget {
                 const SizedBox(height: 18),
                 // One card, two concepts kept apart only by the section's
                 // own divider + the "Caché" label: the province-manager
-                // row is Android only (nothing to show on Windows —
-                // bundled provinces there, no on-demand delivery), the
-                // cache row stays on every platform exactly as before.
+                // row only exists where provinces are delivered on demand
+                // (the Google Play Android builds). Windows and the `web`
+                // APK bundle every province, so there is nothing to
+                // download or delete there; the cache row stays everywhere.
                 _SettingsSection(
                   icon: AppIcons.delete,
                   title: 'Datos y almacenamiento',
                   showComingSoon: false,
                   children: [
-                    if (Platform.isAndroid) const _ProvincialMapsSetting(),
+                    if (usesOnDemandPmtilesDelivery)
+                      const _ProvincialMapsSetting(),
                     const _CacheSubsection(),
                   ],
                 ),

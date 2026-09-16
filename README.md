@@ -176,7 +176,10 @@ flutter build appbundle --release --flavor prod --dart-define-from-file=.vscode/
 
 flutter run -d windows
 
-🔴  PARA COMPILAR = flutter build windows --release --dart-define-from-file=.vscode/supabase.env.json
+🔴  *PARA WINDOWS* = flutter build windows --release --dart-define-from-file=.vscode/supabase.env.json
+
+🏅 *GOOGLE PLAY* = flutter build appbundle --release --flavor prod --dart-define-from-file=.vscode/supabase.env.json
+🥈 *PARA APK* = flutter build apk --release --flavor web --dart-define-from-file=.vscode/supabase.env.json
 
 ## Optimización de PDFs bundleados (septiembre de 2026)
 

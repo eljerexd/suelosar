@@ -28,7 +28,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
 
   static const String _componentName = 'santaFePmtiles';
 
-  SantaFePmtilesStatus _status = Platform.isAndroid
+  SantaFePmtilesStatus _status = usesOnDemandPmtilesDelivery
       ? SantaFePmtilesStatus.notInstalled
       : SantaFePmtilesStatus.available;
 
@@ -143,7 +143,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   /// for why this is a no-op under [kDebugMode].
   @override
   Future<void> checkStatus() async {
-    if (!Platform.isAndroid) {
+    if (!usesOnDemandPmtilesDelivery) {
       _setStatus(SantaFePmtilesStatus.available);
       return;
     }
@@ -179,7 +179,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   /// com.google.android.play:core that Google Play rejects for targetSdk 34+.
   @override
   Future<void> download() async {
-    if (!Platform.isAndroid) return;
+    if (!usesOnDemandPmtilesDelivery) return;
     if (_status == SantaFePmtilesStatus.downloading) return;
     if (kDebugMode) {
       await _simulateDevDownload();
@@ -306,7 +306,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   /// than waiting on a signal that never arrives.
   @override
   Future<void> uninstall() async {
-    if (!Platform.isAndroid) return;
+    if (!usesOnDemandPmtilesDelivery) return;
     if (_status == SantaFePmtilesStatus.downloading) return;
     if (kDebugMode) {
       _setStatus(SantaFePmtilesStatus.notInstalled);

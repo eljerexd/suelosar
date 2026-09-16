@@ -69,6 +69,18 @@ android {
             versionNameSuffix = "-beta"
             resValue("string", "app_name", "SuelosAR Beta")
         }
+        // APK standalone para descarga directa desde la web de SuelosAR: la
+        // app completa, con la misma identidad que la de Google Play
+        // (applicationId, nombre, versionName y firma), pensada para
+        // instalarse como la SuelosAR normal. Se genera solo con
+        // `flutter build apk --flavor web`, que no activa deferred
+        // components: los PMTiles de ambas provincias quedan dentro de los
+        // assets normales del APK. El lado Dart usa `appFlavor == 'web'` para
+        // tratarlas como siempre disponibles y ocultar todo lo de Play
+        // Feature Delivery.
+        create("web") {
+            dimension = "env"
+        }
     }
 
     signingConfigs {
