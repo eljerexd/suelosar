@@ -308,10 +308,24 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
             underflowAnchor: PdfPageAnchor.center,
             sizeDelegateProvider: _SuelosArPdfSizeDelegateProvider(
               desktop: desktop,
+              openingPageNumber: widget.initialPage ?? 1,
             ),
             onViewerReady: (_, _) => _handleViewerReady(),
             onPageChanged: _handlePageChanged,
             normalizeMatrix: _hasPageRange ? _clampToPageRange : null,
+            // Santa Fe only. On open pdfium measures just page 1 of the
+            // consolidated PDF (A4) and gives the other 639 pages that size;
+            // the letters are really US Letter, 50 pt shorter. By default
+            // pdfrx then measures every page outwards from the letter, and
+            // each batch that lands above it moves the letter up by the
+            // accumulated difference for a frame before the viewer
+            // re-anchors — seen as the document scrolling on open. Measuring
+            // only the pages that come into view leaves every page above the
+            // letter untouched, so it stays where it was first laid out.
+            // Buenos Aires keeps pdfrx's defaults.
+            behaviorControlParams: PdfViewerBehaviorControlParams(
+              loadPageDimensionsOnDemand: _hasPageRange,
+            ),
             viewerOverlayBuilder: showScrollThumb
                 ? (context, _, _) => [
                     PdfViewerScrollThumb(
@@ -369,24 +383,35 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 }
 
 class _SuelosArPdfSizeDelegateProvider extends PdfViewerSizeDelegateProvider {
-  const _SuelosArPdfSizeDelegateProvider({required this.desktop});
+  const _SuelosArPdfSizeDelegateProvider({
+    required this.desktop,
+    required this.openingPageNumber,
+  });
 
   final bool desktop;
+  final int openingPageNumber;
 
   @override
-  PdfViewerSizeDelegate create() => _SuelosArPdfSizeDelegate(desktop: desktop);
+  PdfViewerSizeDelegate create() => _SuelosArPdfSizeDelegate(
+    desktop: desktop,
+    openingPageNumber: openingPageNumber,
+  );
 
   @override
   bool operator ==(Object other) =>
-      other is _SuelosArPdfSizeDelegateProvider && other.desktop == desktop;
+      other is _SuelosArPdfSizeDelegateProvider &&
+      other.desktop == desktop &&
+      other.openingPageNumber == openingPageNumber;
 
   @override
-  int get hashCode => desktop.hashCode;
+  int get hashCode => Object.hash(desktop, openingPageNumber);
 }
 
 class _SuelosArPdfSizeDelegate extends PdfViewerSizeDelegateSmart {
-  _SuelosArPdfSizeDelegate({required this.desktop})
-    : super(
+  _SuelosArPdfSizeDelegate({
+    required this.desktop,
+    required this.openingPageNumber,
+  }) : super(
         minScale: desktop ? 0.25 : 0.01,
         maxScale: desktop ? 5 : 3,
         smartMaxScale: desktop ? 5 : 3,
@@ -395,6 +420,14 @@ class _SuelosArPdfSizeDelegate extends PdfViewerSizeDelegateSmart {
       );
 
   final bool desktop;
+
+  /// 1-based page the viewer opens on, whose width sets the mobile minimum
+  /// zoom. Page 1 for Buenos Aires (one file per letter), as it always was.
+  /// For Santa Fe it is the letter's first page inside the consolidated PDF:
+  /// that PDF's pages 1–2 are A4 (595 pt wide) while every letter is Letter
+  /// (612 pt), so measuring page 1 set a minimum zoom slightly above the
+  /// letter's fit-width and every letter opened wider than the screen.
+  final int openingPageNumber;
   PdfViewerController? _controller;
 
   static const double _desktopMinimumZoom = 0.25;
@@ -438,7 +471,11 @@ class _SuelosArPdfSizeDelegate extends PdfViewerSizeDelegateSmart {
       );
     }
 
-    final page = layout.pageLayouts.first;
+    final page =
+        layout.pageLayouts[(openingPageNumber - 1).clamp(
+          0,
+          layout.pageLayouts.length - 1,
+        )];
     final openingScale = _openingScale(
       viewSize: viewSize,
       page: page,
