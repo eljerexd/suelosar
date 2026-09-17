@@ -1,0 +1,65 @@
+# SuelosAR Data Pipeline — Santa Fe.
+# Reemplaza, de forma declarativa, a docker/input/santa_fe/remap_santa_fe.mjs.
+#
+# Fuentes (no versionadas, source/ está en .gitignore): colocar en
+#   source/gis/suelos_santa_fe_25.geojson
+#   source/pdf/INTA_CRsantafe_EEARafaela_Tosolini_R_Mapa_suelos_provincia_SantaFe-Descripcion_de_las_series.pdf
+# como copia o como enlace a donde estén guardados. En Windows, sin duplicar
+# espacio (mismo disco, sin permisos de administrador):
+#   New-Item -ItemType HardLink -Path source/gis/suelos_santa_fe_25.geojson -Target <original>
+
+id: santa_fe
+name: Santa Fe
+
+gis:
+  # GeoJSON original (INTA).
+  source: source/gis/suelos_santa_fe_25.geojson
+  format: geojson_lines
+  encoding: UTF-8
+
+  # Mismo resultado que remap_santa_fe.mjs: los campos de unidad vacíos
+  # quedan como "" y las series/porcentajes vacíos como null.
+  mapping:
+    TIPO:      { from: tipo_ucar, empty: "" }
+    # Nombre real de la serie dominante, leído del índice del PDF.
+    Nombre_UC: { derive: dominant_series_name, empty: "" }
+    # ucar ("MLA-04") es el identificador corto de la unidad cartográfica.
+    SIMBC:     { from: ucar, empty: "" }
+    # gat ("3/4ws") es la clase de aptitud INTA documentada en el PDF.
+    CAP_USO:   { from: gat, empty: "" }
+    PAISAJE:   { absent: "Sin fuente estructurada en el GeoJSON ni en el PDF (solo prosa libre)", value: "" }
+    "SERIE{n}": { from: "comp{n}", n: [1, 6] }
+    "PORC{n}":  { from: "comp{n}_porc", n: [1, 6] }
+
+  series:
+    code_rule: first_token     # "CER cc" -> "CER"
+    match: case_insensitive    # como SantaFeSeriesRepository.normalizeCode
+    aliases: {}
+
+  thresholds:
+    warn_below: 90
+    error_below: 50
+
+pdf:
+  model: consolidated
+  # El PDF original del INTA (idéntico byte a byte al asset de la app).
+  file: source/pdf/INTA_CRsantafe_EEARafaela_Tosolini_R_Mapa_suelos_provincia_SantaFe-Descripcion_de_las_series.pdf
+  asset_path: assets/pdfs_santa_fe/mapa_suelos_santa_fe.pdf
+  toc:
+    pages: [1, 13]
+    series_pattern: '^\s*Serie: (?<name>.+) \((?<code>[^)]+)\)\s*\.+\s*(?<page>\d+)\s*$'
+    entry_pattern: '^\s*(?<title>.+?)\s*\.{3,}\s*(?<page>\d+)\s*$'
+    heading_pattern: '^\s*Serie: {name} \({code}\)'
+    page_offset: auto
+
+catalog:
+  output: santa_fe_series_index.json
+  reference: ${REPO}/assets/data/santa_fe_series_index.json
+  json_style: standard
+  province_label: Santa Fe
+
+pmtiles:
+  file: ${REPO}/assets/maps/santa_fe_soil_polygons.pmtiles
+  layer: soil_polygons
+
+# Pipeline Docker (informativo en Fase 1): OPTIONAL_ATTRIBUTES=CAP_USO,PAISAJE

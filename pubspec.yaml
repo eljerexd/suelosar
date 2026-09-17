@@ -60,6 +60,12 @@ dev_dependencies:
     sdk: flutter
   vm_service: 15.3.0
   flutter_launcher_icons: ^0.14.4
+  # SuelosAR Data Pipeline (tool/suelosar_data.dart) — already resolved
+  # transitively; declared so the tool may import them directly.
+  args: ^2.7.0
+  crypto: ^3.0.7
+  path: ^1.9.1
+  yaml: ^3.1.4
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
