@@ -124,6 +124,48 @@ class NormalizeResult {
   final List<EncodingIssue> encodingIssues;
   final String encodingName;
   final String? outputFile;
+
+  /// What later stages (the GIS <-> catalog cross-reference) need, for
+  /// replaying a reused normalize stage. Column profiles are not kept.
+  Map<String, Object?> toSummaryJson() => {
+    'featureCount': featureCount,
+    'sourceColumns': sourceColumns.toList()..sort(),
+    'seriesFeatureCounts': seriesFeatureCounts,
+    'seriesExamples': seriesExamples,
+    'seriesVariants': {
+      for (final e in seriesVariants.entries) e.key: e.value.toList()..sort(),
+    },
+    'featuresWithSeries': featuresWithSeries,
+    'featuresWithUncataloguedSeries': featuresWithUncataloguedSeries,
+    'nullGeometries': nullGeometries,
+    'encodingName': encodingName,
+    'outputFile': outputFile,
+  };
+
+  factory NormalizeResult.fromSummaryJson(Map<String, Object?> json) =>
+      NormalizeResult(
+        featureCount: json['featureCount']! as int,
+        sourceColumns: {
+          for (final c in json['sourceColumns']! as List) c as String,
+        },
+        declaredColumns: null,
+        sourceProfiles: const {},
+        targetProfiles: const {},
+        seriesFeatureCounts: (json['seriesFeatureCounts']! as Map)
+            .cast<String, int>(),
+        seriesExamples: (json['seriesExamples']! as Map).cast<String, String>(),
+        seriesVariants: {
+          for (final e in (json['seriesVariants']! as Map).entries)
+            e.key as String: {for (final v in e.value as List) v as String},
+        },
+        featuresWithSeries: json['featuresWithSeries']! as int,
+        featuresWithUncataloguedSeries:
+            json['featuresWithUncataloguedSeries'] as int?,
+        nullGeometries: json['nullGeometries'] as int?,
+        encodingIssues: const [],
+        encodingName: json['encodingName']! as String,
+        outputFile: json['outputFile'] as String?,
+      );
 }
 
 /// Applies a province's [FieldMapping] to its GIS source.

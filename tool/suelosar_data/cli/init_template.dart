@@ -58,6 +58,11 @@ catalog:
   json_style: standard         # standard | powershell
   # reference: \${REPO}/assets/data/COMPLETAR.json   # catálogo que ya usa la app, si existe
 
-# pmtiles:                     # cuando exista el archivo generado por Docker
-#   file: \${REPO}/assets/maps/COMPLETAR.pmtiles
+pmtiles:                       # generado con Docker por `build` (etapas prepare/map/optimize)
+  output: ${id}_soil_polygons.pmtiles   # se publica en output/; nunca se copia a assets/
+  # reference: \${REPO}/assets/maps/COMPLETAR.pmtiles   # PMTiles que ya usa la app, si existe
+  layer: soil_polygons
+  zooms: { min: 4, max: 14 }
+  input: auto                  # auto | source | normalized
+  optimize: auto               # auto | always | never
 ''';

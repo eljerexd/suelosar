@@ -176,11 +176,59 @@ class CatalogConfig {
   final String provinceLabel;
 }
 
-class PmtilesConfig {
-  const PmtilesConfig({required this.file, required this.layer});
+/// Which file feeds the Docker pipeline (`pmtiles.input`).
+enum PmtilesInput {
+  /// The original source when it is a shapefile mapped column-for-column,
+  /// otherwise the normalized GeoJSON.
+  auto('auto'),
+  source('source'),
+  normalized('normalized');
 
-  final String file;
+  const PmtilesInput(this.key);
+  final String key;
+}
+
+/// When the optimizer rewrites the archive (`pmtiles.optimize`).
+enum OptimizeMode {
+  /// Only when the archive carries attributes outside the schema;
+  /// otherwise the archive is copied unchanged.
+  auto('auto'),
+  always('always'),
+  never('never');
+
+  const OptimizeMode(this.key);
+  final String key;
+}
+
+class PmtilesConfig {
+  const PmtilesConfig({
+    required this.output,
+    required this.reference,
+    required this.layer,
+    required this.minZoom,
+    required this.maxZoom,
+    required this.input,
+    required this.optimize,
+  });
+
+  /// File name of the published archive inside `output/`.
+  final String output;
+
+  /// The archive the app ships today — only compared with, never written.
+  final String? reference;
   final String layer;
+  final int minZoom;
+  final int maxZoom;
+  final PmtilesInput input;
+  final OptimizeMode optimize;
+
+  /// `output` without `.pmtiles`.
+  String get stem => output.substring(0, output.length - '.pmtiles'.length);
+
+  /// Constraints of docker/build_map.sh: the low-detail tier ends at z6 and
+  /// the fixed tiers need z13 or more at the top.
+  static const minZoomRange = (0, 6);
+  static const maxZoomRange = (13, 20);
 }
 
 class ProvinceDefinition {
@@ -195,6 +243,7 @@ class ProvinceDefinition {
     required this.pmtiles,
     required this.xrefErrorAbovePercent,
     required this.dockerImage,
+    this.raw = const {},
   });
 
   final String id;
@@ -213,12 +262,33 @@ class ProvinceDefinition {
   final double xrefErrorAbovePercent;
   final String dockerImage;
 
+  /// The parsed YAML, used to fingerprint configuration sections.
+  final Map<String, Object?> raw;
+
   String get configFile => p.join(directory, 'province.yaml');
   String get workDir => p.join(directory, 'work');
   String get outputDir => p.join(directory, 'output');
   String get stagesDir => p.join(outputDir, 'stages');
   String get normalizedGisFile => p.join(workDir, 'normalized.geojson');
   String get pmtilesMetadataFile => p.join(outputDir, 'pmtiles_metadata.json');
+  String get stampsDir => p.join(workDir, 'stamps');
+  String get logsDir => p.join(workDir, 'logs');
+  String get mapInputDir => p.join(workDir, 'map_input');
+  String get mapInputFile => p.join(mapInputDir, 'map_input.geojson');
+  String get pmtilesWorkDir => p.join(workDir, 'pmtiles');
+
+  /// Raw archive written by Docker.
+  String? get fullPmtilesFile => pmtiles == null
+      ? null
+      : p.join(pmtilesWorkDir, '${pmtiles!.stem}.full.pmtiles');
+
+  /// Archive after the optimize stage, before publication.
+  String? get optimizedPmtilesFile =>
+      pmtiles == null ? null : p.join(pmtilesWorkDir, pmtiles!.output);
+
+  /// Archive published only when every stage passed.
+  String? get publishedPmtilesFile =>
+      pmtiles == null ? null : p.join(outputDir, pmtiles!.output);
 
   String? get catalogOutputFile =>
       catalog == null ? null : p.join(outputDir, catalog!.output);
@@ -319,7 +389,7 @@ class _Reader {
     final pmtilesNode = root['pmtiles'];
     final pmtiles = pmtilesNode == null
         ? null
-        : _pmtiles(_map(root, 'pmtiles', 'pmtiles'));
+        : _pmtiles(_map(root, 'pmtiles', 'pmtiles'), expectedId);
     final xref = root['xref'] == null ? null : _map(root, 'xref', 'xref');
     final xrefError = xref == null
         ? 50.0
@@ -351,6 +421,7 @@ class _Reader {
       pmtiles: pmtiles,
       xrefErrorAbovePercent: xrefError ?? 50,
       dockerImage: image,
+      raw: root,
     );
   }
 
@@ -582,14 +653,94 @@ class _Reader {
     );
   }
 
-  PmtilesConfig? _pmtiles(Map<String, Object?>? node) {
+  PmtilesConfig? _pmtiles(Map<String, Object?>? node, String id) {
     if (node == null) return null;
-    final file = _path(node, 'file', 'pmtiles.file');
+    if (node.containsKey('file')) {
+      problems.add(
+        'pmtiles.file: se renombró a pmtiles.reference (el archivo que usa '
+        'la app hoy, solo para comparar).',
+      );
+    }
+    final unknown = node.keys.toSet().difference({
+      'file',
+      'output',
+      'reference',
+      'layer',
+      'zooms',
+      'input',
+      'optimize',
+    });
+    if (unknown.isNotEmpty) {
+      problems.add('pmtiles: claves desconocidas ${unknown.join(', ')}.');
+    }
+    final output =
+        _string(node, 'output', 'pmtiles.output', optional: true) ??
+        '${id}_soil_polygons.pmtiles';
+    if (output.contains('/') ||
+        output.contains(r'\') ||
+        !output.toLowerCase().endsWith('.pmtiles') ||
+        output.length <= '.pmtiles'.length) {
+      problems.add(
+        'pmtiles.output: debe ser un nombre de archivo .pmtiles, sin carpetas.',
+      );
+    }
+    final reference = node['reference'] == null
+        ? null
+        : _path(node, 'reference', 'pmtiles.reference');
     final layer =
         _string(node, 'layer', 'pmtiles.layer', optional: true) ??
         'soil_polygons';
-    if (file == null) return null;
-    return PmtilesConfig(file: file, layer: layer);
+    var minZoom = 4;
+    var maxZoom = 14;
+    final zooms = node['zooms'];
+    if (zooms != null) {
+      if (zooms is! Map || zooms['min'] is! int || zooms['max'] is! int) {
+        problems.add(
+          'pmtiles.zooms: debe ser { min: <entero>, max: <entero> }.',
+        );
+      } else {
+        minZoom = zooms['min'] as int;
+        maxZoom = zooms['max'] as int;
+        final (minLow, minHigh) = PmtilesConfig.minZoomRange;
+        final (maxLow, maxHigh) = PmtilesConfig.maxZoomRange;
+        if (minZoom < minLow || minZoom > minHigh) {
+          problems.add(
+            'pmtiles.zooms.min: debe estar entre $minLow y $minHigh (build_map.sh).',
+          );
+        }
+        if (maxZoom < maxLow || maxZoom > maxHigh) {
+          problems.add(
+            'pmtiles.zooms.max: debe estar entre $maxLow y $maxHigh (build_map.sh).',
+          );
+        }
+      }
+    }
+    final input = _enum(
+      node,
+      'input',
+      'pmtiles.input',
+      PmtilesInput.values,
+      (v) => v.key,
+      fallback: PmtilesInput.auto,
+    );
+    final optimize = _enum(
+      node,
+      'optimize',
+      'pmtiles.optimize',
+      OptimizeMode.values,
+      (v) => v.key,
+      fallback: OptimizeMode.auto,
+    );
+    if (input == null || optimize == null) return null;
+    return PmtilesConfig(
+      output: output,
+      reference: reference,
+      layer: layer,
+      minZoom: minZoom,
+      maxZoom: maxZoom,
+      input: input,
+      optimize: optimize,
+    );
   }
 
   // --- primitives ---------------------------------------------------------

@@ -26,6 +26,24 @@ soil_polygons.prj
 An optional `.cpg` file should be included when the source uses a specific text
 encoding. If the source has no `.prj`, provide its CRS through `SOURCE_SRS`.
 
+`SOURCE_SHAPEFILE` may also name any other single-file GDAL dataset (for
+example a `.geojson`); the `.dbf`/`.shx`/`.prj` checks apply only to `.shp`
+inputs.
+
+## Automated use (SuelosAR Data Pipeline)
+
+`dart run tool/suelosar_data.dart build <province>` drives this image without
+Docker Compose: it prepares `data/provinces/<id>/work/map_input/` (or uses the
+original shapefile), runs `docker run` with that folder mounted **read-only**
+at `/data/input` and `work/pmtiles/` at `/data/output`, and never writes to
+`assets/`. The image is rebuilt automatically when `Dockerfile`,
+`build_map.sh`, `validate_map.py` or `profile_map.py` change. See
+`tool/suelosar_data/README.md`.
+
+`validate_map.py` samples the tiles around the center stored in the archive
+header (not a fixed Buenos Aires coordinate) and rejects samples that
+`tippecanoe-decode` resolved from a lower zoom.
+
 ## Rebuild
 
 From the project root, run:

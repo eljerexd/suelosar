@@ -1,8 +1,9 @@
-# SuelosAR Data Pipeline — Fase 1
+# SuelosAR Data Pipeline — Fase 2
 
 Herramienta de línea de comandos que valida y prepara los datos de una
 provincia **antes** de que lleguen a Flutter: fuentes, catálogo de cartas,
-GIS normalizado, metadatos del PMTiles y un reporte. No modifica la app,
+GIS normalizado, PMTiles generado con Docker, optimizado y verificado,
+metadatos y un reporte. No modifica la app,
 Android, Windows ni `assets/`: solo escribe en `data/provinces/<id>/`.
 
 ```text
@@ -12,7 +13,9 @@ dart run tool/suelosar_data.dart help <comando>
 
 Requisitos: el SDK de Dart/Flutter del proyecto y `pdftotext` (poppler; viene
 con Git for Windows y se detecta solo) para catálogos de PDF único. El
-comando `geometry` necesita Docker con la imagen `suelosar-gis-builder:local`.
+comando `geometry` y la etapa `map` de `build` necesitan Docker Desktop; la
+imagen `suelosar-gis-builder:local` se reconstruye sola cuando cambian los
+scripts de `docker/` (se marca con la etiqueta `suelosar.scripts`).
 
 ## Estructura
 
@@ -25,15 +28,17 @@ tool/suelosar_data/
   sources/      lectores DBF, shapefile, GeoJSON, texto de PDF, GDAL (Docker)
   normalize/    mapeo declarativo campo origen -> campo SuelosAR
   catalog/      catálogos (PDF por serie / PDF único), formatos JSON, diff
-  pmtiles/      metadatos del PMTiles y comparación con la app
+  gis_build/    entrada del mapa (prepare-gis) y `docker run` (map)
+  pmtiles/      optimizador genérico, chequeos, metadatos, comparación con la app
   validation/   hallazgos, chequeos GIS y cruce GIS <-> catálogo
   report/       output/report.md y output/report.json
 
 data/provinces/<id>/
   province.yaml   versionado
   source/         datos oficiales (ignorado por git)
-  work/           normalized.geojson (ignorado)
-  output/         catálogo, pmtiles_metadata.json, report.*, stages/ (ignorado)
+  work/           normalized.geojson, map_input/, pmtiles/, stamps/, logs/ (ignorado)
+  output/         catálogo, <pmtiles.output> + .sha256, pmtiles_metadata.json,
+                  report.*, stages/ (ignorado)
 ```
 
 ## Comandos
@@ -48,7 +53,11 @@ data/provinces/<id>/
 | `metadata <archivo> \| --province <id>` | Tamaño, SHA-256, zooms, bounds, centro; compara con la app. | `--out` / `output/pmtiles_metadata.json` |
 | `geometry <id>` | Geometrías nulas/inválidas antes de reparar (GDAL en Docker). | `output/stages/geometry.json` |
 | `report <id>` | Rehace el reporte con las últimas etapas guardadas. | `output/report.*` |
-| `build <id>` | fuentes + catálogo + GIS normalizado + cruce + PMTiles + reporte. | todo lo anterior |
+| `prepare-gis <id>` | Decide la entrada del mapa (fuente original o normalizado) y la prepara. | `work/map_input/` |
+| `map <id> [--dry-run]` | `docker run` de `build_map.sh`; `--dry-run` solo muestra el comando. | `work/pmtiles/<stem>.full.pmtiles`, `work/logs/map.log` |
+| `optimize <id>` | Quita atributos fuera del esquema y verifica cada tile. | `work/pmtiles/<output>` |
+| `optimize --input A --output B [--mode]` | Lo mismo para cualquier archivo, sin provincia. | `B`, `B.sha256` |
+| `build <id> [--force] [--from E] [--until E]` | catálogo, normalize, prepare, map, optimize, metadata (publicación), cruce y reporte; reanudable. | todo lo anterior + `output/<pmtiles.output>` |
 
 Opciones globales: `--provinces-dir`, `--pdftotext`, `-v/--verbose` (muestra
 los INFO). `validate`, `build`, `metadata` y `report` aceptan `--strict`
@@ -82,6 +91,32 @@ mínima de los campos principales.
 empieza en su página impresa + `page_offset` (o `auto`, que busca el título de
 la primera serie y lo confirma con la última) y termina una página antes de la
 siguiente entrada del sumario.
+
+`pmtiles`:
+
+| Clave | Por defecto | Qué hace |
+|---|---|---|
+| `output` | `<id>_soil_polygons.pmtiles` | nombre del archivo publicado en `output/` (sin carpetas) |
+| `reference` | — | PMTiles que ya usa la app, solo para comparar (antes `file`) |
+| `layer` | `soil_polygons` | capa vectorial |
+| `zooms` | `{ min: 4, max: 14 }` | `min` 0–6, `max` 13–20 |
+| `input` | `auto` | `source`: la fuente original (requiere mapeo directo); `normalized`: `work/normalized.geojson`, con textos vacíos como null; `auto`: `source` si el mapeo es directo y la fuente es shapefile |
+| `optimize` | `auto` | `auto`: reescribe solo si hay atributos fuera del esquema, si no copia; `always`; `never` |
+
+## Reanudación y publicación
+
+Cada etapa de `build` guarda una huella en `work/stamps/<etapa>.json`: hashes de
+sus entradas y de su configuración (y, para `map`, de los scripts Docker y la
+imagen) más los hashes de sus salidas. Si nada cambió y la corrida anterior no
+tuvo errores, la etapa se **reutiliza** (↺ en el reporte, con lo que había
+tardado). `--force` vuelve a correr todo; `--from E` fuerza desde `E`;
+`--until E` corta después de `E`. `prepare-gis` y `map` equivalen a
+`build --from X --until X`.
+
+El PMTiles se copia a `output/<pmtiles.output>` (con `.sha256` y
+`pmtiles_metadata.json`) solo si `normalize`, `prepare`, `map`, `optimize` y los
+chequeos del archivo terminaron sin ERROR; si no, se borra lo publicado antes.
+Nada se copia a `assets/`: el reporte lista los **pasos manuales pendientes**.
 
 ## Hallazgos
 
@@ -118,7 +153,22 @@ siguiente entrada del sumario.
 | PMT001 | `.sha256` ausente (WARNING) o distinto (ERROR) | WARNING / ERROR |
 | PMT002 | la app declara otro tamaño o bounds; archivo no usado aún (INFO) | WARNING / INFO |
 | PMT003 | capa o campos del esquema ausentes en los tiles muestreados | ERROR |
+| PMT004 | el PMTiles generado difiere del de la app (WARNING); idéntico o sin referencia (INFO) | WARNING / INFO |
+| DKR000 | Docker no disponible (en `validate`) | WARNING |
+| DKR001 | Docker no disponible (`build`/`map`; sale con código 2) | — |
+| DKR002 | `build_map.sh` falló (ver `work/logs/map.log`) | ERROR |
+| PRE000 | ruta elegida para la entrada del mapa y valores vaciados | INFO |
+| PRE001 | `pmtiles.input: source` con un mapeo que no es directo | ERROR |
+| MAP001 | el archivo generado no coincide con la configuración (versión, tipo, zooms, capa, hash) | ERROR |
+| MAP002 | zooms sin tiles | ERROR |
+| MAP003 | bounds fuera de la extensión de la fuente | WARNING |
+| OPT001 | falta un campo requerido del esquema: no se publica | ERROR |
+| OPT002 | estructura de PMTiles no soportada por el optimizador | ERROR |
+| OPT003 | resumen de la optimización | INFO |
+| PUB001 | PMTiles no publicado, con el motivo | INFO |
+| PUB002 | la copia publicada no coincide con el hash | ERROR |
 | STG001 | una etapa falló inesperadamente | ERROR |
+| STG002 | etapa omitida porque falló o falta una anterior | INFO |
 
 ## Agregar una provincia
 
@@ -127,14 +177,14 @@ siguiente entrada del sumario.
 3. `dart run tool/suelosar_data.dart inspect cordoba` y completar `province.yaml`.
 4. `dart run tool/suelosar_data.dart build cordoba` y leer `output/report.md`.
 5. Corregir datos o configuración y repetir hasta que no haya errores.
-6. Generar el PMTiles con el pipeline Docker (`docker/README.md`). Hoy
-   `docker/build_map.sh` solo acepta shapefiles, así que `work/normalized.geojson`
-   se convierte antes con `ogr2ogr` (misma imagen) — la Fase 2 lo automatiza.
-   Después, agregar `pmtiles.file` y volver a correr `build`.
+6. `build` genera el PMTiles con Docker y lo publica en `output/`. Revisar
+   `PASOS MANUALES PENDIENTES` en el reporte: copiar a `assets/`, registrar la
+   provincia en la app, actualizar tamaño y bounds.
 
 ## Tests
 
 ```text
 flutter test test/tool/suelosar_data
 $env:SUELOSAR_ACCEPTANCE = "1"; flutter test test/tool/suelosar_data/acceptance_test.dart
+$env:SUELOSAR_DOCKER = "1"; flutter test test/tool/suelosar_data/docker_build_test.dart
 ```

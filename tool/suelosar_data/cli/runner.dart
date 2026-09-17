@@ -10,6 +10,7 @@ import '../config/province_definition.dart';
 import '../normalize/field_mapping.dart';
 import '../normalize/normalizer.dart';
 import '../pmtiles/app_declarations.dart';
+import '../pmtiles/optimizer.dart';
 import '../pmtiles/pmtiles_checks.dart';
 import '../pmtiles/pmtiles_metadata.dart';
 import '../report/report_writer.dart';
@@ -32,7 +33,8 @@ Future<int> runSuelosArData(
   final runner =
       CommandRunner<int>(
           'dart run tool/suelosar_data.dart',
-          'SuelosAR Data Pipeline (Fase 1): valida y prepara los datos de una provincia.',
+          'SuelosAR Data Pipeline: valida y prepara los datos de una provincia '
+              'y genera su PMTiles (sin tocar la app).',
         )
         ..argParser.addOption(
           'provinces-dir',
@@ -58,6 +60,22 @@ Future<int> runSuelosArData(
     _GeometryCommand(workingDirectory),
     _ReportCommand(workingDirectory),
     _BuildCommand(workingDirectory),
+    _StageCommand(
+      workingDirectory,
+      name: 'prepare-gis',
+      stage: 'prepare',
+      description:
+          'Decide y prepara la entrada del pipeline Docker (fuente original o work/map_input).',
+    ),
+    _StageCommand(
+      workingDirectory,
+      name: 'map',
+      stage: 'map',
+      description:
+          'Genera el PMTiles completo con Docker en work/pmtiles (--dry-run muestra el comando).',
+      dryRun: true,
+    ),
+    _OptimizeCommand(workingDirectory),
   ]) {
     runner.addCommand(command);
   }
@@ -111,12 +129,15 @@ abstract class _Command extends Command<int> {
     repoRoot: repoRoot,
   );
 
-  ProvincePipeline pipelineFor(ProvinceDefinition definition) =>
-      ProvincePipeline(
-        definition,
-        pdftotext: globalResults?['pdftotext'] as String?,
-        log: stdout.writeln,
-      );
+  ProvincePipeline pipelineFor(
+    ProvinceDefinition definition, {
+    RunOptions options = const RunOptions(),
+  }) => ProvincePipeline(
+    definition,
+    pdftotext: globalResults?['pdftotext'] as String?,
+    options: options,
+    log: stdout.writeln,
+  );
 
   void printFindings(Iterable<Finding> findings) {
     final visible =
@@ -367,57 +388,203 @@ class _ValidateCommand extends _StrictCommand {
   Future<int> run() async {
     final definition = loadProvince();
     final watch = Stopwatch()..start();
-    final pipeline = pipelineFor(definition)..resetStages();
+    final pipeline = pipelineFor(definition);
     stdout.writeln('validate ${definition.id}\n');
-    await pipeline.sources();
-    final catalog = await pipeline.catalog(write: false, diff: true);
-    final gis = await pipeline.gis(write: false, catalog: catalog);
-    await pipeline.crossReference(gis, catalog);
-    await pipeline.pmtiles(write: false);
+    await pipeline.runValidate();
     return finishWithReport(definition, pipeline, watch, strict: strict);
   }
 }
 
 class _BuildCommand extends _StrictCommand {
-  _BuildCommand(super.workingDirectory);
+  _BuildCommand(super.workingDirectory) {
+    argParser
+      ..addFlag(
+        'force',
+        negatable: false,
+        help: 'Rehace todas las etapas, sin reutilizar.',
+      )
+      ..addOption(
+        'from',
+        allowed: buildStageNames,
+        help:
+            'Rehace desde esta etapa (las anteriores se reutilizan si siguen válidas).',
+      )
+      ..addOption(
+        'until',
+        allowed: buildStageNames,
+        help: 'Se detiene después de esta etapa.',
+      );
+  }
 
   @override
   String get name => 'build';
 
   @override
   String get description =>
-      'validate + normalize + catalog + metadata + report, escribiendo work/ y output/.';
+      'Todo el flujo: fuentes, catálogo, normalización, preparación GIS, PMTiles, '
+      'optimización, metadatos (publicación en output/), cruce y reporte.';
 
   @override
-  String get invocation => '${runner!.executableName} build <id>';
+  String get invocation =>
+      '${runner!.executableName} build <id> [--force] [--from <etapa>] [--until <etapa>]';
+
+  @override
+  Future<int> run() async {
+    final definition = loadProvince();
+    final from = argResults!['from'] as String?;
+    final until = argResults!['until'] as String?;
+    if (from != null &&
+        until != null &&
+        buildStageNames.indexOf(from) > buildStageNames.indexOf(until)) {
+      usageException('--from $from es posterior a --until $until.');
+    }
+    final watch = Stopwatch()..start();
+    final pipeline = pipelineFor(
+      definition,
+      options: RunOptions(
+        force: argResults!['force'] == true,
+        from: from,
+        until: until,
+      ),
+    );
+    stdout.writeln('build ${definition.id}\n');
+    await pipeline.runBuild();
+    return finishWithReport(definition, pipeline, watch, strict: strict);
+  }
+}
+
+/// Runs the build up to one stage, re-running that stage and reusing the
+/// earlier ones when their stamps are still valid.
+class _StageCommand extends _StrictCommand {
+  _StageCommand(
+    super.workingDirectory, {
+    required this.name,
+    required this.stage,
+    required this.description,
+    bool dryRun = false,
+  }) {
+    if (dryRun) {
+      argParser.addFlag(
+        'dry-run',
+        negatable: false,
+        help: 'Muestra el comando docker sin ejecutarlo.',
+      );
+    }
+  }
+
+  @override
+  final String name;
+
+  @override
+  final String description;
+
+  final String stage;
+
+  @override
+  String get invocation => '${runner!.executableName} $name <id>';
 
   @override
   Future<int> run() async {
     final definition = loadProvince();
     final watch = Stopwatch()..start();
-    final pipeline = pipelineFor(definition)..resetStages();
-    stdout.writeln('build ${definition.id}\n');
-    await pipeline.sources();
-    final catalog = await pipeline.catalog(write: true, diff: true);
-    final gis = await pipeline.gis(write: true, catalog: catalog);
-    await pipeline.crossReference(gis, catalog);
-    await pipeline.pmtiles(write: true);
-    final code = finishWithReport(definition, pipeline, watch, strict: strict);
-    if (gis != null) {
+    final pipeline = pipelineFor(
+      definition,
+      options: RunOptions(
+        from: stage,
+        until: stage,
+        dryRun:
+            argParser.options.containsKey('dry-run') &&
+            argResults!['dry-run'] == true,
+      ),
+    );
+    stdout.writeln('$name ${definition.id}\n');
+    await pipeline.runBuild();
+    return finishWithReport(definition, pipeline, watch, strict: strict);
+  }
+}
+
+class _OptimizeCommand extends _StrictCommand {
+  _OptimizeCommand(super.workingDirectory) {
+    argParser
+      ..addOption(
+        'input',
+        help: 'PMTiles de entrada (uso suelto, sin provincia).',
+      )
+      ..addOption('output', help: 'PMTiles de salida (uso suelto).')
+      ..addOption(
+        'mode',
+        allowed: [for (final m in OptimizeMode.values) m.key],
+        defaultsTo: 'auto',
+        help: 'auto: reescribe solo si hay atributos fuera del esquema.',
+      );
+  }
+
+  @override
+  String get name => 'optimize';
+
+  @override
+  String get description =>
+      'Quita los atributos que no están en el esquema SuelosAR y escribe el .sha256 '
+      '(provincia: work/pmtiles; suelto: --input/--output).';
+
+  @override
+  String get invocation =>
+      '${runner!.executableName} optimize <id> | optimize --input A.pmtiles --output B.pmtiles';
+
+  @override
+  Future<int> run() async {
+    final watch = Stopwatch()..start();
+    final input = argResults!['input'] as String?;
+    final output = argResults!['output'] as String?;
+    if (input == null && output == null) {
+      final definition = loadProvince();
+      final pipeline = pipelineFor(
+        definition,
+        options: const RunOptions(from: 'optimize', until: 'optimize'),
+      );
+      stdout.writeln('optimize ${definition.id}\n');
+      await pipeline.runBuild();
+      return finishWithReport(definition, pipeline, watch, strict: strict);
+    }
+    if (input == null || output == null || argResults!.rest.isNotEmpty) {
+      usageException('Uso suelto: --input y --output juntos, sin provincia.');
+    }
+    final base = (_workingDirectory ?? Directory.current).path;
+    File resolve(String path) =>
+        File(p.isAbsolute(path) ? path : p.join(base, path));
+    final inputFile = resolve(input);
+    if (!inputFile.existsSync()) {
+      throw ConfigException('No existe ${inputFile.path}.');
+    }
+    final mode = OptimizeMode.values.firstWhere(
+      (m) => m.key == argResults!['mode'],
+    );
+    try {
+      final report = await PmtilesOptimizer(
+        log: (m) => stdout.writeln('  $m'),
+      ).run(inputFile, resolve(output), mode: mode);
+      final missing = [
+        for (final field in SuelosArSchema.requiredFields)
+          if (!report.attributesKept.contains(field)) field,
+      ];
       stdout
         ..writeln()
-        ..writeln(
-          'Siguiente paso (manual en Fase 1): generar el PMTiles con el pipeline Docker.',
-        )
-        ..writeln(
-          '  docker/build_map.sh solo acepta shapefiles: convertí antes '
-          '${definition.display(definition.normalizedGisFile)}',
-        )
-        ..writeln(
-          '  con ogr2ogr (imagen ${definition.dockerImage}) y usá SOURCE_SHAPEFILE (ver docker/README.md).',
+        ..writeln(const JsonEncoder.withIndent('  ').convert(report.toJson()));
+      if (missing.isNotEmpty) {
+        // Without a province.yaml there is no way to know which fields are
+        // legitimately absent: report, do not fail.
+        stdout.writeln(
+          'ℹ Campos del esquema ausentes en todo el archivo: ${missing.join(', ')}.',
         );
+      }
+      stdout.writeln(
+        'Tiempo total: ${formatDuration(watch.elapsedMilliseconds)}',
+      );
+      return exitOk;
+    } on PmtilesStructureException catch (e) {
+      stderr.writeln('✗ ERROR OPT002: ${e.message}');
+      return exitFindings;
     }
-    return code;
   }
 }
 
@@ -441,11 +608,10 @@ class _NormalizeCommand extends _Command {
     final pipeline = pipelineFor(definition);
     stdout.writeln('normalize ${definition.id}\n');
     // Derivations need series names: build the catalog in memory only.
-    final catalog =
-        definition.gis.mapping.usesDerivations && definition.pdf != null
-        ? await pipeline.catalog(write: false, diff: false, persist: false)
-        : null;
-    final result = await pipeline.gis(write: true, catalog: catalog);
+    if (definition.gis.mapping.usesDerivations && definition.pdf != null) {
+      await pipeline.catalog(write: false, diff: false, persist: false);
+    }
+    final result = await pipeline.normalize(write: true);
     if (result != null) {
       stdout
         ..writeln()
@@ -572,7 +738,8 @@ class _MetadataCommand extends _StrictCommand {
       ..addOption(
         'province',
         help:
-            'Usar pmtiles.file de esta provincia y guardar output/pmtiles_metadata.json.',
+            'Inspeccionar el PMTiles publicado de esta provincia (o, si no hay, '
+            'pmtiles.reference) y guardar output/pmtiles_metadata.json.',
       )
       ..addOption('out', help: 'Guardar el JSON en este archivo.')
       ..addOption(
@@ -607,7 +774,7 @@ class _MetadataCommand extends _StrictCommand {
         repoRoot: repoRoot,
       );
       final pipeline = pipelineFor(definition);
-      final metadata = await pipeline.pmtiles(write: true);
+      final metadata = await pipeline.inspectMetadata(write: true);
       if (metadata != null) {
         stdout.writeln(
           const JsonEncoder.withIndent(

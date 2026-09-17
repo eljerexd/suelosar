@@ -211,7 +211,7 @@ catalog:
   output: index.json
   province_label: Prueba
 pmtiles:
-  file: \${REPO}/assets/maps/x.pmtiles
+  reference: \${REPO}/assets/maps/x.pmtiles
 xref: { error_above_percent: 10 }
 ''');
       final definition = ProvinceDefinition.load(
@@ -231,7 +231,7 @@ xref: { error_above_percent: 10 }
       expect(definition.catalog!.provinceLabel, 'Prueba');
       expect(definition.catalog!.jsonStyle, JsonStyle.standard);
       expect(
-        definition.pmtiles!.file,
+        definition.pmtiles!.reference,
         p.normalize(p.join(repoRoot, 'assets/maps/x.pmtiles')),
       );
       expect(definition.xrefErrorAbovePercent, 10);

@@ -59,7 +59,14 @@ catalog:
   province_label: Santa Fe
 
 pmtiles:
-  file: ${REPO}/assets/maps/santa_fe_soil_polygons.pmtiles
+  # Se genera en output/; nunca se copia a assets/ automáticamente.
+  output: santa_fe_soil_polygons.pmtiles
+  # El archivo que usa la app hoy (solo para comparar).
+  reference: ${REPO}/assets/maps/santa_fe_soil_polygons.pmtiles
   layer: soil_polygons
-
-# Pipeline Docker (informativo en Fase 1): OPTIONAL_ATTRIBUTES=CAP_USO,PAISAJE
+  zooms: { min: 4, max: 14 }
+  # auto: el mapeo no es directo -> Docker recibe work/map_input (el GIS
+  # normalizado, con textos vacíos como nulos). PAISAJE (absent) pasa a
+  # OPTIONAL_ATTRIBUTES automáticamente.
+  input: auto
+  optimize: auto

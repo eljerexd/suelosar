@@ -166,9 +166,17 @@ void main() {
                 ).readAsStringSync(),
               )
               as Map;
-      final archive = File(
-        p.join(repoRoot, 'assets/maps/soil_polygons.pmtiles'),
+      // Fase 2: the published archive when `build` produced one, otherwise
+      // the one the app uses.
+      final published = File(
+        p.join(
+          repoRoot,
+          'data/provinces/buenos_aires/output/soil_polygons.pmtiles',
+        ),
       );
+      final archive = published.existsSync()
+          ? published
+          : File(p.join(repoRoot, 'assets/maps/soil_polygons.pmtiles'));
       expect(metadata['sizeBytes'], archive.lengthSync());
       expect(
         metadata['sha256'],
@@ -183,7 +191,7 @@ void main() {
                 File(
                   p.join(
                     repoRoot,
-                    'data/provinces/buenos_aires/output/stages/pmtiles.json',
+                    'data/provinces/buenos_aires/output/stages/metadata.json',
                   ),
                 ).readAsStringSync(),
               )

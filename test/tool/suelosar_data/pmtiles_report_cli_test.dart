@@ -425,7 +425,7 @@ catalog:
                   ).readAsStringSync(),
                 )
                 as Map;
-        expect((report['timings'] as Map)['stages'], hasLength(5));
+        expect((report['timings'] as Map)['stages'], hasLength(8));
         expect(await cli([...args, 'report', 'mini']), 0);
 
         // PAISAJE is 50 % filled: a warning at 90 %, fine by default...
