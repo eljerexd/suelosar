@@ -8,6 +8,7 @@ import '../constants/app_icons.dart';
 import '../models/pdf_soil_sheet_favorite.dart';
 import '../models/soil_card.dart';
 import '../models/soil_map.dart';
+import '../repositories/cordoba_series_repository.dart';
 import '../repositories/santa_fe_series_repository.dart';
 import '../repositories/soil_map_repository.dart';
 import '../services/pdf_soil_sheet_favorites_service.dart';
@@ -18,7 +19,12 @@ import '../widgets/scrollable_empty_state.dart';
 import 'pdf_viewer_screen.dart';
 
 class SoilMapsScreen extends StatefulWidget {
-  const SoilMapsScreen({this.soilMapsLoader, this.santaFeCardsLoader, super.key});
+  const SoilMapsScreen({
+    this.soilMapsLoader,
+    this.santaFeCardsLoader,
+    this.cordobaCardsLoader,
+    super.key,
+  });
 
   /// Buenos Aires' catalog loader. Optional and additive — unchanged since
   /// before Santa Fe Fase 7, so existing test fixtures keep working as-is.
@@ -28,6 +34,11 @@ class SoilMapsScreen extends StatefulWidget {
   /// carries its own page range, unlike [soilMapsLoader]'s [SoilMap]s).
   /// Defaults to the real [SantaFeSeriesRepository]-backed catalog.
   final Future<List<SoilCard>> Function()? santaFeCardsLoader;
+
+  /// Córdoba's catalog loader, same shape as [santaFeCardsLoader]: its
+  /// series also resolve to a page range inside one consolidated PDF.
+  /// Defaults to the real [CordobaSeriesRepository]-backed catalog.
+  final Future<List<SoilCard>> Function()? cordobaCardsLoader;
 
   @override
   State<SoilMapsScreen> createState() => _SoilMapsScreenState();
@@ -61,8 +72,13 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
       (soilMaps) => [for (final soilMap in soilMaps) SoilCard.buenosAires(soilMap)],
     );
     final santaFeCards = (widget.santaFeCardsLoader ?? _loadSantaFeCards)();
-    final results = await Future.wait([buenosAiresCards, santaFeCards]);
-    final cards = [...results[0], ...results[1]]
+    final cordobaCards = (widget.cordobaCardsLoader ?? _loadCordobaCards)();
+    final results = await Future.wait([
+      buenosAiresCards,
+      santaFeCards,
+      cordobaCards,
+    ]);
+    final cards = [...results[0], ...results[1], ...results[2]]
       ..sort(
         (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
       );
@@ -78,6 +94,18 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
     final pdfAsset = await repository.pdfAsset;
     return [
       for (final entry in entries) SoilCard.santaFe(entry, pdfAsset: pdfAsset),
+    ];
+  }
+
+  /// Córdoba's 358 series, read from the same index the GIS map's series
+  /// resolver uses — the titles are the index' own spelling (accents
+  /// included), never the IDECOR PDF filenames.
+  static Future<List<SoilCard>> _loadCordobaCards() async {
+    final repository = CordobaSeriesRepository();
+    final entries = await repository.loadAllSeries();
+    final pdfAsset = await repository.pdfAsset;
+    return [
+      for (final entry in entries) SoilCard.cordoba(entry, pdfAsset: pdfAsset),
     ];
   }
 
@@ -544,6 +572,8 @@ String _provinceDisplayName(SoilCardProvince province) {
       return 'Buenos Aires';
     case SoilCardProvince.santaFe:
       return 'Santa Fe';
+    case SoilCardProvince.cordoba:
+      return 'Córdoba';
   }
 }
 
@@ -559,6 +589,8 @@ Color _provinceAccentColor(SoilCardProvince province) {
       return const Color(0xFF4A6FA5);
     case SoilCardProvince.santaFe:
       return const Color(0xFF9C6B3F);
+    case SoilCardProvince.cordoba:
+      return const Color(0xFF6B8E5A);
   }
 }
 

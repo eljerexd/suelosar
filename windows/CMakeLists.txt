@@ -134,3 +134,15 @@ install(FILES
   "${CMAKE_CURRENT_SOURCE_DIR}/../assets/maps/soil_polygons.pmtiles"
   DESTINATION "${BUENOS_AIRES_PMTILES_DATA_DIR}"
   COMPONENT Runtime)
+
+# Córdoba's soil-polygon PMTiles is a third on-demand deferred component on
+# Android (see pubspec.yaml), so like the two above it never reaches
+# Flutter's cross-platform assets list and Windows needs its own copy here,
+# outside Flutter's asset bundling, unconditionally, on every build.
+# PmTilesGisRepository.fromFile() reads it straight from this path —
+# CordobaPmtilesDelivery points at data/cordoba_pmtiles/ for exactly this.
+set(CORDOBA_PMTILES_DATA_DIR "${INSTALL_BUNDLE_DATA_DIR}/cordoba_pmtiles")
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/maps/cordoba_soil_polygons.pmtiles"
+  DESTINATION "${CORDOBA_PMTILES_DATA_DIR}"
+  COMPONENT Runtime)

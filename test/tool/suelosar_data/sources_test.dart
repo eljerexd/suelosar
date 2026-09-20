@@ -5,8 +5,10 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
+import '../../../tool/suelosar_data/config/province_definition.dart';
 import '../../../tool/suelosar_data/sources/dbf_reader.dart';
 import '../../../tool/suelosar_data/sources/geojson_reader.dart';
+import '../../../tool/suelosar_data/sources/gis_source.dart';
 import '../../../tool/suelosar_data/sources/shapefile_reader.dart';
 import 'helpers.dart';
 
@@ -236,5 +238,232 @@ void main() {
         'coordinates': [1, 2],
       });
     });
+
+    // A one-line FeatureCollection shaped like the Córdoba WFS export:
+    // root members before and after `features`, per-feature `id`, `bbox`
+    // and `geometry_name`, accents, escapes and braces inside strings.
+    const wfsGeometry1 =
+        '{"type":"MultiPolygon","coordinates":[[[[-62.49999992,-30.90651996],'
+        '[-62.49999992,-30.90523065],[-62.4998845,-30.90528742],'
+        '[-62.49999992,-30.90651996]]]]}';
+    const wfsGeometry2 =
+        '{"type":"MultiPolygon","coordinates":[[[[-64.1,-33.2],[-64.0,-33.2],'
+        '[-64.0,-33.1],[-64.1,-33.2]]],[[[-63.9,-33.0],[-63.8,-33.0],'
+        '[-63.8,-32.9],[-63.9,-33.0]]]]}';
+    const wfsDocument =
+        '{"type":"FeatureCollection","features":['
+        '{"type":"Feature","id":"carta.17","geometry":$wfsGeometry1,'
+        '"geometry_name":"geom","properties":{"id":17,"simbolo":"Lsp",'
+        '"cu":"VIII","nombre":"Lagunas semipermanentes","serie_1":null,'
+        '"porc_1":null},"bbox":[-62.5,-30.9,-62.49,-30.9]},'
+        '{"type":"Feature","id":"carta.427","geometry":$wfsGeometry2,'
+        '"geometry_name":"geom","properties":{"id":427,"simbolo":"E23/17",'
+        '"nombre":"Complejo de Series EL VEINTITRÉS 40%; \\"HUINCA\\" {x} [y]",'
+        '"serie_1":"EL VEINTITRÉS","pdf_serie1":"EL_VEINTITRÉS","porc_1":40,'
+        '"ip":2.5,"activo":true},"bbox":[-64.1,-33.2,-63.8,-32.9]},'
+        '{"type":"Feature","id":"carta.9","geometry":null,'
+        '"properties":{"id":9,"simbolo":"Río Primero"}}'
+        '],"totalFeatures":3,"numberMatched":3,"timeStamp":"2026-09-17T11:07:23Z",'
+        '"crs":{"type":"name","properties":{"name":"urn:ogc:def:crs:EPSG::4326"}},'
+        '"bbox":[-65.1,-35.0,-61.8,-30.3]}';
+
+    void expectWfsFeatures(List<GeoJsonFeature> features) {
+      expect(features.map((f) => f.index), [0, 1, 2]);
+      expect(features[0].properties, {
+        'id': 17,
+        'simbolo': 'Lsp',
+        'cu': 'VIII',
+        'nombre': 'Lagunas semipermanentes',
+        'serie_1': null,
+        'porc_1': null,
+      });
+      expect(features[0].rawGeometry, wfsGeometry1);
+      expect(features[1].properties, {
+        'id': 427,
+        'simbolo': 'E23/17',
+        'nombre': 'Complejo de Series EL VEINTITRÉS 40%; "HUINCA" {x} [y]',
+        'serie_1': 'EL VEINTITRÉS',
+        'pdf_serie1': 'EL_VEINTITRÉS',
+        'porc_1': 40,
+        'ip': 2.5,
+        'activo': true,
+      });
+      expect(features[1].rawGeometry, wfsGeometry2);
+      expect(features[2].properties, {'id': 9, 'simbolo': 'Río Primero'});
+      expect(features[2].rawGeometry, isNull);
+    }
+
+    test('readGeoJsonDocument streams a one-line FeatureCollection, keeping '
+        'properties and geometry text', () async {
+      final file = File(p.join(tempDir('geojson_wfs').path, 'wfs.json'))
+        ..writeAsStringSync(wfsDocument);
+      expectWfsFeatures(
+        await readGeoJsonDocument(file, withGeometry: true).toList(),
+      );
+      final withoutGeometry = await readGeoJsonDocument(file).toList();
+      expect(withoutGeometry, hasLength(3));
+      expect(withoutGeometry.every((f) => f.rawGeometry == null), isTrue);
+    });
+
+    test('readGeoJsonDocument reads pretty-printed collections', () async {
+      final pretty = const JsonEncoder.withIndent(
+        '  ',
+      ).convert(jsonDecode(wfsDocument));
+      final file = File(p.join(tempDir('geojson_pretty').path, 'p.geojson'))
+        ..writeAsStringSync(pretty);
+      final features = await readGeoJsonDocument(
+        file,
+        withGeometry: true,
+      ).toList();
+      expect(features, hasLength(3));
+      expect(features[1].properties['nombre'], contains('"HUINCA" {x} [y]'));
+      final withBom = File(p.join(tempDir('geojson_bom').path, 'bom.json'))
+        ..writeAsBytesSync([0xEF, 0xBB, 0xBF, ...utf8.encode(wfsDocument)]);
+      expect(await readGeoJsonDocument(withBom).toList(), hasLength(3));
+      // Indented geometry is kept as written; it still decodes the same.
+      expect(jsonDecode(features[1].rawGeometry!), jsonDecode(wfsGeometry2));
+    });
+
+    test('the scanner handles features split across any chunk boundary', () {
+      for (final size in [1, 2, 3, 7, 64, 1000]) {
+        final scanner = FeatureCollectionScanner();
+        final texts = <String>[
+          for (var i = 0; i < wfsDocument.length; i += size)
+            ...scanner.add(
+              wfsDocument.substring(
+                i,
+                i + size > wfsDocument.length ? wfsDocument.length : i + size,
+              ),
+            ),
+        ];
+        scanner.close('mem');
+        expect(texts, hasLength(3), reason: 'chunk $size');
+        expect(
+          [for (final t in texts) jsonDecode(t)],
+          (jsonDecode(wfsDocument) as Map)['features'],
+          reason: 'chunk $size',
+        );
+      }
+    });
+
+    test('readGeoJsonDocument streams many features', () async {
+      const count = 2500;
+      final file = File(p.join(tempDir('geojson_many').path, 'many.json'));
+      final sink = file.openWrite()
+        ..write('{"type":"FeatureCollection","features":[');
+      for (var i = 0; i < count; i++) {
+        if (i > 0) sink.write(',');
+        sink.write(
+          '{"type":"Feature","properties":{"n":$i,"s":"v$i"},'
+          '"geometry":{"type":"Point","coordinates":[$i,-$i]}}',
+        );
+      }
+      sink.write(']}');
+      await sink.close();
+      var n = 0;
+      await for (final f in readGeoJsonDocument(file, withGeometry: true)) {
+        expect(f.index, n);
+        expect(f.properties, {'n': n, 's': 'v$n'});
+        expect(f.rawGeometry, '{"type":"Point","coordinates":[$n,-$n]}');
+        n++;
+      }
+      expect(n, count);
+    });
+
+    test('readGeoJsonDocument handles empty and invalid documents', () async {
+      final dir = tempDir('geojson_bad');
+      Future<List<GeoJsonFeature>> read(String name, String text) =>
+          readGeoJsonDocument(
+            File(p.join(dir.path, name))..writeAsStringSync(text),
+          ).toList();
+
+      expect(
+        await read('empty.json', '{"type":"FeatureCollection","features":[]}'),
+        isEmpty,
+      );
+      for (final (name, text, fragment) in [
+        ('array.json', '[1]', 'no es un objeto'),
+        ('feature.json', '{"type":"Feature","properties":{}}', 'type: Feature'),
+        ('nofeatures.json', '{"type":"FeatureCollection"}', '"features"'),
+        (
+          'cut.json',
+          '{"type":"FeatureCollection","features":[{"type":',
+          'incompleto',
+        ),
+        (
+          'element.json',
+          '{"type":"FeatureCollection","features":[1]}',
+          'no es un objeto',
+        ),
+        (
+          'notfeature.json',
+          '{"type":"FeatureCollection","features":[{"type":"Point"}]}',
+          'no es un Feature',
+        ),
+        (
+          'trailing.json',
+          '{"type":"FeatureCollection","features":[]} {}',
+          'después',
+        ),
+      ]) {
+        await expectLater(
+          read(name, text),
+          throwsA(
+            isA<FormatException>().having(
+              (e) => e.message,
+              'message',
+              allOf(contains(fragment), contains(name)),
+            ),
+          ),
+          reason: name,
+        );
+      }
+    });
+
+    test('readGeoJsonLines rejects a one-line FeatureCollection', () async {
+      final file = File(p.join(tempDir('geojson_oneline').path, 'wfs.json'))
+        ..writeAsStringSync(wfsDocument);
+      await expectLater(
+        readGeoJsonLines(file).toList(),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('gis.format: geojson'),
+          ),
+        ),
+      );
+    });
+
+    test(
+      'GisSource reads format geojson through the streaming reader',
+      () async {
+        final root = tempDir('geojson_source');
+        writeProvince(root, 'wfs', '''
+id: wfs
+name: WFS
+gis:
+  source: wfs.json
+  format: geojson
+  mapping:
+${identityMapping()}
+''');
+        File(
+          p.join(root.path, 'wfs', 'wfs.json'),
+        ).writeAsStringSync(wfsDocument);
+        final definition = ProvinceDefinition.load(
+          id: 'wfs',
+          provincesDir: root.path,
+          repoRoot: repoRoot,
+        );
+        final source = GisSource.open(definition.gis);
+        final records = await source.records(withGeometry: true).toList();
+        expect(records.map((r) => r.index), [0, 1, 2]);
+        expect(records[1].properties['simbolo'], 'E23/17');
+        expect(records[1].geometryJson, wfsGeometry2);
+        expect(records[2].geometryJson, isNull);
+        expect(source.encodingName, 'UTF-8');
+      },
+    );
   });
 }

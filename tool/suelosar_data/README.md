@@ -72,6 +72,18 @@ Ver `data/provinces/buenos_aires/province.yaml` (PDF por serie, shapefile) y
 `data/provinces/santa_fe/province.yaml` (PDF único, GeoJSON). Rutas: relativas a
 la carpeta de la provincia, o con `${REPO}` y variables de entorno.
 
+`gis.format`:
+
+| Formato | Archivo | Lectura |
+|---|---|---|
+| `shapefile` | `.shp` + `.dbf`/`.shx`/`.prj` (`.cpg`) | DBF por registro |
+| `geojson_lines` | FeatureCollection con un feature por línea (GDAL, Santa Fe) | por línea |
+| `geojson` | FeatureCollection con cualquier disposición: indentado o todo en una línea (exportaciones WFS) | escaneo en flujo: solo el feature en curso queda en memoria |
+
+En los dos formatos GeoJSON (UTF-8) se decodifican solo las `properties`; la
+`geometry` se conserva como el texto original. Un archivo de una sola línea
+declarado como `geojson_lines` se rechaza indicando usar `geojson`.
+
 Reglas de `gis.mapping` (una por campo del esquema):
 
 | Regla | Ejemplo | Resultado |
@@ -84,8 +96,11 @@ Reglas de `gis.mapping` (una por campo del esquema):
 `gis.series` define cómo se leen las series (`code_rule`: `whole_value` |
 `first_token`), cómo se comparan con el catálogo (`match`: `normalized_name` como
 `PdfSeriesRepository` | `case_insensitive` como `SantaFeSeriesRepository`) y
-`aliases` (código GIS -> código de catálogo). `gis.thresholds` fija la cobertura
-mínima de los campos principales.
+`aliases` (código GIS -> código de catálogo). `not_series` (opcional) es una
+expresión regular: los valores de `SERIEn` que la cumplen son componentes que no
+son series ("suelos menores", "roca expuesta"); quedan en los datos pero no se
+buscan en el catálogo (XRF004). `gis.thresholds` fija la cobertura mínima de los
+campos principales.
 
 `pdf.model: consolidated` genera el índice desde el sumario del PDF: cada serie
 empieza en su página impresa + `page_offset` (o `auto`, que busca el título de
@@ -150,6 +165,7 @@ Nada se copia a `assets/`: el reporte lista los **pasos manuales pendientes**.
 | XRF001 | series del GIS sin carta (ERROR sobre `xref.error_above_percent`, 50 % por defecto) | WARNING / ERROR |
 | XRF002 | cartas sin series en el GIS | INFO |
 | XRF003 | coincidencias solo por mayúsculas, alias usados | INFO |
+| XRF004 | valores de `SERIEn` excluidos por `gis.series.not_series` | INFO |
 | PMT001 | `.sha256` ausente (WARNING) o distinto (ERROR) | WARNING / ERROR |
 | PMT002 | la app declara otro tamaño o bounds; archivo no usado aún (INFO) | WARNING / INFO |
 | PMT003 | capa o campos del esquema ausentes en los tiles muestreados | ERROR |

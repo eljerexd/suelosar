@@ -42,7 +42,19 @@ enum SeriesMatch {
 
 enum PdfModel {
   perSeries('per_series'),
-  consolidated('consolidated');
+  consolidated('consolidated'),
+
+  /// The documented-series list comes straight from a JSON index file
+  /// (`{"series":[{"name":...,"startPage":...,"endPage":...}, ...]}`) —
+  /// Parte 12B: Córdoba's PDF is one already-unified 409-series document
+  /// (built outside this pipeline, in `output/`), and its own
+  /// `cordoba_series_index.json` is the single source of truth for which
+  /// series it documents. Avoids re-deriving the same list by re-parsing
+  /// the PDF's table of contents (fragile) or requiring a directory of
+  /// per-series files that doesn't exist for this edition. Generic — any
+  /// future province with a similar unified-PDF-plus-index setup can use
+  /// it, not specific to Córdoba.
+  indexReference('index_reference');
 
   const PdfModel(this.key);
   final String key;
@@ -64,6 +76,8 @@ class SeriesConfig {
     required this.codeRule,
     required this.match,
     required this.aliases,
+    this.notSeries,
+    this.extraSeriesFields = const [],
   });
 
   final SeriesCodeRule codeRule;
@@ -71,6 +85,20 @@ class SeriesConfig {
 
   /// GIS code -> catalog code, applied before matching.
   final Map<String, String> aliases;
+
+  /// `SERIEn` values matching this pattern are map-unit components that are
+  /// not soil series ("suelos menores", "roca expuesta"): they stay in the
+  /// data, but are not looked up in the catalog.
+  final RegExp? notSeries;
+
+  /// Beyond [SuelosArSchema.seriesFields] (fixed at [SuelosArSchema
+  /// .seriesSlots], the same for every province): extra optional series
+  /// fields (from [SuelosArSchema.optionalFields] — `SERIE7`/`SERIE8`,
+  /// Parte 12B) this province's own mapping declares and wants the
+  /// series-detection/catalog cross-reference to also scan. Empty for
+  /// every province that doesn't need more than [SuelosArSchema
+  /// .seriesSlots] components per unit.
+  final List<String> extraSeriesFields;
 }
 
 class ThresholdConfig {
@@ -97,6 +125,8 @@ class GisConfig {
     required this.mapping,
     required this.series,
     required this.thresholds,
+    this.additionalSources = const [],
+    this.scalePriority,
   });
 
   final String source;
@@ -109,6 +139,73 @@ class GisConfig {
   final FieldMapping mapping;
   final SeriesConfig series;
   final ThresholdConfig thresholds;
+
+  /// Extra GIS sources merged in after [source] (Parte 12: Córdoba's
+  /// `carta_suelo_100mil_2025`, filling the area `source`'s own
+  /// `carta_suelo_50mil_2025` doesn't cover). Empty for every province that
+  /// still has just one source — nothing about the single-source path
+  /// changes when this is empty.
+  final List<AdditionalGisSource> additionalSources;
+
+  /// Required when [additionalSources] is non-empty: the official scale
+  /// index that decides, geographically, which of the additional sources'
+  /// features are kept (see [AdditionalGisSource.scale]).
+  final ScalePriorityConfig? scalePriority;
+}
+
+/// One extra GIS source merged in after the primary [GisConfig.source], kept
+/// only where the official [ScalePriorityConfig.indexFile] says [scale]
+/// applies — so it can never override or duplicate the primary source's own
+/// coverage, regardless of file order.
+class AdditionalGisSource {
+  const AdditionalGisSource({
+    required this.id,
+    required this.scale,
+    required this.source,
+    required this.format,
+    required this.encoding,
+    required this.mapping,
+    required this.objectIdOffset,
+  });
+
+  /// Short label for reports/debugging (Parte 12 §7's "internal provenance
+  /// marker") — never written into the normalized GeoJSON's own schema.
+  final String id;
+
+  /// Value of [ScalePriorityConfig.field] this source's own features must
+  /// fall under to be kept (e.g. `"1:100000"`).
+  final String scale;
+
+  final String source;
+  final GisFormat format;
+  final String? encoding;
+  final FieldMapping mapping;
+
+  /// Added to this source's own `OBJECTID` so it can never collide with the
+  /// primary source's — a fixed, reversible namespace (`original =
+  /// OBJECTID - objectIdOffset`), not a re-hash.
+  final int objectIdOffset;
+}
+
+class ScalePriorityConfig {
+  const ScalePriorityConfig({
+    required this.indexFile,
+    required this.field,
+    required this.primaryScale,
+  });
+
+  /// Official scale-coverage polygons (IDECOR's own
+  /// `escalas_cartograficas_2025`), one feature per scale zone.
+  final String indexFile;
+
+  /// Property on [indexFile]'s features holding the scale label (e.g.
+  /// `"escala_carto"`).
+  final String field;
+
+  /// The primary source's own scale label, purely descriptive (used in
+  /// reports; the primary source itself is never geographically filtered —
+  /// it always has full priority in its own zone, per Parte 12 §2).
+  final String primaryScale;
 }
 
 class TocConfig {
@@ -142,6 +239,7 @@ class PdfConfig {
     this.file,
     this.assetPath,
     this.toc,
+    this.indexFile,
   });
 
   final PdfModel model;
@@ -154,6 +252,9 @@ class PdfConfig {
   final String? file;
   final String? assetPath;
   final TocConfig? toc;
+
+  // index_reference
+  final String? indexFile;
 }
 
 class CatalogConfig {
@@ -478,6 +579,40 @@ class _Reader {
         'gis.series.aliases: debe ser un mapa código GIS -> código de catálogo.',
       );
     }
+    final notSeriesNode = seriesNode?['not_series'];
+    RegExp? notSeries;
+    if (notSeriesNode is String && notSeriesNode.isNotEmpty) {
+      try {
+        notSeries = RegExp(notSeriesNode);
+      } on FormatException catch (e) {
+        problems.add(
+          'gis.series.not_series: expresión regular inválida (${e.message}).',
+        );
+      }
+    } else if (notSeriesNode != null) {
+      problems.add(
+        'gis.series.not_series: debe ser una expresión regular (texto).',
+      );
+    }
+    final extraFieldsNode = seriesNode?['extra_fields'];
+    final extraSeriesFields = <String>[];
+    if (extraFieldsNode is List) {
+      for (final raw in extraFieldsNode) {
+        final field = raw.toString();
+        if (!SuelosArSchema.optionalFields.contains(field) ||
+            field == 'OBJECTID') {
+          problems.add(
+            'gis.series.extra_fields: "$field" no es un campo de serie '
+            'opcional del esquema SuelosAR '
+            '(${SuelosArSchema.optionalFields.where((f) => f != 'OBJECTID').join(', ')}).',
+          );
+        } else {
+          extraSeriesFields.add(field);
+        }
+      }
+    } else if (extraFieldsNode != null) {
+      problems.add('gis.series.extra_fields: debe ser una lista.');
+    }
     final thresholdsNode = node['thresholds'] == null
         ? <String, Object?>{}
         : _map(node, 'thresholds', 'gis.thresholds');
@@ -500,6 +635,35 @@ class _Reader {
     } else if (fieldsNode != null) {
       problems.add('gis.thresholds.fields: debe ser una lista.');
     }
+    final additionalNode = node['additional_sources'];
+    final additionalSources = <AdditionalGisSource>[];
+    if (additionalNode is List) {
+      for (var i = 0; i < additionalNode.length; i++) {
+        final entry = additionalNode[i];
+        if (entry is! Map<String, Object?>) {
+          problems.add('gis.additional_sources[$i]: debe ser un mapa.');
+          continue;
+        }
+        final parsed = _additionalSource(entry, 'gis.additional_sources[$i]');
+        if (parsed != null) additionalSources.add(parsed);
+      }
+    } else if (additionalNode != null) {
+      problems.add('gis.additional_sources: debe ser una lista.');
+    }
+    final scalePriorityNode = node['scale_priority'];
+    ScalePriorityConfig? scalePriority;
+    if (scalePriorityNode != null) {
+      scalePriority = _scalePriority(
+        _map(node, 'scale_priority', 'gis.scale_priority'),
+      );
+    }
+    if (additionalSources.isNotEmpty && scalePriority == null) {
+      problems.add(
+        'gis.scale_priority: obligatorio cuando se declara '
+        'gis.additional_sources.',
+      );
+    }
+
     if (source == null ||
         format == null ||
         mapping == null ||
@@ -513,12 +677,93 @@ class _Reader {
       encoding: encoding,
       layerName: layer,
       mapping: mapping,
-      series: SeriesConfig(codeRule: codeRule, match: match, aliases: aliases),
+      series: SeriesConfig(
+        codeRule: codeRule,
+        match: match,
+        aliases: aliases,
+        notSeries: notSeries,
+        extraSeriesFields: extraSeriesFields,
+      ),
       thresholds: ThresholdConfig(
         warnBelow: warnBelow ?? 90,
         errorBelow: errorBelow ?? 50,
         fields: fields ?? SuelosArSchema.defaultThresholdFields,
       ),
+      additionalSources: additionalSources,
+      scalePriority: scalePriority,
+    );
+  }
+
+  AdditionalGisSource? _additionalSource(
+    Map<String, Object?> node,
+    String where,
+  ) {
+    final id = _string(node, 'id', '$where.id');
+    final scale = _string(node, 'scale', '$where.scale');
+    final source = _path(node, 'source', '$where.source');
+    final format = _enum(
+      node,
+      'format',
+      '$where.format',
+      GisFormat.values,
+      (f) => f.key,
+    );
+    final encoding = _string(node, 'encoding', '$where.encoding', optional: true);
+    final mappingNode = _map(node, 'mapping', '$where.mapping');
+    FieldMapping? mapping;
+    if (mappingNode != null) {
+      try {
+        mapping = FieldMapping.parse(mappingNode);
+      } on FormatException catch (e) {
+        problems.add('$where.mapping: ${e.message}');
+      }
+    }
+    final offsetNode = node['objectid_offset'];
+    int? offset;
+    if (offsetNode is int && offsetNode >= 1) {
+      offset = offsetNode;
+    } else {
+      problems.add(
+        '$where.objectid_offset: obligatorio, entero > 0 (debe dejar '
+        'espacio por encima del OBJECTID máximo de la fuente principal, '
+        'para que no puedan colisionar).',
+      );
+    }
+    if (id == null ||
+        scale == null ||
+        source == null ||
+        format == null ||
+        mapping == null ||
+        offset == null) {
+      return null;
+    }
+    return AdditionalGisSource(
+      id: id,
+      scale: scale,
+      source: source,
+      format: format,
+      encoding: encoding,
+      mapping: mapping,
+      objectIdOffset: offset,
+    );
+  }
+
+  ScalePriorityConfig? _scalePriority(Map<String, Object?>? node) {
+    if (node == null) return null;
+    final indexFile = _path(node, 'index', 'gis.scale_priority.index');
+    final field =
+        _string(node, 'field', 'gis.scale_priority.field', optional: true) ??
+        'escala_carto';
+    final primaryScale = _string(
+      node,
+      'primary_scale',
+      'gis.scale_priority.primary_scale',
+    );
+    if (indexFile == null || primaryScale == null) return null;
+    return ScalePriorityConfig(
+      indexFile: indexFile,
+      field: field,
+      primaryScale: primaryScale,
     );
   }
 
@@ -560,6 +805,16 @@ class _Reader {
         final toc = _toc(_map(node, 'toc', 'pdf.toc'));
         if (file == null || asset == null || toc == null) return null;
         return PdfConfig(model: model, file: file, assetPath: asset, toc: toc);
+      case PdfModel.indexReference:
+        final indexFile = _path(node, 'index_file', 'pdf.index_file');
+        final asset = _string(
+          node,
+          'asset_path',
+          'pdf.asset_path',
+          optional: true,
+        );
+        if (indexFile == null) return null;
+        return PdfConfig(model: model, indexFile: indexFile, assetPath: asset);
     }
   }
 

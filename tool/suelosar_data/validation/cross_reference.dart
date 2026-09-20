@@ -96,6 +96,24 @@ Map<String, Object?> checkCrossReference(
       count: caseOnly.length,
     );
   }
+  final components = gis.nonSeriesFeatureCounts.keys.toList()
+    ..sort(
+      (a, b) => gis.nonSeriesFeatureCounts[b]!.compareTo(
+        gis.nonSeriesFeatureCounts[a]!,
+      ),
+    );
+  if (components.isNotEmpty) {
+    findings.info(
+      'XRF004',
+      '${components.length} valores de SERIEn son componentes que no son series '
+          '(gis.series.not_series): quedan en los datos y no se buscan en el catálogo.',
+      examples: [
+        for (final value in components)
+          '$value (${gis.nonSeriesFeatureCounts[value]} features)',
+      ],
+      count: components.length,
+    );
+  }
   final aliases = definition.gis.series.aliases;
   if (aliases.isNotEmpty) {
     findings.info(
@@ -129,5 +147,6 @@ Map<String, Object?> checkCrossReference(
         },
     ],
     'orphans': [for (final key in orphans) catalog.labels[key] ?? key],
+    'nonSeriesValues': components.length,
   };
 }

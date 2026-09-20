@@ -1,4 +1,5 @@
 import 'buenos_aires_pmtiles_delivery.dart';
+import 'cordoba_pmtiles_delivery.dart';
 import 'pmtiles_delivery.dart';
 import 'province_config.dart';
 import 'santa_fe_pmtiles_delivery.dart';
@@ -93,8 +94,21 @@ class MapCoverage {
     onDemandDelivery: SantaFePmtilesDelivery.instance,
   );
 
+  /// Córdoba's real archive extent, read from its PMTiles header (the
+  /// archive published by `build cordoba`) — not estimated.
+  static final MapCoverage cordoba = MapCoverage(
+    config: ProvinceConfig.cordoba,
+    bounds: const GeoBounds(
+      minLatitude: -35.047987,
+      maxLatitude: -30.281602,
+      minLongitude: -65.1708979,
+      maxLongitude: -61.759644,
+    ),
+    onDemandDelivery: CordobaPmtilesDelivery.instance,
+  );
+
   /// Every coverage registered so far. Buenos Aires stays first — several
   /// call sites treat the first entry as the default/initial coverage
   /// (Fase 6 Parte 8: the app must keep opening on Buenos Aires).
-  static final List<MapCoverage> all = [buenosAires, santaFe];
+  static final List<MapCoverage> all = [buenosAires, santaFe, cordoba];
 }

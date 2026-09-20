@@ -19,10 +19,15 @@ void main() {
   group('SuelosArSchema matches every place that lists the fields', () {
     final required = SuelosArSchema.requiredFields.toSet();
 
-    test('17 required + OBJECTID = the 18 attributes the app reads', () {
-      expect(required, hasLength(17));
-      expect(SuelosArSchema.appAttributes, hasLength(18));
-    });
+    test(
+      '17 required + OBJECTID + SERIE7/SERIE8 (Parte 12B) + '
+      'SUBGRUPO1-5/POSICION1-5/IP (Parte 20, all optional) = the 31 '
+      'attributes the app can read',
+      () {
+        expect(required, hasLength(17));
+        expect(SuelosArSchema.appAttributes, hasLength(31));
+      },
+    );
 
     test('docker/build_map.sh', () {
       final source = File('docker/build_map.sh').readAsStringSync();

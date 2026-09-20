@@ -1,0 +1,214 @@
+# SuelosAR Data Pipeline — Córdoba.
+#
+# Fuentes (no versionadas; source/ está en .gitignore). Inventario, hashes y
+# URLs oficiales en source/SOURCES.md y work/UNRESOLVED_40_SEARCH.md.
+#   source/gis/carta_suelo_50mil_2025.json
+#     IDECOR, capa WFS idecor:carta_suelo_50mil_2025: FeatureCollection de
+#     una sola línea, EPSG:4326, MultiPolygon, 1555 features. Fuente
+#     principal — tiene prioridad total en su propia zona oficial.
+#   source/gis/carta_suelo_100mil_2025.json (Parte 12)
+#     IDECOR, capa WFS idecor:carta_suelo_100mil_2025: EPSG:4326,
+#     MultiPolygon, 358 features. Cubre las zonas de Córdoba sin carta
+#     1:50.000 (Sierras, Traslasierra, norte de la provincia) — se fusiona
+#     como gis.additional_sources, nunca reemplaza a la 50mil.
+#   source/gis/carta_suelo_500mil_2024.json (Parte 19/20)
+#     IDECOR, capa WFS idecor:carta_suelo_500mil_2024: EPSG:4326,
+#     MultiPolygon, 56 features (53 con geometría, 3 con geometry=null en
+#     la fuente misma). Cubre el resto residual de la provincia sin carta
+#     1:50.000 ni 1:100.000 (Sierras/Traslasierra, ~8,4 % de Córdoba,
+#     14.094 km² — investigado y medido espacialmente en la Parte 19: 0 km²
+#     de solapamiento real con la 50mil, 0,83 km² de ruido de borde con la
+#     100mil). Esquema distinto: no tiene `nombre` ni `serie_N` — clasifica
+#     por taxonomía de suelo (subgrupo_1..5/posicion_1..5/porc_1..5) en vez
+#     de series con nombre documentado. Se fusiona como
+#     gis.additional_sources, nunca reemplaza a la 50mil ni a la 100mil.
+#   source/gis/escalas_cartograficas_2025.json (Parte 12)
+#     IDECOR, capa WFS idecor:escalas_cartograficas_2025: el índice OFICIAL
+#     de qué escala de reconocimiento aplica en cada zona de la provincia
+#     (1:50.000 / 1:100.000 / 1:500.000). Decide geográficamente qué
+#     features de la 100mil y la 500mil se conservan — nunca una
+#     heurística propia.
+#   source/pdf/idecor_series_50mil_100mil/<pdf_serieN>.pdf
+#     IDECOR, una descripción oficial por serie: los PDF que el visor
+#     https://mapascordoba.gob.ar/viewer/mapa/334 enlaza desde pdf_serieN
+#     (https://obs-idecor-mapas-docs.obs.myhuaweicloud.com/cartas_suelos/PDF_Series_50mil_100mil/).
+#     Los nombres con tilde se publican sin tilde (VICENTE_AGUERO.pdf).
+#   source/pdf/*.pdf, source/pdf/cfi/
+#     Memorias completas INTA/Provincia/CFI por hoja: documentación de
+#     respaldo; no forman parte del catálogo.
+
+id: cordoba
+name: Córdoba
+
+gis:
+  source: source/gis/carta_suelo_50mil_2025.json
+  format: geojson              # FeatureCollection estándar (no un feature por línea)
+  encoding: UTF-8
+
+  # Columnas del WFS de IDECOR -> esquema SuelosAR.
+  # Los 443 polígonos que no son unidades de suelo (localidades, arroyos,
+  # lagunas nombradas) se conservan: no tienen cu/nombre/pdf_simbolo ni
+  # series, así que sus campos quedan nulos (el pipeline no filtra features).
+  mapping:
+    # pdf_simbolo = simbolo en las 1112 unidades de suelo; en los polígonos
+    # geográficos simbolo trae el nombre del lugar, que no es un símbolo.
+    SIMBC:     { from: pdf_simbolo }
+    Nombre_UC: { from: nombre }
+    TIPO:      { from: tipo_unida }
+    CAP_USO:   { from: cu }
+    PAISAJE:   { absent: "El WFS de IDECOR no tiene un campo de paisaje (solo prosa libre en las memorias)", value: null }
+    # serie_N es el nombre legible; pdf_serieN es el mismo valor con "_"
+    # (misma clave normalizada).
+    "SERIE{n}": { from: "serie_{n}", n: [1, 6] }
+    # SERIE7/SERIE8 (Parte 12B): serie_7/serie_8 no existen en la 50mil —
+    # declarados `absent` aquí solo para que TODAS las features de Córdoba
+    # (50mil y 100mil) compartan el mismo conjunto de propiedades. Son
+    # campos opcionales del esquema SuelosAR (no los 6 requeridos de
+    # siempre): ninguna otra provincia se ve afectada.
+    SERIE7:    { absent: "carta_suelo_50mil_2025 no tiene serie_7", value: null }
+    SERIE8:    { absent: "carta_suelo_50mil_2025 no tiene serie_8", value: null }
+    "PORC{n}":  { from: "porc_{n}", n: [1, 5] }
+    PORC6:     { absent: "El WFS de IDECOR publica porc_1..porc_5 (no existe porc_6)", value: null }
+    OBJECTID:  { from: id }
+    # Sin destino en el esquema SuelosAR (la app no los lee): fase_1..4,
+    # clase, subclase, ip, au_2m, au_1_5m, au_1m, pdf_serie7/8. Nunca hay
+    # PORC7/PORC8: la fuente no publica un porcentaje para esas dos series
+    # adicionales (ver Parte 9 §E / Parte 12 §5) — no se inventan.
+
+  series:
+    code_rule: whole_value     # serie_N es el nombre de la serie
+    match: normalized_name     # como PdfSeriesRepository.normalizeName (Buenos Aires)
+    aliases: {}
+    # En el WFS de IDECOR las series van en MAYÚSCULAS y los componentes que
+    # no son series ("suelos menores", "roca expuesta", "inclusiones",
+    # "lagunas"...) en minúsculas: 358 series y 123 componentes. Los
+    # componentes quedan en SERIEn, pero no se buscan en el catálogo.
+    # Una excepción real y puntual (Parte 12B): "Suelos menores de textura
+    # franco arenosa" en carta_suelo_100mil_2025 es también un componente
+    # descriptivo, no una serie, pero IDECOR lo capitalizó con mayúscula
+    # inicial — se excluye por nombre exacto en vez de ensanchar el patrón
+    # de mayúsculas/minúsculas (que sí distingue las 409 series reales de
+    # los ~167 componentes en el resto de la fuente).
+    not_series: '^[a-záéíóúüñ]|^Suelos menores de textura franco arenosa$'
+    # SERIE7/SERIE8 (Parte 12B): además de SERIE1-6, el cruce con el
+    # catálogo también revisa estos dos campos opcionales — solo para
+    # Córdoba (ninguna otra provincia los declara).
+    extra_fields: [SERIE7, SERIE8]
+
+  thresholds:
+    warn_below: 90
+    error_below: 50
+
+  # Parte 12 — integra carta_suelo_100mil_2025 donde no hay 1:50.000.
+  # Prioridad: 1:50.000 (arriba) > 1:100.000. Un feature de una fuente
+  # adicional se conserva SOLO si su centroide cae dentro de la zona que el
+  # índice oficial de escalas marca exactamente con su propia escala — así
+  # nunca puede solapar ni sustituir a la 50mil (que no se filtra: tiene
+  # prioridad completa en toda su propia zona, tal cual está).
+  additional_sources:
+    - id: carta_suelo_100mil_2025
+      scale: "1:100000"
+      source: source/gis/carta_suelo_100mil_2025.json
+      format: geojson
+      encoding: UTF-8
+      # 50mil llega como máximo a OBJECTID 1555 — el offset deja margen de
+      # sobra y es reversible: id original = OBJECTID - 100000.
+      objectid_offset: 100000
+      # Mismo esquema SuelosAR que la 50mil, misma sección `series` de
+      # arriba (code_rule/match/not_series/extra_fields son de toda la
+      # provincia, no por fuente) — mapeo verificado en la Parte 9
+      # (diagnóstico) y la Parte 10 (documentación). serie_7/serie_8 SÍ
+      # existen acá (4 features en toda la 100mil los usan: ACHALA VII,
+      # FUNDACIÓN, SAN PANCRACIO, VILLA GENERAL BELGRANO — las cuatro
+      # documentadas en la Parte 10) — Parte 12B: se conservan en SERIE7/
+      # SERIE8 en vez de truncarse, para no perder esas 4 series.
+      mapping:
+        SIMBC:     { from: pdf_simbolo }
+        Nombre_UC: { from: nombre }
+        TIPO:      { from: tipo_unida }
+        CAP_USO:   { from: cu }
+        PAISAJE:   { absent: "El WFS de IDECOR no tiene un campo de paisaje en carta_suelo_100mil_2025 tampoco", value: null }
+        "SERIE{n}": { from: "serie_{n}", n: [1, 8] }
+        "PORC{n}":  { from: "porc_{n}", n: [1, 5] }
+        PORC6:     { absent: "carta_suelo_100mil_2025 tampoco publica porc_6", value: null }
+        OBJECTID:  { from: id }
+        # Nunca PORC7/PORC8: carta_suelo_100mil_2025 no publica un
+        # porcentaje para serie_7/serie_8 (ver Parte 9 §E) — no se inventan.
+
+    - id: carta_suelo_500mil_2024
+      scale: "1:500000"
+      source: source/gis/carta_suelo_500mil_2024.json
+      format: geojson
+      encoding: UTF-8
+      # 100mil llega como máximo a OBJECTID 100358 — 500000 deja margen de
+      # sobra frente a ambos rangos y es reversible: id original =
+      # OBJECTID - 500000.
+      objectid_offset: 500000
+      # Esquema propio (Parte 19/20): sin `nombre` ni `serie_N` — clasifica
+      # por taxonomía (subgrupo_1..5/posicion_1..5/porc_1..5), no por
+      # series con nombre documentado. Por eso NO reutiliza SERIE{n}/
+      # PORC{n}: mapearía un término taxonómico genérico ("Haplustol
+      # típico") como si fuera un nombre de serie documentado, y el cruce
+      # con el catálogo de 409 series lo trataría como una serie real que
+      # no es. SERIE1-8 quedan `absent` (null) para toda feature de esta
+      # fuente — 0 series falsas, el catálogo de 409 no crece.
+      mapping:
+        SIMBC:     { from: pdf_simbolo }
+        Nombre_UC: { absent: "carta_suelo_500mil_2024 no tiene nombre de unidad cartográfica (solo símbolo + taxonomía)", value: null }
+        # tipo_un (500mil) y tipo_unida (50mil/100mil) comparten el mismo
+        # vocabulario oficial de tipo de unidad cartográfica (Consociación/
+        # Asociación/Complejo, verificado en la Parte 19 comparando los
+        # valores reales de ambas fuentes) — mapeo directo justificado, no
+        # asumido.
+        TIPO:      { from: tipo_un }
+        CAP_USO:   { from: cu }
+        PAISAJE:   { from: paisaje }
+        "SERIE{n}": { absent: "carta_suelo_500mil_2024 no tiene series con nombre, solo taxonomía (subgrupo_n/posicion_n)", value: null, n: [1, 8] }
+        "PORC{n}":  { absent: "PORC1-6 es el porcentaje de SERIEn; carta_suelo_500mil_2024 no tiene series, así que no le corresponde ningún PORCn (ver subgrupo_n/porc_n más abajo, sin mapear: mezclarlos confundiría porcentaje de taxonomía con porcentaje de serie)", value: null, n: [1, 6] }
+        OBJECTID:  { from: id }
+        IP:        { from: ip }
+        "SUBGRUPO{n}": { from: "subgrupo_{n}", n: [1, 5] }
+        "POSICION{n}": { from: "posicion_{n}", n: [1, 5] }
+        # Sin destino en el esquema SuelosAR (la app no los lee): clase,
+        # subclase (desglose de cu, igual que en 50mil/100mil) y
+        # porc_1..5 (porcentaje de cada subgrupo_n — deliberadamente sin
+        # mapear a PORC1-6, que es semánticamente "porcentaje de SERIEn";
+        # ver la nota de PORC{n} arriba. Si se necesita mostrar el
+        # porcentaje de cada subgrupo en el futuro, hace falta un campo
+        # opcional nuevo, no reutilizar PORC1-6).
+
+  scale_priority:
+    index: source/gis/escalas_cartograficas_2025.json
+    field: escala_carto
+    primary_scale: "1:50000"
+
+pdf:
+  # Parte 12B: el catálogo de series documentadas de Córdoba ya no viene de
+  # escanear una carpeta de 358 PDFs individuales (source/pdf/
+  # idecor_series_50mil_100mil/, que quedó desactualizada apenas se sumaron
+  # las 51 series de la 100mil) — ahora hay un único PDF de 409 series
+  # (SuelosAR_Cordoba_Series_FONTOPT_409.pdf, Parte 11) y su propio índice
+  # JSON, ya validado, es la fuente de verdad de qué serie documenta qué
+  # páginas. `index_reference` lee ese índice directamente en vez de volver
+  # a derivarlo (reintentando un parseo de la tabla de contenidos del PDF,
+  # o copiando 51 PDFs sueltos a esa carpeta — ninguna de las dos hacía
+  # falta). No se copian los PDFs individuales de la 100mil a ningún lado.
+  model: index_reference
+  index_file: "${REPO}/assets/data/cordoba_series_index.json"
+  asset_path: assets/pdfs_cordoba/cordoba_series.pdf
+
+catalog:
+  output: soil_maps_cordoba.json
+  json_style: standard
+  # Todavía no hay catálogo de Córdoba en la app.
+
+pmtiles:                       # generado con Docker por `build` (etapas prepare/map/optimize)
+  output: cordoba_soil_polygons.pmtiles   # se publica en output/; nunca se copia a assets/
+  # Todavía no hay PMTiles de Córdoba en la app.
+  layer: soil_polygons
+  zooms: { min: 4, max: 14 }
+  # auto: el mapeo no es directo y la fuente es GeoJSON -> Docker recibe
+  # work/map_input (GIS normalizado). PAISAJE y PORC6 (absent) pasan a
+  # OPTIONAL_ATTRIBUTES automáticamente.
+  input: auto
+  optimize: auto

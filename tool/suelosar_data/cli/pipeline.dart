@@ -339,15 +339,23 @@ class ProvincePipeline {
   };
 
   List<String> _gisSourceFiles() {
-    final source = d.gis.source;
-    if (d.gis.format != GisFormat.shapefile) return [source];
-    final base = source.substring(
-      0,
-      source.length - p.extension(source).length,
-    );
+    List<String> filesFor(String source, GisFormat format) {
+      if (format != GisFormat.shapefile) return [source];
+      final base = source.substring(
+        0,
+        source.length - p.extension(source).length,
+      );
+      return [
+        for (final extension in ['.shp', '.dbf', '.shx', '.prj', '.cpg'])
+          if (File('$base$extension').existsSync()) '$base$extension',
+      ];
+    }
+
     return [
-      for (final extension in ['.shp', '.dbf', '.shx', '.prj', '.cpg'])
-        if (File('$base$extension').existsSync()) '$base$extension',
+      ...filesFor(d.gis.source, d.gis.format),
+      for (final extra in d.gis.additionalSources)
+        ...filesFor(extra.source, extra.format),
+      if (d.gis.scalePriority != null) d.gis.scalePriority!.indexFile,
     ];
   }
 
@@ -410,6 +418,21 @@ class ProvincePipeline {
           'SRC001',
           'No existe la carpeta de PDFs.',
           location: d.display(pdf.directory!),
+        );
+      }
+    } else if (pdf.model == PdfModel.indexReference) {
+      final file = File(pdf.indexFile!);
+      stage.data['pdf'] = {
+        'model': pdf.model.key,
+        'indexFile': d.display(pdf.indexFile!),
+        'exists': file.existsSync(),
+        if (file.existsSync()) 'sizeBytes': file.lengthSync(),
+      };
+      if (!file.existsSync()) {
+        sink.error(
+          'SRC001',
+          'No existe el índice de series.',
+          location: d.display(pdf.indexFile!),
         );
       }
     } else {
@@ -499,15 +522,17 @@ class ProvincePipeline {
         'tool': toolVersion,
         'pdf': d.raw['pdf'],
         'catalog': d.raw['catalog'],
-        'inputs': d.pdf!.model == PdfModel.perSeries
-            ? await _hashFiles([
-                if (Directory(d.pdf!.directory!).existsSync())
-                  for (final file in PerSeriesCatalog.listPdfs(
-                    Directory(d.pdf!.directory!),
-                  ))
-                    p.join(d.pdf!.directory!, file),
-              ])
-            : await _hashFiles([d.pdf!.file!]),
+        'inputs': switch (d.pdf!.model) {
+          PdfModel.perSeries => await _hashFiles([
+              if (Directory(d.pdf!.directory!).existsSync())
+                for (final file in PerSeriesCatalog.listPdfs(
+                  Directory(d.pdf!.directory!),
+                ))
+                  p.join(d.pdf!.directory!, file),
+            ]),
+          PdfModel.indexReference => await _hashFiles([d.pdf!.indexFile!]),
+          PdfModel.consolidated => await _hashFiles([d.pdf!.file!]),
+        },
         'reference': d.catalog!.reference == null
             ? null
             : await hasher.sha256OrNull(File(d.catalog!.reference!)),
@@ -591,6 +616,62 @@ class ProvincePipeline {
       stage.data
         ..['pdfFiles'] = built.pdfFiles.length
         ..['records'] = built.records.length
+        ..['seriesKeys'] = labels.length;
+    } else if (pdf.model == PdfModel.indexReference) {
+      final file = File(pdf.indexFile!);
+      if (!file.existsSync()) {
+        stage.sink.error(
+          'SRC001',
+          'No existe el índice de series.',
+          location: d.display(pdf.indexFile!),
+        );
+        return;
+      }
+      final Map<String, Object?> parsed;
+      try {
+        parsed = jsonDecode(file.readAsStringSync()) as Map<String, Object?>;
+      } on FormatException catch (e) {
+        stage.sink.error(
+          'SRC003',
+          'El índice de series no es JSON válido: ${e.message}',
+          location: d.display(pdf.indexFile!),
+        );
+        return;
+      }
+      final rawSeries = parsed['series'];
+      if (rawSeries is! List) {
+        stage.sink.error(
+          'SRC003',
+          'El índice de series no tiene una lista "series".',
+          location: d.display(pdf.indexFile!),
+        );
+        return;
+      }
+      final entries = [
+        for (final raw in rawSeries) (raw as Map).cast<String, Object?>(),
+      ];
+      final labels = <String, String>{};
+      final names = <String, String>{};
+      for (final entry in entries) {
+        final name = entry['name']! as String;
+        final key = matcher.matchKey(name);
+        labels.putIfAbsent(key, () => name);
+        names.putIfAbsent(key, () => name);
+      }
+      document = {
+        'source': p.basename(file.path),
+        'series': entries,
+      };
+      recordsOf = (doc) => {
+        for (final e in (doc! as Map)['series'] as List)
+          (e as Map)['name'].toString(): e.cast<String, Object?>(),
+      };
+      catalogOutcome = CatalogOutcome(
+        keys: CatalogKeys(keys: labels.keys.toSet(), labels: labels, kind: 'series del índice'),
+        namesByKey: names,
+      );
+      stage.data
+        ..['indexFile'] = d.display(file.path)
         ..['seriesKeys'] = labels.length;
     } else {
       final file = File(pdf.file!);
@@ -735,6 +816,25 @@ class ProvincePipeline {
         );
         return;
       }
+      for (final extra in d.gis.additionalSources) {
+        if (!File(extra.source).existsSync()) {
+          stage.sink.error(
+            'SRC001',
+            'No existe la fuente GIS adicional "${extra.id}".',
+            location: d.display(extra.source),
+          );
+          return;
+        }
+      }
+      final scalePriority = d.gis.scalePriority;
+      if (scalePriority != null && !File(scalePriority.indexFile).existsSync()) {
+        stage.sink.error(
+          'SRC001',
+          'No existe el índice oficial de escalas.',
+          location: d.display(scalePriority.indexFile),
+        );
+        return;
+      }
       final names = _seriesNames(stage);
       if (d.gis.mapping.usesDerivations && names.isEmpty) {
         stage.sink.error(
@@ -760,6 +860,11 @@ class ProvincePipeline {
         ..['distinctSeries'] = r.seriesFeatureCounts.length
         ..['nullGeometries'] = r.nullGeometries
         ..['coverage'] = coverageRows(d, r);
+      if (r.additionalSourceStats.isNotEmpty) {
+        stage.data['additionalSources'] = [
+          for (final s in r.additionalSourceStats) s.toJson(),
+        ];
+      }
       if (write) {
         stage.data['output'] = d.display(d.normalizedGisFile);
         stage.data['outputBytes'] = File(d.normalizedGisFile).lengthSync();

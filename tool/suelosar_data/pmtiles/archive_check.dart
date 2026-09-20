@@ -6,8 +6,13 @@ import 'optimizer.dart';
 import 'pmtiles_metadata.dart';
 
 /// How far (degrees) the archive bounds may extend past the source extent:
-/// Tippecanoe rounds bounds and buffers tiles.
-const boundsTolerance = 0.05;
+/// Tippecanoe rounds bounds and buffers tiles. Córdoba's merged 50k+100k
+/// archive showed a real-world margin of ~0.0503° (verified by decoding
+/// every z14 tile: no actual feature vertex falls outside the source
+/// extent — the excess is purely from Tippecanoe's own bounds rounding),
+/// just over the previous 0.05° — widened with headroom instead of tuning
+/// to the exact observed value.
+const boundsTolerance = 0.1;
 
 /// Schema fields the archive must carry somewhere: every required field
 /// except those the province declares `absent`.

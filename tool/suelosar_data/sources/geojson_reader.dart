@@ -36,38 +36,245 @@ Stream<GeoJsonFeature> readGeoJsonLines(
         ? text.substring(0, text.length - 1)
         : text;
     final members = topLevelMembers(objectText);
-    final rawProperties = members['properties'];
-    final properties = rawProperties == null || rawProperties == 'null'
-        ? <String, Object?>{}
-        : (jsonDecode(rawProperties) as Map).cast<String, Object?>();
-    final rawGeometry = members['geometry'];
-    yield GeoJsonFeature(
-      index++,
-      properties,
-      withGeometry && rawGeometry != 'null' ? rawGeometry : null,
-    );
+    if (members['type'] == '"FeatureCollection"') {
+      // A whole collection on one line (e.g. a WFS export): reading it
+      // as one feature would silently lose every feature.
+      throw FormatException(
+        'El archivo no tiene un feature por línea (la línea ${index + 1} es '
+        'un FeatureCollection completo); usar gis.format: geojson. '
+        '${file.path}',
+      );
+    }
+    yield _feature(index++, members, withGeometry);
   }
 }
 
-/// Reads a regular (not line-delimited) GeoJSON FeatureCollection by
-/// decoding the whole file. Meant for small sources.
+GeoJsonFeature _feature(
+  int index,
+  Map<String, String> members,
+  bool withGeometry,
+) {
+  final rawProperties = members['properties'];
+  final properties = rawProperties == null || rawProperties == 'null'
+      ? <String, Object?>{}
+      : (jsonDecode(rawProperties) as Map).cast<String, Object?>();
+  final rawGeometry = members['geometry'];
+  return GeoJsonFeature(
+    index,
+    properties,
+    withGeometry && rawGeometry != null && rawGeometry != 'null'
+        ? rawGeometry
+        : null,
+  );
+}
+
+/// Reads a regular GeoJSON FeatureCollection, whatever its layout (pretty
+/// printed, or the whole document on one line as WFS services write it).
+///
+/// The file is scanned as a character stream: only the text of the
+/// feature being read is buffered, so memory is bounded by the largest
+/// single feature, not by the file. Each feature then goes through the
+/// same path as [readGeoJsonLines]: `properties` is decoded and `geometry`
+/// is kept as the exact source text.
 Stream<GeoJsonFeature> readGeoJsonDocument(
   File file, {
   bool withGeometry = false,
 }) async* {
-  final document = jsonDecode(await file.readAsString());
-  if (document is! Map || document['type'] != 'FeatureCollection') {
-    throw FormatException('No es un FeatureCollection GeoJSON: ${file.path}');
-  }
+  final scanner = FeatureCollectionScanner();
   var index = 0;
-  for (final feature in document['features'] as List) {
-    final map = feature as Map;
-    final geometry = map['geometry'];
-    yield GeoJsonFeature(
-      index++,
-      ((map['properties'] as Map?) ?? {}).cast<String, Object?>(),
-      withGeometry && geometry != null ? jsonEncode(geometry) : null,
+  final chunks = file.openRead().transform(
+    const Utf8Decoder(allowMalformed: true),
+  );
+  await for (final chunk in chunks) {
+    final List<String> finished;
+    try {
+      finished = scanner.add(chunk);
+    } on FormatException catch (e) {
+      throw FormatException('${e.message} ${file.path}');
+    }
+    for (final featureText in finished) {
+      yield _checkedFeature(file, index++, featureText, withGeometry);
+    }
+  }
+  scanner.close(file.path);
+}
+
+GeoJsonFeature _checkedFeature(
+  File file,
+  int index,
+  String featureText,
+  bool withGeometry,
+) {
+  final members = topLevelMembers(featureText);
+  if (members['type'] != '"Feature"') {
+    throw FormatException(
+      'El elemento ${index + 1} de "features" no es un Feature '
+      '(type: ${members['type']}): ${file.path}',
     );
+  }
+  return _feature(index, members, withGeometry);
+}
+
+/// Incremental scanner for a FeatureCollection document. Feed it decoded
+/// text chunks with [add]; it returns the complete text of every element
+/// of the top-level `features` array finished in that chunk. Strings are
+/// tracked (with escapes) across chunk boundaries, so braces inside
+/// values never confuse it.
+class FeatureCollectionScanner {
+  // Nesting depth: 0 outside the document, 1 inside the root object.
+  int _depth = 0;
+  bool _inString = false;
+  bool _escaped = false;
+  bool _started = false;
+  bool _finished = false;
+
+  // Root member bookkeeping (depth 1 only).
+  final StringBuffer _key = StringBuffer();
+  bool _capturingKey = false;
+  String? _lastKey;
+  bool _expectValue = false;
+  String? _type;
+  final StringBuffer _typeValue = StringBuffer();
+  bool _capturingType = false;
+
+  // `features` array state.
+  bool _sawFeatures = false;
+  int? _featuresDepth; // depth inside the array
+  final StringBuffer _feature = StringBuffer();
+  int _featureDepth = -1; // depth at which the current element started
+  int _features = 0;
+
+  List<String> add(String chunk) {
+    final out = <String>[];
+    var captureFrom = _featureDepth >= 0 ? 0 : -1;
+    final length = chunk.length;
+    for (var i = 0; i < length; i++) {
+      final c = chunk.codeUnitAt(i);
+      if (_inString) {
+        if (_escaped) {
+          _escaped = false;
+        } else if (c == 0x5C) {
+          _escaped = true;
+        } else if (c == 0x22) {
+          _inString = false;
+          if (_capturingKey) {
+            _capturingKey = false;
+            _lastKey = _key.toString();
+          } else if (_capturingType) {
+            _capturingType = false;
+            _type = _typeValue.toString();
+          }
+        }
+        if (_inString) {
+          if (_capturingKey) _key.writeCharCode(c);
+          if (_capturingType) _typeValue.writeCharCode(c);
+        }
+        continue;
+      }
+      if (c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D) continue;
+      if (_finished) {
+        throw const FormatException('Contenido después del cierre del JSON.');
+      }
+      if (!_started) {
+        if (c == 0xFEFF) continue; // UTF-8 byte order mark
+        if (c != 0x7B) {
+          throw const FormatException(
+            'No es un FeatureCollection GeoJSON: el documento no es un objeto.',
+          );
+        }
+        _started = true;
+        _depth = 1;
+        continue;
+      }
+
+      final inFeaturesArray =
+          _featuresDepth != null && _depth == _featuresDepth;
+      if (inFeaturesArray && _featureDepth < 0) {
+        // Between elements of `features`.
+        if (c == 0x2C) continue;
+        if (c == 0x5D) {
+          _featuresDepth = null;
+          _depth--;
+          continue;
+        }
+        if (c != 0x7B) {
+          throw FormatException(
+            'El elemento ${_features + 1} de "features" no es un objeto.',
+          );
+        }
+        _featureDepth = _depth;
+        captureFrom = i;
+      }
+
+      if (_depth == 1) {
+        // Root object: keys, ':' and the start of each value.
+        if (_expectValue) {
+          _expectValue = false;
+
+          if (_lastKey == 'features' && c == 0x5B) {
+            _sawFeatures = true;
+            _depth++;
+            _featuresDepth = _depth;
+            continue;
+          }
+          if (_lastKey == 'type' && c == 0x22) {
+            _inString = true;
+            _capturingType = true;
+            _typeValue.clear();
+            continue;
+          }
+        } else if (c == 0x22) {
+          _inString = true;
+          _capturingKey = true;
+          _key.clear();
+          continue;
+        } else if (c == 0x3A) {
+          _expectValue = true;
+          continue;
+        }
+      }
+
+      switch (c) {
+        case 0x22:
+          _inString = true;
+        case 0x7B || 0x5B:
+          _depth++;
+        case 0x7D || 0x5D:
+          _depth--;
+          if (_featureDepth >= 0 && _depth == _featureDepth) {
+            _feature.write(chunk.substring(captureFrom, i + 1));
+            out.add(_feature.toString());
+            _feature.clear();
+            _featureDepth = -1;
+            captureFrom = -1;
+            _features++;
+          } else if (_depth == 0) {
+            _finished = true;
+          }
+      }
+    }
+    if (_featureDepth >= 0 && captureFrom >= 0) {
+      _feature.write(chunk.substring(captureFrom));
+    }
+    return out;
+  }
+
+  /// Checks the document ended as a complete FeatureCollection.
+  void close(String location) {
+    if (!_finished || _inString) {
+      throw FormatException('GeoJSON incompleto o sin cerrar: $location');
+    }
+    if (_type != 'FeatureCollection') {
+      throw FormatException(
+        'No es un FeatureCollection GeoJSON (type: ${_type ?? 'ausente'}): '
+        '$location',
+      );
+    }
+    if (!_sawFeatures) {
+      throw FormatException(
+        'El FeatureCollection no tiene un arreglo "features": $location',
+      );
+    }
   }
 }
 
