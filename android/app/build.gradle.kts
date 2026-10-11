@@ -23,6 +23,17 @@ val disableGeolocatorDiagnostic = providers
     .map(String::toBoolean)
     .getOrElse(false)
 
+val flutterSdkProperties = Properties()
+rootProject.file("local.properties").inputStream().use {
+    flutterSdkProperties.load(it)
+}
+val flutterSdkPath = requireNotNull(flutterSdkProperties.getProperty("flutter.sdk")) {
+    "flutter.sdk not set in local.properties"
+}
+val flutterProguardRules = file(
+    "$flutterSdkPath/packages/flutter_tools/gradle/flutter_proguard_rules.pro",
+)
+
 android {
     namespace = "ar.com.suelosar"
     compileSdk = flutter.compileSdkVersion
@@ -100,7 +111,13 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
-            proguardFiles("proguard-rules.pro")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                flutterProguardRules,
+                "proguard-rules.pro",
+            )
         }
     }
 
