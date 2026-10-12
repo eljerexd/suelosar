@@ -23,6 +23,17 @@ val disableGeolocatorDiagnostic = providers
     .map(String::toBoolean)
     .getOrElse(false)
 
+val flutterSdkProperties = Properties()
+rootProject.file("local.properties").inputStream().use {
+    flutterSdkProperties.load(it)
+}
+val flutterSdkPath = requireNotNull(flutterSdkProperties.getProperty("flutter.sdk")) {
+    "flutter.sdk not set in local.properties"
+}
+val flutterProguardRules = file(
+    "$flutterSdkPath/packages/flutter_tools/gradle/flutter_proguard_rules.pro",
+)
+
 android {
     namespace = "ar.com.suelosar"
     compileSdk = flutter.compileSdkVersion
@@ -100,7 +111,18 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
-            proguardFiles("proguard-rules.pro")
+            // Flutter disables its default shrinking setup for every app that
+            // declares deferred components, even though AGP 9 can run R8 for
+            // this base/dynamic-feature bundle. Configure it explicitly so
+            // production builds retain Play Feature Delivery while R8 still
+            // shrinks, optimizes and obfuscates the Android bytecode.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                flutterProguardRules,
+                "proguard-rules.pro",
+            )
         }
     }
 

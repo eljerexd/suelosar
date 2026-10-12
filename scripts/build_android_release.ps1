@@ -102,9 +102,20 @@ try {
 
     $buildStart = Get-Date
 
-    flutter build $Target --release --flavor $Flavor "--dart-define-from-file=.vscode/supabase.env.json"
+    $versionLine = Select-String -Path (Join-Path $repoRoot "pubspec.yaml") -Pattern '^version:\s*(\S+)' | Select-Object -First 1
+    $versionRaw = if ($versionLine) { $versionLine.Matches[0].Groups[1].Value } else { "desconocida" }
+    # Flutter writes Dart symbols to build/ during compilation. Archive them
+    # with the R8 mapping outside build/ so flutter clean cannot erase them.
+    $dartSymbolsPath = Join-Path $repoRoot "build\symbols\android\$Flavor\$versionRaw"
+
+    flutter build $Target --release --flavor $Flavor "--dart-define-from-file=.vscode/supabase.env.json" --obfuscate "--split-debug-info=$dartSymbolsPath"
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
+    }
+
+    if (-not (Test-Path $dartSymbolsPath) -or -not (Get-ChildItem -LiteralPath $dartSymbolsPath -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        Write-Error "El build finalizó pero no generó símbolos Dart en $dartSymbolsPath."
+        exit 1
     }
 
     # --- Validacion obligatoria post-build --------------------------------
@@ -136,8 +147,17 @@ try {
 
     $sha256 = (Get-FileHash -Path $artifactPath -Algorithm SHA256).Hash
 
-    $versionLine = Select-String -Path (Join-Path $repoRoot "pubspec.yaml") -Pattern '^version:\s*(\S+)' | Select-Object -First 1
-    $versionRaw = if ($versionLine) { $versionLine.Matches[0].Groups[1].Value } else { "desconocida" }
+    $mappingPath = Join-Path $repoRoot "build\app\outputs\mapping\$flavorVariant\mapping.txt"
+    if (-not (Test-Path $mappingPath)) {
+        Write-Error "R8 no generó mapping.txt en $mappingPath."
+        exit 1
+    }
+
+    $symbolArchive = Join-Path $repoRoot "release-symbols\android\$Flavor\$versionRaw\$sha256"
+    New-Item -ItemType Directory -Path $symbolArchive -Force | Out-Null
+    Copy-Item -LiteralPath $mappingPath -Destination (Join-Path $symbolArchive "mapping.txt")
+    Get-ChildItem -LiteralPath $dartSymbolsPath -File | Copy-Item -Destination $symbolArchive
+
     $versionParts = $versionRaw -split '\+'
     $versionName = $versionParts[0]
     $versionCode = if ($versionParts.Length -gt 1) { $versionParts[1] } else { "desconocido" }
@@ -153,6 +173,9 @@ try {
     Write-Host "LastWriteTime: $($apkFile.LastWriteTime)  (build iniciado: $buildStart)"
     Write-Host "Tamano:        $([math]::Round($apkFile.Length / 1MB, 1)) MB ($($apkFile.Length) bytes)"
     Write-Host "SHA-256:       $sha256"
+    Write-Host "Símbolos Dart: $dartSymbolsPath"
+    Write-Host "Símbolos R8 y Dart: $symbolArchive"
+    Write-Host "Respaldo:      conservá esta carpeta para diagnosticar esta versión."
     Write-Host "============================================================" -ForegroundColor Green
 }
 finally {
