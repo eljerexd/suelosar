@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -14,6 +15,9 @@ import 'package:suelosar/models/soil_card.dart';
 import 'package:suelosar/models/soil_map.dart';
 import 'package:suelosar/gis/gis_layer.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
+import 'package:suelosar/gis/map_coverage.dart';
+import 'package:suelosar/gis/pmtiles_delivery.dart';
+import 'package:suelosar/gis/province_config.dart';
 import 'package:suelosar/gis/gis_render_metrics.dart';
 import 'package:suelosar/gis/gis_repository.dart';
 import 'package:suelosar/models/favorite_soil_feature.dart';
@@ -376,6 +380,98 @@ void main() {
         .getTopLeft(find.byType(FloatingAppBarCard).first)
         .dy;
     expect(headerTop, greaterThanOrEqualTo(56));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('GIS floating overlays respect system bar insets', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.padding = const FakeViewPadding(top: 44, bottom: 24);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      const MaterialApp(home: GisMapScreen(repository: _EmptyGisRepository())),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.byTooltip('Herramientas'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Medir distancia'));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getTopLeft(find.text('Toque el mapa para medir.')).dy,
+      greaterThan(44),
+    );
+    final scale = find.byWidgetPredicate(
+      (widget) => widget.runtimeType.toString() == '_MapScaleIndicator',
+    );
+    expect(scale, findsOneWidget);
+    expect(tester.getBottomLeft(scale).dy, lessThan(844 - 24));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('GIS controls paint above the anchored information card', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.padding = const FakeViewPadding(top: 44, bottom: 24);
+    addTearDown(tester.view.reset);
+
+    final delivery = _DownloadingPmtilesDelivery();
+    final baseConfig = ProvinceConfig.buenosAires;
+    final coverage = MapCoverage(
+      config: ProvinceConfig(
+        id: 'santa_fe',
+        pmtilesAsset: baseConfig.pmtilesAsset,
+        pmtilesVersionAsset: baseConfig.pmtilesVersionAsset,
+        pmtilesLayerName: baseConfig.pmtilesLayerName,
+        initialCenter: baseConfig.initialCenter,
+        defaultArchiveInfo: baseConfig.defaultArchiveInfo,
+        seriesResolver: baseConfig.seriesResolver,
+        seriesNameResolver: baseConfig.seriesNameResolver,
+        // At zoom 7 this projects into the phone's bottom-right controls.
+        downloadBannerAnchor: const LatLng(-38.25, -58.62),
+        pmtilesDownloadSizeBytes: 1024,
+      ),
+      bounds: GeoBounds.everywhere,
+      onDemandDelivery: delivery,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery.withNoTextScaling(
+          child: GisMapScreen(
+            repository: const _EmptyGisRepository(),
+            coverages: <MapCoverage>[coverage],
+          ),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    final card = find.byKey(const ValueKey('province-download-card-santa_fe'));
+    expect(card, findsOneWidget);
+    final cardRect = tester.getRect(card);
+    final tools = find.byTooltip('Herramientas');
+    expect(tools, findsOneWidget);
+    expect(
+      cardRect.overlaps(tester.getRect(tools)),
+      isTrue,
+      reason: 'The geographically anchored card must not move away.',
+    );
+    expect(tester.takeException(), isNull);
+
+    // The later Stack child owns the overlapping hit-test region.
+    await tester.tap(tools);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.byTooltip('Medir distancia'), findsOneWidget);
+    expect(card, findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -1429,6 +1525,29 @@ class _EmptyGisRepository implements GisRepository {
 
   @override
   Future<void> close() async {}
+}
+
+class _DownloadingPmtilesDelivery extends PmtilesDelivery {
+  @override
+  PmtilesDeliveryStatus get status => PmtilesDeliveryStatus.downloading;
+
+  @override
+  PmtilesDownloadBytes? get downloadBytes => null;
+
+  @override
+  double? get downloadProgress => null;
+
+  @override
+  Future<void> checkStatus() async {}
+
+  @override
+  Future<void> download() async {}
+
+  @override
+  Future<void> uninstall() async {}
+
+  @override
+  File resolveWindowsArchiveFile() => File('unused-overlay-test.pmtiles');
 }
 
 class _FakeDesktopWindowService extends DesktopWindowService {

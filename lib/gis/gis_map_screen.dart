@@ -1530,6 +1530,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       _MeasurementMode.area => _areaMeasurementPoints.length >= 3,
       null => false,
     };
+    final showScale = renderedMeasurementMode == null || !_hasMeasurementPoints;
 
     // No-op for FlutterMapEngine (rendered via its `children` widgets
     // below instead). Kept because it is part of the [SoilMapEngine]
@@ -1749,6 +1750,85 @@ class _GisMapScreenState extends State<GisMapScreen>
               ),
           ],
         ),
+        // Provincial cards keep their geographic screen position. Controls
+        // follow them in this Stack so they paint and receive taps above a
+        // card whenever their bounds overlap.
+        for (final undownloadedCoverage in _coverages.where(
+          (coverage) =>
+              coverage.onDemandDelivery != null &&
+              coverage.config.downloadBannerAnchor != null,
+        ))
+          _ProvincePmtilesBanner(
+            key: ValueKey('province-pmtiles-banner-${undownloadedCoverage.id}'),
+            coverageId: undownloadedCoverage.id,
+            delivery: undownloadedCoverage.onDemandDelivery!,
+            anchorPoint: undownloadedCoverage.config.downloadBannerAnchor!,
+            provinceBounds: undownloadedCoverage.bounds,
+            provinceName: _provinceDisplayName(undownloadedCoverage.id),
+            referenceMapAssetPath:
+                undownloadedCoverage.config.referenceMapAsset,
+            viewStateListenable: _mapViewportState,
+            resolveCamera: () =>
+                (_mapEngine as FlutterMapEngine).controller.camera,
+            onDownload: () =>
+                unawaited(undownloadedCoverage.onDemandDelivery!.download()),
+            downloadSizeBytes:
+                undownloadedCoverage.config.pmtilesDownloadSizeBytes,
+            onDismissedFirstTime: () => _showDownloadLaterHint(
+              _provinceDisplayName(undownloadedCoverage.id),
+            ),
+          ),
+        if (!_mapVisualsPaused)
+          _buildRightControlRail(
+            topInset: topControlOffset,
+            showLayers: !desktopShell,
+            alignLeft: androidPhoneLandscape,
+            desktopStyle: desktopShell,
+          ),
+        if (!_mapVisualsPaused && !showsMeasurementEditor && !desktopShell)
+          _buildBottomRightControls(),
+        if (!_mapVisualsPaused && !showsMeasurementEditor && desktopShell)
+          _buildDesktopLocationButton(),
+        if (!_mapVisualsPaused)
+          _MapViewportOverlay(
+            viewStateListenable: _mapViewportState,
+            showScale: showScale,
+          ),
+        if (!_mapVisualsPaused)
+          _MapToolHintOverlay(
+            type: _activeToolHint,
+            top: topControlOffset + MediaQuery.paddingOf(context).top,
+            hintOverride: _transientMapHint,
+            hintOverrideTimeout: _transientMapHintDuration,
+          ),
+        if (!_mapVisualsPaused &&
+            selectedSavedMeasurement != null &&
+            !showsMeasurementEditor &&
+            !desktopShell)
+          _SavedMeasurementActionBar(
+            onAnalyze:
+                selectedSavedMeasurement.type == SavedMeasurementType.area
+                ? () => _analyzeSavedMeasurement(selectedSavedMeasurement)
+                : null,
+            onExport: () =>
+                _exportSavedMeasurementPdf(selectedSavedMeasurement),
+            onExportGeoJson: () =>
+                _exportSavedMeasurementGeoJson(selectedSavedMeasurement),
+            onExportCsv: () =>
+                _exportSavedMeasurementCsv(selectedSavedMeasurement),
+            onDelete: () => _deleteSavedMeasurement(selectedSavedMeasurement),
+            onEdit: () => unawaited(
+              _requestSelectSavedMeasurement(selectedSavedMeasurement),
+            ),
+          ),
+        if (!_mapVisualsPaused && !desktopShell)
+          _SelectionPreviewOverlay(
+            featureListenable: _selectionPreview,
+            bottomOffset: compactLayout ? 132 : 72,
+            rightInset: compactLayout ? 76 : 16,
+            onDismiss: () => _selectionPreview.value = null,
+            seriesNameResolverForFeature: _seriesNameResolverForFeature,
+          ),
         if (!_mapVisualsPaused)
           Positioned.fill(
             child: ValueListenableBuilder<_MapOverlayState>(
@@ -1799,7 +1879,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                           return Positioned(
                             left: 16,
                             right: 16,
-                            bottom: 16,
+                            bottom: 16 + MediaQuery.paddingOf(context).bottom,
                             child: Material(
                               color: colorScheme.errorContainer,
                               borderRadius: BorderRadius.circular(8),
@@ -1820,83 +1900,6 @@ class _GisMapScreenState extends State<GisMapScreen>
                   ],
                 );
               },
-            ),
-          ),
-        if (!_mapVisualsPaused)
-          _buildRightControlRail(
-            topInset: topControlOffset,
-            showLayers: !desktopShell,
-            alignLeft: androidPhoneLandscape,
-            desktopStyle: desktopShell,
-          ),
-        if (!_mapVisualsPaused)
-          _MapToolHintOverlay(
-            type: _activeToolHint,
-            top: topControlOffset,
-            hintOverride: _transientMapHint,
-            hintOverrideTimeout: _transientMapHintDuration,
-          ),
-        if (!_mapVisualsPaused && !showsMeasurementEditor && !desktopShell)
-          _buildBottomRightControls(),
-        if (!_mapVisualsPaused && !showsMeasurementEditor && desktopShell)
-          _buildDesktopLocationButton(),
-        if (!_mapVisualsPaused &&
-            selectedSavedMeasurement != null &&
-            !showsMeasurementEditor &&
-            !desktopShell)
-          _SavedMeasurementActionBar(
-            onAnalyze:
-                selectedSavedMeasurement.type == SavedMeasurementType.area
-                ? () => _analyzeSavedMeasurement(selectedSavedMeasurement)
-                : null,
-            onExport: () =>
-                _exportSavedMeasurementPdf(selectedSavedMeasurement),
-            onExportGeoJson: () =>
-                _exportSavedMeasurementGeoJson(selectedSavedMeasurement),
-            onExportCsv: () =>
-                _exportSavedMeasurementCsv(selectedSavedMeasurement),
-            onDelete: () => _deleteSavedMeasurement(selectedSavedMeasurement),
-            onEdit: () => unawaited(
-              _requestSelectSavedMeasurement(selectedSavedMeasurement),
-            ),
-          ),
-        if (!_mapVisualsPaused && !desktopShell)
-          _SelectionPreviewOverlay(
-            featureListenable: _selectionPreview,
-            bottomOffset: compactLayout ? 132 : 72,
-            rightInset: compactLayout ? 76 : 16,
-            onDismiss: () => _selectionPreview.value = null,
-            seriesNameResolverForFeature: _seriesNameResolverForFeature,
-          ),
-        if (!_mapVisualsPaused)
-          _MapViewportOverlay(
-            viewStateListenable: _mapViewportState,
-            showScale:
-                renderedMeasurementMode == null || !_hasMeasurementPoints,
-          ),
-        for (final undownloadedCoverage in _coverages.where(
-          (coverage) =>
-              coverage.onDemandDelivery != null &&
-              coverage.config.downloadBannerAnchor != null,
-        ))
-          _ProvincePmtilesBanner(
-            key: ValueKey('province-pmtiles-banner-${undownloadedCoverage.id}'),
-            coverageId: undownloadedCoverage.id,
-            delivery: undownloadedCoverage.onDemandDelivery!,
-            anchorPoint: undownloadedCoverage.config.downloadBannerAnchor!,
-            provinceBounds: undownloadedCoverage.bounds,
-            provinceName: _provinceDisplayName(undownloadedCoverage.id),
-            referenceMapAssetPath:
-                undownloadedCoverage.config.referenceMapAsset,
-            viewStateListenable: _mapViewportState,
-            resolveCamera: () =>
-                (_mapEngine as FlutterMapEngine).controller.camera,
-            onDownload: () =>
-                unawaited(undownloadedCoverage.onDemandDelivery!.download()),
-            downloadSizeBytes:
-                undownloadedCoverage.config.pmtilesDownloadSizeBytes,
-            onDismissedFirstTime: () => _showDownloadLaterHint(
-              _provinceDisplayName(undownloadedCoverage.id),
             ),
           ),
       ],
@@ -10847,6 +10850,9 @@ class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
                             duration: _leaveDuration,
                             curve: Curves.easeInCubic,
                             child: _ProvincePmtilesBannerCard(
+                              key: ValueKey(
+                                'province-download-card-${widget.coverageId}',
+                              ),
                               provinceName: widget.provinceName,
                               sizeLabel: sizeBytes == null
                                   ? null
@@ -10940,6 +10946,7 @@ String _formatProvinceDownloadSize(int bytes) {
 /// the same layout, states and motion.
 class _ProvincePmtilesBannerCard extends StatelessWidget {
   const _ProvincePmtilesBannerCard({
+    super.key,
     required this.provinceName,
     required this.sizeLabel,
     required this.isDownloading,
@@ -11351,7 +11358,7 @@ class _MapViewportOverlay extends StatelessWidget {
                 if (showScale)
                   Positioned(
                     left: 16,
-                    bottom: 16,
+                    bottom: 16 + MediaQuery.paddingOf(context).bottom,
                     child: RepaintBoundary(
                       child: _MapScaleIndicator(viewState: viewState),
                     ),
