@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:suelosar/constants/asset_paths.dart';
@@ -264,12 +265,23 @@ void main() {
       );
     });
 
-    test('every line vertex is a finite [lon, lat] inside the coverage', () {
+    test('every line vertex is finite and near the provincial boundary', () {
       // Guards the same int-vs-double decoding the Santa Fe boundary test
-      // covers, and that nothing landed outside the province's own extent.
-      final bbox = (cordobaJson['bbox'] as List)
-          .map((value) => (value as num).toDouble())
+      // covers. Córdoba's soil archive bbox does not include the province's
+      // northern edge, so reference linework is checked against the complete
+      // stored provincial boundary instead.
+      final boundary =
+          (cordobaJson['layers']['provincialBoundaries'] as List).first as List;
+      final boundaryLongitudes = boundary
+          .map((point) => ((point as List)[0] as num).toDouble())
           .toList();
+      final boundaryLatitudes = boundary
+          .map((point) => ((point as List)[1] as num).toDouble())
+          .toList();
+      final west = boundaryLongitudes.reduce(math.min);
+      final east = boundaryLongitudes.reduce(math.max);
+      final south = boundaryLatitudes.reduce(math.min);
+      final north = boundaryLatitudes.reduce(math.max);
       var vertices = 0;
       for (final entry in (cordobaJson['layers'] as Map).entries) {
         if (entry.key == 'majorCities' || entry.key == 'departmentLabels') {
@@ -281,15 +293,36 @@ void main() {
             final longitude = (coordinates[0] as num).toDouble();
             final latitude = (coordinates[1] as num).toDouble();
             expect(longitude.isFinite && latitude.isFinite, isTrue);
-            // Clipping keeps the first vertex outside the frame, so allow a
-            // small overshoot rather than an exact containment.
-            expect(longitude, inInclusiveRange(bbox[0] - 0.5, bbox[2] + 0.5));
-            expect(latitude, inInclusiveRange(bbox[1] - 0.5, bbox[3] + 0.5));
+            // Reference layers use a 0.2-degree context margin and clipping
+            // retains the first outside source vertex, so allow 0.3 degrees.
+            expect(longitude, inInclusiveRange(west - 0.3, east + 0.3));
+            expect(latitude, inInclusiveRange(south - 0.3, north + 0.3));
             vertices++;
           }
         }
       }
       expect(vertices, greaterThan(1000));
+    });
+
+    test('all clipped reference layers cover northern Córdoba', () {
+      const formerlyClippedNorth = -30.10;
+      for (final layerName in const [
+        'departmentBoundaries',
+        'majorRivers',
+        'nationalRoads',
+        'provincialRoads',
+      ]) {
+        final lines = cordobaJson['layers'][layerName] as List;
+        final northernmost = lines
+            .expand((line) => line as List)
+            .map((point) => ((point as List)[1] as num).toDouble())
+            .reduce(math.max);
+        expect(
+          northernmost,
+          greaterThan(formerlyClippedNorth),
+          reason: '$layerName must not stop at the former working bbox',
+        );
+      }
     });
 
     test('provincial boundary is present, so the download banner can outline '

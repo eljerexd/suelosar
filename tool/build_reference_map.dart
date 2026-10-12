@@ -12,6 +12,7 @@
 //
 // Usage:
 //   dart run tool/build_reference_map.dart cordoba [--cache-dir <dir>] [--dry-run]
+//   dart run tool/build_reference_map.dart cordoba --northern-reference-only
 //
 // `--cache-dir` reuses (and populates) raw WFS downloads on disk, so the
 // asset can be regenerated with different simplification tolerances without
@@ -194,6 +195,15 @@ Future<void> main(List<String> arguments) async {
     return;
   }
 
+  if (arguments.contains('--northern-reference-only')) {
+    await _regenerateNorthernReferenceLinesOnly(
+      spec,
+      dryRun: dryRun,
+      cacheDir: cacheDir,
+    );
+    return;
+  }
+
   final fetcher = _WfsFetcher(cacheDir: cacheDir);
 
   final province = await fetcher.fetch(
@@ -287,6 +297,157 @@ Future<void> main(List<String> arguments) async {
 
   File(spec.outputPath).writeAsStringSync(encoded);
   stdout.writeln('wrote ${spec.outputPath}');
+}
+
+/// Replaces only the four IGN line layers clipped by Córdoba's former
+/// soil-archive-derived working bbox. The complete provincial boundary in the
+/// existing asset defines the corrected extent, with the intended 0.2° margin.
+/// Metadata, cities, labels, and the provincial boundary remain unchanged.
+Future<void> _regenerateNorthernReferenceLinesOnly(
+  ProvinceSpec spec, {
+  required bool dryRun,
+  required Directory? cacheDir,
+}) async {
+  final outputFile = File(spec.outputPath);
+  final existingRaw = outputFile.readAsStringSync();
+  final document = jsonDecode(existingRaw) as Map<String, dynamic>;
+  final layers = Map<String, Object?>.from(document['layers'] as Map);
+  final boundary = (layers['provincialBoundaries'] as List)
+      .map(
+        (line) => (line as List)
+            .map(
+              (point) => (point as List)
+                  .map((coordinate) => (coordinate as num).toDouble())
+                  .toList(),
+            )
+            .toList(),
+      )
+      .toList();
+  final boundaryBounds = _lineBounds(boundary);
+  const padding = 0.2;
+  final correctedBbox = <double>[
+    boundaryBounds[0] - padding,
+    boundaryBounds[1] - padding,
+    boundaryBounds[2] + padding,
+    boundaryBounds[3] + padding,
+  ];
+  stdout.writeln(
+    'corrected reference bbox ${correctedBbox.map(_round).toList()} '
+    '(from stored provincial boundary)',
+  );
+
+  final fetcher = _WfsFetcher(cacheDir: cacheDir);
+  final departments = await fetcher.fetch(
+    'departamento_full_cordoba',
+    typeName: 'ign:departamento',
+    query: {'CQL_FILTER': "in1 LIKE '${spec.indecCode}%'"},
+  );
+  final nationalRoads = await fetcher.fetch(
+    'vial_nacional_full_cordoba',
+    typeName: 'ign:vial_nacional',
+    query: {'bbox': _bboxParameter(correctedBbox)},
+  );
+  final provincialRoads = await fetcher.fetch(
+    'vial_provincial_full_cordoba',
+    typeName: 'ign:vial_provincial',
+    query: {'bbox': _bboxParameter(correctedBbox)},
+  );
+  final rivers = await fetcher.fetch(
+    'aguas_perenne_full_cordoba',
+    typeName: 'ign:lineas_de_aguas_continentales_perenne',
+    query: {'bbox': _bboxParameter(correctedBbox)},
+  );
+
+  final departmentFeatures = departments['features'] as List? ?? const [];
+  if (departmentFeatures.length != 26) {
+    throw StateError(
+      'Expected 26 IGN departments for Córdoba, got '
+      '${departmentFeatures.length}',
+    );
+  }
+
+  final replacements = <String, List<List<List<double>>>>{
+    'departmentBoundaries': _buildLines(
+      departments,
+      spec,
+      'departmentBoundaries',
+      clipBbox: correctedBbox,
+    ),
+    'majorRivers': _buildLines(
+      rivers,
+      spec,
+      'majorRivers',
+      clipBbox: correctedBbox,
+    ),
+    'nationalRoads': _buildLines(
+      nationalRoads,
+      spec,
+      'nationalRoads',
+      clipBbox: correctedBbox,
+    ),
+    'provincialRoads': _buildLines(
+      provincialRoads,
+      spec,
+      'provincialRoads',
+      clipBbox: correctedBbox,
+    ),
+  };
+
+  for (final entry in replacements.entries) {
+    final before = (layers[entry.key] as List?) ?? const [];
+    final beforePoints = before.fold<int>(
+      0,
+      (sum, line) => sum + (line as List).length,
+    );
+    final afterPoints = entry.value.fold<int>(
+      0,
+      (sum, line) => sum + line.length,
+    );
+    final bounds = _lineBounds(entry.value);
+    if (bounds[3] <= spec.bbox[3]) {
+      throw StateError(
+        '${entry.key} still does not extend north of ${spec.bbox[3]}: '
+        '${bounds[3]}',
+      );
+    }
+    stdout.writeln(
+      '${entry.key.padRight(22)} ${before.length} lines / $beforePoints pts '
+      '-> ${entry.value.length} lines / $afterPoints pts; '
+      'bounds=${bounds.map(_round).toList()}',
+    );
+    layers[entry.key] = entry.value;
+  }
+
+  document['layers'] = layers;
+  final encoded = jsonEncode(document);
+  stdout.writeln('total ${encoded.length} bytes (was ${existingRaw.length})');
+
+  if (dryRun) {
+    stdout.writeln('--dry-run: ${spec.outputPath} not written');
+    return;
+  }
+
+  outputFile.writeAsStringSync(encoded);
+  stdout.writeln('wrote ${spec.outputPath}');
+}
+
+List<double> _lineBounds(List<List<List<double>>> lines) {
+  var west = double.infinity;
+  var south = double.infinity;
+  var east = double.negativeInfinity;
+  var north = double.negativeInfinity;
+  for (final line in lines) {
+    for (final point in line) {
+      west = math.min(west, point[0]);
+      south = math.min(south, point[1]);
+      east = math.max(east, point[0]);
+      north = math.max(north, point[1]);
+    }
+  }
+  if (![west, south, east, north].every((value) => value.isFinite)) {
+    throw StateError('Cannot derive bounds from empty or invalid linework');
+  }
+  return [west, south, east, north];
 }
 
 /// Fase 6 Parte 42B — see the call site in [main] for why this exists.
@@ -387,8 +548,9 @@ String _bboxParameter(List<double> bbox) =>
 List<List<List<double>>> _buildLines(
   Map<String, Object?> collection,
   ProvinceSpec spec,
-  String layer,
-) {
+  String layer, {
+  List<double>? clipBbox,
+}) {
   final tolerance = _simplifyTolerance[layer]!;
   final output = <List<List<double>>>[];
 
@@ -409,7 +571,9 @@ List<List<List<double>>> _buildLines(
     final geometry = (feature as Map)['geometry'] as Map?;
     if (geometry == null) continue;
     for (final line in _extractLines(geometry)) {
-      final pieces = skipClip ? [line] : _clipToBbox(line, spec.bbox);
+      final pieces = skipClip
+          ? [line]
+          : _clipToBbox(line, clipBbox ?? spec.bbox);
       for (final clipped in pieces) {
         final simplified = _simplify(clipped, tolerance);
         if (simplified.length < 2) continue;
