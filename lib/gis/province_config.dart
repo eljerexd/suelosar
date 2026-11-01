@@ -1,6 +1,7 @@
 import 'package:latlong2/latlong.dart';
 
 import '../constants/asset_paths.dart';
+import '../repositories/cordoba_series_repository.dart';
 import '../repositories/pdf_series_repository.dart';
 import '../repositories/santa_fe_series_repository.dart';
 import 'gis_layer.dart';
@@ -22,6 +23,7 @@ class ProvinceConfig {
     required this.defaultArchiveInfo,
     required this.seriesResolver,
     required this.seriesNameResolver,
+    this.showPolygonUnitSymbols = true,
     this.referenceMapAsset,
     this.preloadSeriesNames,
     this.downloadBannerAnchor,
@@ -56,6 +58,11 @@ class ProvinceConfig {
   /// Best-effort raw-code -> display-name resolution for `SERIE1..6`
   /// values. Identity for Buenos Aires (already real names).
   final SeriesNameResolver seriesNameResolver;
+
+  /// Whether map-unit symbols are painted directly over this province's
+  /// soil polygons. The main-branch integration intentionally leaves this
+  /// off for Córdoba while retaining `SIMBC` in feature data and detail UI.
+  final bool showPolygonUnitSymbols;
 
   /// Awaited once during `GisMapScreen`'s existing async init sequence, if
   /// non-null, before the first frame that could show a soil-series name —
@@ -156,6 +163,46 @@ class ProvinceConfig {
       // assets/maps/santa_fe_soil_polygons.pmtiles — 65,985,455 bytes
       // (63 MB), tracked by santa_fe_soil_polygons.pmtiles.sha256.
       pmtilesDownloadSizeBytes: 65985455,
+    );
+  }
+
+  /// Center/bounds read from Córdoba's own validated PMTiles header (the
+  /// archive published by `dart run tool/suelosar_data.dart build cordoba`),
+  /// not estimated.
+  ///
+  /// `static final` for the same reason as [santaFe]: every caller shares
+  /// one `CordobaSeriesRepository`, so the 358-entry index is read once.
+  static final ProvinceConfig cordoba = _buildCordoba();
+
+  static ProvinceConfig _buildCordoba() {
+    final repository = CordobaSeriesRepository();
+    return ProvinceConfig(
+      id: 'cordoba',
+      pmtilesAsset: AssetPaths.cordobaGisPmTiles,
+      pmtilesVersionAsset: AssetPaths.cordobaGisPmTilesVersion,
+      pmtilesLayerName: AssetPaths.gisLayerName,
+      initialCenter: const LatLng(-32.296419, -62.655029),
+      defaultArchiveInfo: const GisArchiveInfo(
+        minZoom: 4,
+        maxZoom: 14,
+        centerLatitude: -32.296419,
+        centerLongitude: -62.655029,
+      ),
+      referenceMapAsset: AssetPaths.cordobaAgronomicReferenceMap,
+      seriesResolver: CordobaSeriesResolver(repository),
+      // Córdoba's `SERIE1..6` values are already the real series names,
+      // accents included ("VICENTE AGÜERO") — nothing to resolve, and no
+      // preload needed, exactly like Buenos Aires.
+      seriesNameResolver: const IdentitySeriesNameResolver(),
+      showPolygonUnitSymbols: false,
+      // Villa María — a well-known city close to the geographic middle of
+      // the province, the same reasoning the other two anchors use, rather
+      // than the archive's data-derived center.
+      downloadBannerAnchor: const LatLng(-32.4075, -63.2400),
+      // assets/maps/cordoba_soil_polygons.pmtiles — 77,400,595 bytes
+      // (73.8 MiB, 50k+100k+500k merged), tracked by
+      // cordoba_soil_polygons.pmtiles.sha256.
+      pmtilesDownloadSizeBytes: 77400595,
     );
   }
 }

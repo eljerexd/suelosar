@@ -1,3 +1,4 @@
+import '../repositories/cordoba_series_repository.dart';
 import '../repositories/pdf_series_repository.dart';
 import '../repositories/santa_fe_series_repository.dart';
 import 'gis_soil_series.dart';
@@ -123,5 +124,34 @@ class SantaFeSeriesNameResolver implements SeriesNameResolver {
 
     return names[SantaFeSeriesRepository.normalizeCode(code)] ??
         rawSeriesValue;
+  }
+}
+
+/// Resolves a Córdoba series against the province's single consolidated
+/// PDF — by *name*, not by code: `SERIE1..6` already holds the real series
+/// name (e.g. `"VICENTE AGÜERO"`), so [SantaFeSeriesResolver]'s
+/// leading-token rule would truncate it. Matching ignores case, accents and
+/// `_`/`-`/space differences ([CordobaSeriesRepository.findByName]), which
+/// is what lets a GIS name with accents find its entry.
+///
+/// Returns null — the same documented "no material for this series"
+/// outcome both other resolvers already have — for the map-unit components
+/// that are not series ("suelos menores", "roca expuesta"), which stay in
+/// the data untouched.
+class CordobaSeriesResolver implements SeriesResolver {
+  CordobaSeriesResolver(this._repository);
+
+  final CordobaSeriesRepository _repository;
+
+  @override
+  Future<SeriesPdfLocation?> resolve(GisSoilSeries series) async {
+    final entry = await _repository.findByName(series.name);
+    if (entry == null) return null;
+
+    return SeriesPdfLocation(
+      assetPath: await _repository.pdfAsset,
+      startPage: entry.startPage,
+      endPage: entry.endPage,
+    );
   }
 }

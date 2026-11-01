@@ -2,6 +2,7 @@
 
 import json
 import math
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +47,16 @@ def decode_tile(archive, zoom, x, y):
         return []
 
     decoded = json.loads(result.stdout)
+    # When the requested tile does not exist, tippecanoe-decode silently
+    # falls back to an ancestor tile at a lower zoom (and says so only on
+    # stderr). Such a tile proves nothing about this zoom, so it is ignored.
+    properties = decoded.get("properties", {})
+    if (
+        properties.get("zoom") != zoom
+        or properties.get("x") != x
+        or properties.get("y") != y
+    ):
+        return []
     return [
         layer
         for layer in decoded.get("features", [])
@@ -53,8 +64,14 @@ def decode_tile(archive, zoom, x, y):
     ]
 
 
-def sample_zoom(archive, layer_name, zoom):
-    center_x, center_y = tile_coordinates(-60.0, -36.5, zoom)
+def archive_center(header):
+    """Center (longitude, latitude) declared in the PMTiles v3 header."""
+    longitude_e7, latitude_e7 = struct.unpack_from("<ii", header, 0x77)
+    return longitude_e7 / 10_000_000, latitude_e7 / 10_000_000
+
+
+def sample_zoom(archive, layer_name, zoom, center):
+    center_x, center_y = tile_coordinates(center[0], center[1], zoom)
     layers = []
     for radius in range(0, 4):
         for x in range(center_x - radius, center_x + radius + 1):
@@ -116,6 +133,7 @@ def main():
             f"(expected {expected_min_zoom}-{expected_max_zoom})."
         )
 
+    center = archive_center(header)
     sampled_layers = []
     for zoom in {
         expected_min_zoom,
@@ -124,7 +142,7 @@ def main():
         expected_max_zoom,
     }:
         if zoom >= expected_min_zoom:
-            sampled_layers.extend(sample_zoom(archive, layer_name, zoom))
+            sampled_layers.extend(sample_zoom(archive, layer_name, zoom, center))
 
     with samples_path.open(encoding="utf-8") as samples_file:
         attribute_samples = json.load(samples_file)

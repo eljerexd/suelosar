@@ -53,6 +53,11 @@ Future<void> _pumpCatalog(WidgetTester tester) async {
       home: SoilMapsScreen(
         soilMapsLoader: () async => _buenosAiresFixture(),
         santaFeCardsLoader: () async => _santaFeFixture(),
+        // This file is about the Buenos Aires/Santa Fe pair; Córdoba's own
+        // catalog is covered in cordoba_series_repository_test.dart. Stub
+        // it empty so these assertions keep counting only the fixtures —
+        // and so the screen doesn't do a real `rootBundle` read here.
+        cordobaCardsLoader: () async => const <SoilCard>[],
       ),
     ),
   );
@@ -414,6 +419,7 @@ void main() {
           home: SoilMapsScreen(
             soilMapsLoader: () async => _buenosAiresFixture(),
             santaFeCardsLoader: () async => _santaFeFixture(),
+            cordobaCardsLoader: () async => const <SoilCard>[],
           ),
         ),
       );

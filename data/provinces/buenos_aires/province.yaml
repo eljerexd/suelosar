@@ -1,0 +1,55 @@
+# SuelosAR Data Pipeline — Buenos Aires.
+# Fase 1 trabaja con las ubicaciones actuales de los datos (todavía no se
+# movieron a data/provinces/buenos_aires/source/).
+
+id: buenos_aires
+name: Buenos Aires
+
+gis:
+  # Shapefile original (WGS 84), el mismo que consume el pipeline Docker.
+  source: ${REPO}/docker/input/Suelos_BA_50mil_V2.shp
+  format: shapefile            # codificación: la del .cpg (UTF-8)
+
+  # La fuente ya usa el esquema SuelosAR.
+  mapping:
+    SIMBC:     { from: SIMBC }
+    Nombre_UC: { from: Nombre_UC }
+    TIPO:      { from: TIPO }
+    CAP_USO:   { from: CAP_USO }
+    PAISAJE:   { from: PAISAJE }
+    "SERIE{n}": { from: "SERIE{n}", n: [1, 6] }
+    "PORC{n}":  { from: "PORC{n}", n: [1, 6] }
+    OBJECTID:  { from: OBJECTID }
+
+  series:
+    code_rule: whole_value     # SERIEn ya es el nombre de la serie
+    match: normalized_name     # como PdfSeriesRepository.normalizeName
+    aliases: {}
+
+  thresholds:
+    warn_below: 90
+    error_below: 50
+
+pdf:
+  model: per_series
+  directory: ${REPO}/assets/pdfs
+  naming:
+    word_separator: "_"
+
+catalog:
+  output: soil_maps.json
+  reference: ${REPO}/assets/data/soil_maps.json
+  json_style: powershell       # el archivo actual fue escrito con ConvertTo-Json
+
+pmtiles:
+  # Se genera en output/; nunca se copia a assets/ automáticamente.
+  output: soil_polygons.pmtiles
+  # El archivo que usa la app hoy (solo para comparar).
+  reference: ${REPO}/assets/maps/soil_polygons.pmtiles
+  layer: soil_polygons
+  zooms: { min: 4, max: 14 }
+  # auto: shapefile con mapeo directo -> Docker recibe el shapefile original
+  # (mismo circuito que el archivo actual).
+  input: auto
+  # auto: quita los 18 atributos que la app no usa.
+  optimize: auto

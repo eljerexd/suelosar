@@ -1,0 +1,2053 @@
+{
+ "province": "Córdoba",
+ "pdfAsset": "assets/pdfs_cordoba/cordoba_series.pdf",
+ "generatedFrom": "SuelosAR_Cordoba_Series_MASTER_409.manifest.json",
+ "totalPages": 833,
+ "series": [
+  {
+   "name": "AARÓN CASTELLANOS",
+   "startPage": 6,
+   "endPage": 7
+  },
+  {
+   "name": "ACHALA I",
+   "startPage": 8,
+   "endPage": 9
+  },
+  {
+   "name": "ACHALA II",
+   "startPage": 10,
+   "endPage": 11
+  },
+  {
+   "name": "ACHALA III",
+   "startPage": 12,
+   "endPage": 13
+  },
+  {
+   "name": "ACHALA IV",
+   "startPage": 14,
+   "endPage": 15
+  },
+  {
+   "name": "ACHALA V",
+   "startPage": 16,
+   "endPage": 17
+  },
+  {
+   "name": "ACHALA VI",
+   "startPage": 18,
+   "endPage": 19
+  },
+  {
+   "name": "ACHALA VII",
+   "startPage": 20,
+   "endPage": 20
+  },
+  {
+   "name": "ACHALAY",
+   "startPage": 21,
+   "endPage": 22
+  },
+  {
+   "name": "ACHIRAS",
+   "startPage": 23,
+   "endPage": 24
+  },
+  {
+   "name": "ADELIA MARÍA",
+   "startPage": 25,
+   "endPage": 27
+  },
+  {
+   "name": "ÁGUILA CAUTIVA",
+   "startPage": 28,
+   "endPage": 29
+  },
+  {
+   "name": "ALBARDONES",
+   "startPage": 30,
+   "endPage": 31
+  },
+  {
+   "name": "ALEJO LEDESMA",
+   "startPage": 32,
+   "endPage": 33
+  },
+  {
+   "name": "ALFALEGRE",
+   "startPage": 34,
+   "endPage": 35
+  },
+  {
+   "name": "ALMAFUERTE",
+   "startPage": 36,
+   "endPage": 37
+  },
+  {
+   "name": "ALPA CORRAL",
+   "startPage": 38,
+   "endPage": 39
+  },
+  {
+   "name": "ALTO ALEGRE",
+   "startPage": 40,
+   "endPage": 41
+  },
+  {
+   "name": "ALTO GRANDE",
+   "startPage": 42,
+   "endPage": 43
+  },
+  {
+   "name": "ALTOS DE CHIPIÓN",
+   "startPage": 44,
+   "endPage": 45
+  },
+  {
+   "name": "AMENÁBAR",
+   "startPage": 46,
+   "endPage": 47
+  },
+  {
+   "name": "ANCHORENA",
+   "startPage": 48,
+   "endPage": 49
+  },
+  {
+   "name": "ANSENUZA",
+   "startPage": 50,
+   "endPage": 51
+  },
+  {
+   "name": "AREQUITO",
+   "startPage": 52,
+   "endPage": 53
+  },
+  {
+   "name": "ARROYITO",
+   "startPage": 54,
+   "endPage": 55
+  },
+  {
+   "name": "ARROYO ACEQUIÓN",
+   "startPage": 56,
+   "endPage": 57
+  },
+  {
+   "name": "ARROYO CABRAL",
+   "startPage": 58,
+   "endPage": 59
+  },
+  {
+   "name": "ARROYO DE TEGUA",
+   "startPage": 60,
+   "endPage": 61
+  },
+  {
+   "name": "ARROYO SANTA CATALINA",
+   "startPage": 62,
+   "endPage": 63
+  },
+  {
+   "name": "ARROYO TORTUGAS",
+   "startPage": 64,
+   "endPage": 65
+  },
+  {
+   "name": "ASCOCHINGA",
+   "startPage": 66,
+   "endPage": 67
+  },
+  {
+   "name": "ASSUNTA",
+   "startPage": 68,
+   "endPage": 69
+  },
+  {
+   "name": "AUSONIA",
+   "startPage": 70,
+   "endPage": 71
+  },
+  {
+   "name": "BAIGORRIA",
+   "startPage": 72,
+   "endPage": 73
+  },
+  {
+   "name": "BAJO GRANDE",
+   "startPage": 74,
+   "endPage": 75
+  },
+  {
+   "name": "BALDISSERA",
+   "startPage": 76,
+   "endPage": 77
+  },
+  {
+   "name": "BALLESTEROS",
+   "startPage": 78,
+   "endPage": 79
+  },
+  {
+   "name": "BALNEARIA",
+   "startPage": 80,
+   "endPage": 81
+  },
+  {
+   "name": "BAÑOS DE UNQUILLO",
+   "startPage": 82,
+   "endPage": 83
+  },
+  {
+   "name": "BARRANCA YACO",
+   "startPage": 84,
+   "endPage": 85
+  },
+  {
+   "name": "BELÉN",
+   "startPage": 86,
+   "endPage": 87
+  },
+  {
+   "name": "BENJAMÍN GOULD",
+   "startPage": 88,
+   "endPage": 89
+  },
+  {
+   "name": "BRINKMANN",
+   "startPage": 90,
+   "endPage": 91
+  },
+  {
+   "name": "BUCHARDO",
+   "startPage": 92,
+   "endPage": 93
+  },
+  {
+   "name": "BUENA ESPERANZA",
+   "startPage": 94,
+   "endPage": 95
+  },
+  {
+   "name": "BUEY MUERTO",
+   "startPage": 96,
+   "endPage": 97
+  },
+  {
+   "name": "BULNES",
+   "startPage": 98,
+   "endPage": 99
+  },
+  {
+   "name": "CALAMUCHITA I",
+   "startPage": 100,
+   "endPage": 100
+  },
+  {
+   "name": "CALAMUCHITA II",
+   "startPage": 101,
+   "endPage": 101
+  },
+  {
+   "name": "CALAMUCHITA III",
+   "startPage": 102,
+   "endPage": 103
+  },
+  {
+   "name": "CALAMUCHITA IV",
+   "startPage": 104,
+   "endPage": 105
+  },
+  {
+   "name": "CALAMUCHITA V",
+   "startPage": 106,
+   "endPage": 107
+  },
+  {
+   "name": "CAMINO REAL",
+   "startPage": 108,
+   "endPage": 109
+  },
+  {
+   "name": "CAÑADA DE RÍO PINTO",
+   "startPage": 110,
+   "endPage": 111
+  },
+  {
+   "name": "CAÑADA LA CRUZ",
+   "startPage": 112,
+   "endPage": 113
+  },
+  {
+   "name": "CAÑADA VERDE",
+   "startPage": 114,
+   "endPage": 115
+  },
+  {
+   "name": "CANAL SAN ANTONIO",
+   "startPage": 116,
+   "endPage": 117
+  },
+  {
+   "name": "CANALS",
+   "startPage": 118,
+   "endPage": 119
+  },
+  {
+   "name": "CAÑAS",
+   "startPage": 120,
+   "endPage": 121
+  },
+  {
+   "name": "CANDELARIA",
+   "startPage": 122,
+   "endPage": 123
+  },
+  {
+   "name": "CARNERILLO",
+   "startPage": 124,
+   "endPage": 125
+  },
+  {
+   "name": "CASILDA",
+   "startPage": 126,
+   "endPage": 127
+  },
+  {
+   "name": "CASTRO URDIALES",
+   "startPage": 128,
+   "endPage": 129
+  },
+  {
+   "name": "CAVANAGH",
+   "startPage": 130,
+   "endPage": 131
+  },
+  {
+   "name": "CAYUQUEO",
+   "startPage": 132,
+   "endPage": 133
+  },
+  {
+   "name": "CERRO NEGRO",
+   "startPage": 134,
+   "endPage": 135
+  },
+  {
+   "name": "CHAJÁN",
+   "startPage": 136,
+   "endPage": 137
+  },
+  {
+   "name": "CHILIBROSTE",
+   "startPage": 138,
+   "endPage": 139
+  },
+  {
+   "name": "CHUÑA",
+   "startPage": 140,
+   "endPage": 141
+  },
+  {
+   "name": "CINTRA",
+   "startPage": 142,
+   "endPage": 143
+  },
+  {
+   "name": "COLONIA CAROYA",
+   "startPage": 144,
+   "endPage": 145
+  },
+  {
+   "name": "COLONIA ELENA",
+   "startPage": 146,
+   "endPage": 147
+  },
+  {
+   "name": "COLONIA MACKINLAY",
+   "startPage": 148,
+   "endPage": 149
+  },
+  {
+   "name": "COLONIA MARINA",
+   "startPage": 150,
+   "endPage": 151
+  },
+  {
+   "name": "COLONIA MAUNIER",
+   "startPage": 152,
+   "endPage": 153
+  },
+  {
+   "name": "COLONIA MENDIGUREN",
+   "startPage": 154,
+   "endPage": 155
+  },
+  {
+   "name": "COLONIA MORENO",
+   "startPage": 156,
+   "endPage": 157
+  },
+  {
+   "name": "COLONIA PROGRESO",
+   "startPage": 158,
+   "endPage": 159
+  },
+  {
+   "name": "COLONIA SAN PEDRO",
+   "startPage": 160,
+   "endPage": 161
+  },
+  {
+   "name": "COLONIA UDINE",
+   "startPage": 162,
+   "endPage": 163
+  },
+  {
+   "name": "COLONIA VALTELINA",
+   "startPage": 164,
+   "endPage": 165
+  },
+  {
+   "name": "COLONIA VIDELA",
+   "startPage": 166,
+   "endPage": 167
+  },
+  {
+   "name": "COLONIA VIGNAUD",
+   "startPage": 168,
+   "endPage": 169
+  },
+  {
+   "name": "CONSTITUCIÓN",
+   "startPage": 170,
+   "endPage": 171
+  },
+  {
+   "name": "CORONEL CHARLONE",
+   "startPage": 172,
+   "endPage": 173
+  },
+  {
+   "name": "CORRALITO",
+   "startPage": 174,
+   "endPage": 175
+  },
+  {
+   "name": "COSTA SACATE",
+   "startPage": 176,
+   "endPage": 177
+  },
+  {
+   "name": "CRISPI",
+   "startPage": 178,
+   "endPage": 179
+  },
+  {
+   "name": "DEÁN FUNES",
+   "startPage": 180,
+   "endPage": 181
+  },
+  {
+   "name": "DEL CAMPILLO",
+   "startPage": 182,
+   "endPage": 183
+  },
+  {
+   "name": "DESPEÑADEROS",
+   "startPage": 184,
+   "endPage": 185
+  },
+  {
+   "name": "DEVOTO",
+   "startPage": 186,
+   "endPage": 187
+  },
+  {
+   "name": "DIEGO DE ROJAS",
+   "startPage": 188,
+   "endPage": 189
+  },
+  {
+   "name": "EL ABOLENGO",
+   "startPage": 190,
+   "endPage": 191
+  },
+  {
+   "name": "EL ALBIÓN",
+   "startPage": 192,
+   "endPage": 193
+  },
+  {
+   "name": "EL ALCALDE",
+   "startPage": 194,
+   "endPage": 195
+  },
+  {
+   "name": "EL ARAÑADO",
+   "startPage": 196,
+   "endPage": 197
+  },
+  {
+   "name": "EL AROMO",
+   "startPage": 198,
+   "endPage": 199
+  },
+  {
+   "name": "EL BAÑADO",
+   "startPage": 200,
+   "endPage": 201
+  },
+  {
+   "name": "EL CANDIL",
+   "startPage": 202,
+   "endPage": 203
+  },
+  {
+   "name": "EL CANO",
+   "startPage": 204,
+   "endPage": 205
+  },
+  {
+   "name": "EL CANTOR",
+   "startPage": 206,
+   "endPage": 207
+  },
+  {
+   "name": "EL CHACAY",
+   "startPage": 208,
+   "endPage": 209
+  },
+  {
+   "name": "EL CHAGUARAL",
+   "startPage": 210,
+   "endPage": 211
+  },
+  {
+   "name": "EL CHAJÁ",
+   "startPage": 212,
+   "endPage": 213
+  },
+  {
+   "name": "EL CORTIJO",
+   "startPage": 214,
+   "endPage": 215
+  },
+  {
+   "name": "EL CRUCE",
+   "startPage": 216,
+   "endPage": 217
+  },
+  {
+   "name": "EL DIVISADERO",
+   "startPage": 218,
+   "endPage": 219
+  },
+  {
+   "name": "EL DURAZNO",
+   "startPage": 220,
+   "endPage": 221
+  },
+  {
+   "name": "EL EMBRUJO",
+   "startPage": 222,
+   "endPage": 223
+  },
+  {
+   "name": "EL GUANACO",
+   "startPage": 224,
+   "endPage": 225
+  },
+  {
+   "name": "EL INDIO",
+   "startPage": 226,
+   "endPage": 227
+  },
+  {
+   "name": "EL JUME",
+   "startPage": 228,
+   "endPage": 229
+  },
+  {
+   "name": "EL ONCE",
+   "startPage": 230,
+   "endPage": 231
+  },
+  {
+   "name": "EL PEQUÉN",
+   "startPage": 232,
+   "endPage": 233
+  },
+  {
+   "name": "EL PINO",
+   "startPage": 234,
+   "endPage": 235
+  },
+  {
+   "name": "EL PUENTE",
+   "startPage": 236,
+   "endPage": 237
+  },
+  {
+   "name": "EL PUMA",
+   "startPage": 238,
+   "endPage": 239
+  },
+  {
+   "name": "EL QUEBRACHAL",
+   "startPage": 240,
+   "endPage": 241
+  },
+  {
+   "name": "EL RODEO",
+   "startPage": 242,
+   "endPage": 243
+  },
+  {
+   "name": "EL ROSARIO",
+   "startPage": 244,
+   "endPage": 245
+  },
+  {
+   "name": "EL SALADILLO",
+   "startPage": 246,
+   "endPage": 247
+  },
+  {
+   "name": "EL SALTO",
+   "startPage": 248,
+   "endPage": 249
+  },
+  {
+   "name": "EL SARMIENTO",
+   "startPage": 250,
+   "endPage": 251
+  },
+  {
+   "name": "EL SAUCE",
+   "startPage": 252,
+   "endPage": 253
+  },
+  {
+   "name": "EL SILENCIO",
+   "startPage": 254,
+   "endPage": 255
+  },
+  {
+   "name": "EL TACO",
+   "startPage": 256,
+   "endPage": 257
+  },
+  {
+   "name": "EL VEINTITRÉS",
+   "startPage": 258,
+   "endPage": 259
+  },
+  {
+   "name": "EL YARARÁ",
+   "startPage": 260,
+   "endPage": 261
+  },
+  {
+   "name": "EL ZAPALLAR",
+   "startPage": 262,
+   "endPage": 263
+  },
+  {
+   "name": "ELENA",
+   "startPage": 264,
+   "endPage": 265
+  },
+  {
+   "name": "ENSANCHE",
+   "startPage": 266,
+   "endPage": 267
+  },
+  {
+   "name": "ESPERANZA",
+   "startPage": 268,
+   "endPage": 269
+  },
+  {
+   "name": "ESPINILLO",
+   "startPage": 270,
+   "endPage": 271
+  },
+  {
+   "name": "ESTACIÓN ACHIRAS",
+   "startPage": 272,
+   "endPage": 273
+  },
+  {
+   "name": "ESTACIÓN CAROYA",
+   "startPage": 274,
+   "endPage": 275
+  },
+  {
+   "name": "ESTACIÓN MACHA",
+   "startPage": 276,
+   "endPage": 277
+  },
+  {
+   "name": "ESTACIÓN SALGUERO",
+   "startPage": 278,
+   "endPage": 279
+  },
+  {
+   "name": "ESTACIÓN SANTA ROSA",
+   "startPage": 280,
+   "endPage": 281
+  },
+  {
+   "name": "ESTANCIA ADELAIDA",
+   "startPage": 282,
+   "endPage": 283
+  },
+  {
+   "name": "ESTANCIA ANA MARÍA",
+   "startPage": 284,
+   "endPage": 285
+  },
+  {
+   "name": "ESTANCIA DOMINGUITO",
+   "startPage": 286,
+   "endPage": 287
+  },
+  {
+   "name": "ESTANCIA DON FRANCISCO",
+   "startPage": 288,
+   "endPage": 289
+  },
+  {
+   "name": "ESTANCIA DON SANTIAGO",
+   "startPage": 290,
+   "endPage": 291
+  },
+  {
+   "name": "ESTANCIA DOÑA LUCÍA",
+   "startPage": 292,
+   "endPage": 293
+  },
+  {
+   "name": "ESTANCIA EL CAUTIVO",
+   "startPage": 294,
+   "endPage": 295
+  },
+  {
+   "name": "ESTANCIA EL GATO",
+   "startPage": 296,
+   "endPage": 297
+  },
+  {
+   "name": "ESTANCIA EL MANZANO",
+   "startPage": 298,
+   "endPage": 299
+  },
+  {
+   "name": "ESTANCIA LA ALICIA",
+   "startPage": 300,
+   "endPage": 301
+  },
+  {
+   "name": "ESTANCIA LA EMILIA",
+   "startPage": 302,
+   "endPage": 303
+  },
+  {
+   "name": "ESTANCIA LA GUARDIA",
+   "startPage": 304,
+   "endPage": 305
+  },
+  {
+   "name": "ESTANCIA LA LEONA",
+   "startPage": 306,
+   "endPage": 307
+  },
+  {
+   "name": "ESTANCIA LA OLGA",
+   "startPage": 308,
+   "endPage": 309
+  },
+  {
+   "name": "ESTANCIA LA SELVA",
+   "startPage": 310,
+   "endPage": 311
+  },
+  {
+   "name": "ESTANCIA LA TORRE",
+   "startPage": 312,
+   "endPage": 313
+  },
+  {
+   "name": "ESTANCIA LAS MERCEDES",
+   "startPage": 314,
+   "endPage": 315
+  },
+  {
+   "name": "ESTANCIA LOS ANDES",
+   "startPage": 316,
+   "endPage": 317
+  },
+  {
+   "name": "ESTANCIA SAN MIGUEL",
+   "startPage": 318,
+   "endPage": 319
+  },
+  {
+   "name": "ESTANCIA SAN PEDRO",
+   "startPage": 320,
+   "endPage": 321
+  },
+  {
+   "name": "ESTANCIA SANTA ANA",
+   "startPage": 322,
+   "endPage": 323
+  },
+  {
+   "name": "ESTANCIA TODOS LOS SANTOS",
+   "startPage": 324,
+   "endPage": 325
+  },
+  {
+   "name": "ESTANCIA VIEJA",
+   "startPage": 326,
+   "endPage": 327
+  },
+  {
+   "name": "ESTANCIA YOLANDA",
+   "startPage": 328,
+   "endPage": 329
+  },
+  {
+   "name": "ETRURIA",
+   "startPage": 330,
+   "endPage": 331
+  },
+  {
+   "name": "EUSEBIA",
+   "startPage": 332,
+   "endPage": 333
+  },
+  {
+   "name": "FACUNDO",
+   "startPage": 334,
+   "endPage": 335
+  },
+  {
+   "name": "FLORA",
+   "startPage": 336,
+   "endPage": 337
+  },
+  {
+   "name": "FLORIDA",
+   "startPage": 338,
+   "endPage": 339
+  },
+  {
+   "name": "FUNDACIÓN",
+   "startPage": 340,
+   "endPage": 341
+  },
+  {
+   "name": "GENERAL CABRERA",
+   "startPage": 342,
+   "endPage": 343
+  },
+  {
+   "name": "GENERAL DEHEZA",
+   "startPage": 344,
+   "endPage": 345
+  },
+  {
+   "name": "GENERAL PAZ",
+   "startPage": 346,
+   "endPage": 347
+  },
+  {
+   "name": "GENERAL SAVIO I",
+   "startPage": 348,
+   "endPage": 349
+  },
+  {
+   "name": "GENERAL SAVIO II",
+   "startPage": 350,
+   "endPage": 351
+  },
+  {
+   "name": "GUATIMOZÍN",
+   "startPage": 352,
+   "endPage": 353
+  },
+  {
+   "name": "HANSEN",
+   "startPage": 354,
+   "endPage": 355
+  },
+  {
+   "name": "HERNANDO",
+   "startPage": 356,
+   "endPage": 357
+  },
+  {
+   "name": "HUASCHA",
+   "startPage": 358,
+   "endPage": 359
+  },
+  {
+   "name": "HUERTA VIEJA",
+   "startPage": 360,
+   "endPage": 361
+  },
+  {
+   "name": "HUINCA RENANCÓ",
+   "startPage": 362,
+   "endPage": 363
+  },
+  {
+   "name": "IMPIRA",
+   "startPage": 364,
+   "endPage": 365
+  },
+  {
+   "name": "INGENIERO FOSTER",
+   "startPage": 366,
+   "endPage": 367
+  },
+  {
+   "name": "ITALÓ",
+   "startPage": 368,
+   "endPage": 369
+  },
+  {
+   "name": "JAMES CRAIK",
+   "startPage": 370,
+   "endPage": 371
+  },
+  {
+   "name": "JESÚS MARÍA",
+   "startPage": 372,
+   "endPage": 373
+  },
+  {
+   "name": "JOSÉ DE LA QUINTANA",
+   "startPage": 374,
+   "endPage": 375
+  },
+  {
+   "name": "JUSTINIANO POSSE",
+   "startPage": 376,
+   "endPage": 377
+  },
+  {
+   "name": "LA AGUADA",
+   "startPage": 378,
+   "endPage": 379
+  },
+  {
+   "name": "LA ANGELITA",
+   "startPage": 380,
+   "endPage": 381
+  },
+  {
+   "name": "LA ARGENTINA",
+   "startPage": 382,
+   "endPage": 383
+  },
+  {
+   "name": "LA BATEA",
+   "startPage": 384,
+   "endPage": 385
+  },
+  {
+   "name": "LA BEATRIZ",
+   "startPage": 386,
+   "endPage": 387
+  },
+  {
+   "name": "LA BÉLGICA",
+   "startPage": 388,
+   "endPage": 389
+  },
+  {
+   "name": "LA BOHEMIA",
+   "startPage": 390,
+   "endPage": 391
+  },
+  {
+   "name": "LA CAÑADA",
+   "startPage": 392,
+   "endPage": 393
+  },
+  {
+   "name": "LA CARLOTA",
+   "startPage": 394,
+   "endPage": 395
+  },
+  {
+   "name": "LA CAROLINA",
+   "startPage": 396,
+   "endPage": 397
+  },
+  {
+   "name": "LA CAROYENSE",
+   "startPage": 398,
+   "endPage": 399
+  },
+  {
+   "name": "LA CESIRA",
+   "startPage": 400,
+   "endPage": 401
+  },
+  {
+   "name": "LA EMILIA",
+   "startPage": 402,
+   "endPage": 403
+  },
+  {
+   "name": "LA ENCRUCIJADA",
+   "startPage": 404,
+   "endPage": 405
+  },
+  {
+   "name": "LA ENSENADA",
+   "startPage": 406,
+   "endPage": 407
+  },
+  {
+   "name": "LA ESQUINA",
+   "startPage": 408,
+   "endPage": 409
+  },
+  {
+   "name": "LA FLORIDA",
+   "startPage": 410,
+   "endPage": 411
+  },
+  {
+   "name": "LA FRANCIA",
+   "startPage": 412,
+   "endPage": 413
+  },
+  {
+   "name": "LA GILDA",
+   "startPage": 414,
+   "endPage": 415
+  },
+  {
+   "name": "LA HIGUERA",
+   "startPage": 416,
+   "endPage": 417
+  },
+  {
+   "name": "LA IBERIA",
+   "startPage": 418,
+   "endPage": 419
+  },
+  {
+   "name": "LA INVERNADA",
+   "startPage": 420,
+   "endPage": 421
+  },
+  {
+   "name": "LA ISLA",
+   "startPage": 422,
+   "endPage": 423
+  },
+  {
+   "name": "LA LAGUNITA",
+   "startPage": 424,
+   "endPage": 425
+  },
+  {
+   "name": "LA LEONCITA",
+   "startPage": 426,
+   "endPage": 427
+  },
+  {
+   "name": "LA LONJA",
+   "startPage": 428,
+   "endPage": 429
+  },
+  {
+   "name": "LA MADRUGADA",
+   "startPage": 430,
+   "endPage": 431
+  },
+  {
+   "name": "LA MARCELA",
+   "startPage": 432,
+   "endPage": 433
+  },
+  {
+   "name": "LA MASCOTA",
+   "startPage": 434,
+   "endPage": 435
+  },
+  {
+   "name": "LA MATILDE",
+   "startPage": 436,
+   "endPage": 437
+  },
+  {
+   "name": "LA PAQUITA",
+   "startPage": 438,
+   "endPage": 439
+  },
+  {
+   "name": "LA PARA",
+   "startPage": 440,
+   "endPage": 441
+  },
+  {
+   "name": "LA PAYANCA",
+   "startPage": 442,
+   "endPage": 443
+  },
+  {
+   "name": "LA PAZ",
+   "startPage": 444,
+   "endPage": 445
+  },
+  {
+   "name": "LA PELITA",
+   "startPage": 446,
+   "endPage": 447
+  },
+  {
+   "name": "LA PLAYOSA",
+   "startPage": 448,
+   "endPage": 449
+  },
+  {
+   "name": "LA PLUMA",
+   "startPage": 450,
+   "endPage": 451
+  },
+  {
+   "name": "LA PRIMAVERA",
+   "startPage": 452,
+   "endPage": 453
+  },
+  {
+   "name": "LA QUINTA",
+   "startPage": 454,
+   "endPage": 455
+  },
+  {
+   "name": "LA REMONTA",
+   "startPage": 456,
+   "endPage": 457
+  },
+  {
+   "name": "LA RENANCÓ",
+   "startPage": 458,
+   "endPage": 459
+  },
+  {
+   "name": "LA RESISTENCIA",
+   "startPage": 460,
+   "endPage": 461
+  },
+  {
+   "name": "LA REYNA",
+   "startPage": 462,
+   "endPage": 464
+  },
+  {
+   "name": "LA RINCONADA",
+   "startPage": 465,
+   "endPage": 466
+  },
+  {
+   "name": "LA SALADA",
+   "startPage": 467,
+   "endPage": 468
+  },
+  {
+   "name": "LA SARA",
+   "startPage": 469,
+   "endPage": 470
+  },
+  {
+   "name": "LA SENTENCIA I",
+   "startPage": 471,
+   "endPage": 472
+  },
+  {
+   "name": "LA SENTENCIA II",
+   "startPage": 473,
+   "endPage": 474
+  },
+  {
+   "name": "LA VICTORIA",
+   "startPage": 475,
+   "endPage": 476
+  },
+  {
+   "name": "LABORDE",
+   "startPage": 477,
+   "endPage": 478
+  },
+  {
+   "name": "LABOULAYE",
+   "startPage": 479,
+   "endPage": 480
+  },
+  {
+   "name": "LAGUNA ÁVILA",
+   "startPage": 481,
+   "endPage": 482
+  },
+  {
+   "name": "LAGUNA BLAIZOT",
+   "startPage": 483,
+   "endPage": 484
+  },
+  {
+   "name": "LAGUNA ISLETA",
+   "startPage": 485,
+   "endPage": 486
+  },
+  {
+   "name": "LAGUNA LAS LIEBRES",
+   "startPage": 487,
+   "endPage": 488
+  },
+  {
+   "name": "LAS ACACIAS",
+   "startPage": 489,
+   "endPage": 490
+  },
+  {
+   "name": "LAS ACEQUIAS",
+   "startPage": 491,
+   "endPage": 492
+  },
+  {
+   "name": "LAS ARRIAS",
+   "startPage": 493,
+   "endPage": 494
+  },
+  {
+   "name": "LAS BAJADAS",
+   "startPage": 495,
+   "endPage": 496
+  },
+  {
+   "name": "LAS CORTADERAS",
+   "startPage": 497,
+   "endPage": 498
+  },
+  {
+   "name": "LAS GAMAS",
+   "startPage": 499,
+   "endPage": 500
+  },
+  {
+   "name": "LAS ISLETAS",
+   "startPage": 501,
+   "endPage": 502
+  },
+  {
+   "name": "LAS ISLETILLAS",
+   "startPage": 503,
+   "endPage": 504
+  },
+  {
+   "name": "LAS MACITAS",
+   "startPage": 505,
+   "endPage": 506
+  },
+  {
+   "name": "LAS MARINAS",
+   "startPage": 507,
+   "endPage": 508
+  },
+  {
+   "name": "LAS MERCEDES I",
+   "startPage": 509,
+   "endPage": 510
+  },
+  {
+   "name": "LAS MERCEDES II",
+   "startPage": 511,
+   "endPage": 512
+  },
+  {
+   "name": "LAS PEÑAS SUR",
+   "startPage": 513,
+   "endPage": 514
+  },
+  {
+   "name": "LAS PIEDRAS",
+   "startPage": 515,
+   "endPage": 516
+  },
+  {
+   "name": "LAS PLAYAS",
+   "startPage": 517,
+   "endPage": 518
+  },
+  {
+   "name": "LAS SELVAS",
+   "startPage": 519,
+   "endPage": 520
+  },
+  {
+   "name": "LAS VARAS",
+   "startPage": 521,
+   "endPage": 522
+  },
+  {
+   "name": "LAZZARINO",
+   "startPage": 523,
+   "endPage": 524
+  },
+  {
+   "name": "LECUEDER",
+   "startPage": 525,
+   "endPage": 526
+  },
+  {
+   "name": "LEGUIZAMÓN",
+   "startPage": 527,
+   "endPage": 528
+  },
+  {
+   "name": "LOS AIBALES",
+   "startPage": 529,
+   "endPage": 530
+  },
+  {
+   "name": "LOS ALFALFARES",
+   "startPage": 531,
+   "endPage": 532
+  },
+  {
+   "name": "LOS CHARCOS",
+   "startPage": 533,
+   "endPage": 534
+  },
+  {
+   "name": "LOS CISNES",
+   "startPage": 535,
+   "endPage": 536
+  },
+  {
+   "name": "LOS COMETIERRA",
+   "startPage": 537,
+   "endPage": 538
+  },
+  {
+   "name": "LOS HOYOS",
+   "startPage": 539,
+   "endPage": 540
+  },
+  {
+   "name": "LOS LEONES",
+   "startPage": 541,
+   "endPage": 542
+  },
+  {
+   "name": "LOS MEDANITOS",
+   "startPage": 543,
+   "endPage": 544
+  },
+  {
+   "name": "LOS MISTOLES",
+   "startPage": 545,
+   "endPage": 546
+  },
+  {
+   "name": "LOS MOLLES",
+   "startPage": 547,
+   "endPage": 548
+  },
+  {
+   "name": "LOS NOGALES",
+   "startPage": 549,
+   "endPage": 550
+  },
+  {
+   "name": "LOS NOGALES II",
+   "startPage": 551,
+   "endPage": 552
+  },
+  {
+   "name": "LOS OLMOS",
+   "startPage": 553,
+   "endPage": 554
+  },
+  {
+   "name": "LOS PARAÍSOS",
+   "startPage": 555,
+   "endPage": 556
+  },
+  {
+   "name": "LOS POZOS",
+   "startPage": 557,
+   "endPage": 558
+  },
+  {
+   "name": "LOS REARTES",
+   "startPage": 559,
+   "endPage": 560
+  },
+  {
+   "name": "LOS SAUCES",
+   "startPage": 561,
+   "endPage": 562
+  },
+  {
+   "name": "LOS TAMARINDOS",
+   "startPage": 563,
+   "endPage": 564
+  },
+  {
+   "name": "LUQUE",
+   "startPage": 565,
+   "endPage": 566
+  },
+  {
+   "name": "LUXARDO",
+   "startPage": 567,
+   "endPage": 568
+  },
+  {
+   "name": "MACHA",
+   "startPage": 569,
+   "endPage": 570
+  },
+  {
+   "name": "MAIZALES",
+   "startPage": 571,
+   "endPage": 572
+  },
+  {
+   "name": "MANANTIALES",
+   "startPage": 573,
+   "endPage": 574
+  },
+  {
+   "name": "MANFREDI",
+   "startPage": 575,
+   "endPage": 577
+  },
+  {
+   "name": "MARCOS JUÁREZ",
+   "startPage": 578,
+   "endPage": 579
+  },
+  {
+   "name": "MARÍA MANUELA",
+   "startPage": 580,
+   "endPage": 581
+  },
+  {
+   "name": "MATORRALES",
+   "startPage": 582,
+   "endPage": 584
+  },
+  {
+   "name": "MONTE ALTO",
+   "startPage": 585,
+   "endPage": 586
+  },
+  {
+   "name": "MONTE BUEY",
+   "startPage": 587,
+   "endPage": 588
+  },
+  {
+   "name": "MONTE CRISTO",
+   "startPage": 589,
+   "endPage": 590
+  },
+  {
+   "name": "MONTE DE LOS GAUCHOS",
+   "startPage": 591,
+   "endPage": 592
+  },
+  {
+   "name": "MONTE GRANDE",
+   "startPage": 593,
+   "endPage": 594
+  },
+  {
+   "name": "MONTE OSCURIDAD",
+   "startPage": 595,
+   "endPage": 598
+  },
+  {
+   "name": "MONTE RALO",
+   "startPage": 599,
+   "endPage": 600
+  },
+  {
+   "name": "MORRISON",
+   "startPage": 601,
+   "endPage": 602
+  },
+  {
+   "name": "MORTEROS",
+   "startPage": 603,
+   "endPage": 604
+  },
+  {
+   "name": "NACIENTES DEL RÍO MACHA",
+   "startPage": 605,
+   "endPage": 606
+  },
+  {
+   "name": "NAMUNCURÁ",
+   "startPage": 607,
+   "endPage": 608
+  },
+  {
+   "name": "NOETINGER",
+   "startPage": 609,
+   "endPage": 610
+  },
+  {
+   "name": "OLAETA",
+   "startPage": 611,
+   "endPage": 612
+  },
+  {
+   "name": "OLIVA",
+   "startPage": 613,
+   "endPage": 614
+  },
+  {
+   "name": "OLIVARES",
+   "startPage": 615,
+   "endPage": 616
+  },
+  {
+   "name": "ONCATIVO",
+   "startPage": 617,
+   "endPage": 619
+  },
+  {
+   "name": "ONGAMIRA I",
+   "startPage": 620,
+   "endPage": 621
+  },
+  {
+   "name": "ONGAMIRA II",
+   "startPage": 622,
+   "endPage": 623
+  },
+  {
+   "name": "ORCOSUNI",
+   "startPage": 624,
+   "endPage": 625
+  },
+  {
+   "name": "ORDÓÑEZ",
+   "startPage": 626,
+   "endPage": 627
+  },
+  {
+   "name": "PAJARILLO",
+   "startPage": 628,
+   "endPage": 629
+  },
+  {
+   "name": "PARADERO LAS VIZCACHERAS",
+   "startPage": 630,
+   "endPage": 631
+  },
+  {
+   "name": "PARAJE LOS ZORROS",
+   "startPage": 632,
+   "endPage": 633
+  },
+  {
+   "name": "PASCANAS",
+   "startPage": 634,
+   "endPage": 635
+  },
+  {
+   "name": "PASO DEL RÍO SECO",
+   "startPage": 636,
+   "endPage": 637
+  },
+  {
+   "name": "PASO VIEJO",
+   "startPage": 638,
+   "endPage": 639
+  },
+  {
+   "name": "PILAR",
+   "startPage": 640,
+   "endPage": 642
+  },
+  {
+   "name": "PINCÉN",
+   "startPage": 643,
+   "endPage": 644
+  },
+  {
+   "name": "POZO DE LA LOMA",
+   "startPage": 645,
+   "endPage": 646
+  },
+  {
+   "name": "POZO DE LA OLLA",
+   "startPage": 647,
+   "endPage": 648
+  },
+  {
+   "name": "POZO VERDE",
+   "startPage": 649,
+   "endPage": 650
+  },
+  {
+   "name": "PUERTA COLORADA",
+   "startPage": 651,
+   "endPage": 652
+  },
+  {
+   "name": "PUERTA DE HIERRO I",
+   "startPage": 653,
+   "endPage": 654
+  },
+  {
+   "name": "PUERTA DE HIERRO II",
+   "startPage": 655,
+   "endPage": 656
+  },
+  {
+   "name": "PUESTO EL BALDE",
+   "startPage": 657,
+   "endPage": 658
+  },
+  {
+   "name": "PUESTO JACINTO",
+   "startPage": 659,
+   "endPage": 660
+  },
+  {
+   "name": "PUESTO VIEJO",
+   "startPage": 661,
+   "endPage": 662
+  },
+  {
+   "name": "PUNTA DEL AGUA",
+   "startPage": 663,
+   "endPage": 664
+  },
+  {
+   "name": "QUEBRACHO HERRADO",
+   "startPage": 665,
+   "endPage": 666
+  },
+  {
+   "name": "QUILINO",
+   "startPage": 667,
+   "endPage": 668
+  },
+  {
+   "name": "RAYO CORTADO",
+   "startPage": 669,
+   "endPage": 670
+  },
+  {
+   "name": "RÍO CARNERO",
+   "startPage": 671,
+   "endPage": 672
+  },
+  {
+   "name": "RÍO CUARTO",
+   "startPage": 673,
+   "endPage": 674
+  },
+  {
+   "name": "RÍO QUINTO",
+   "startPage": 675,
+   "endPage": 677
+  },
+  {
+   "name": "RÍO SEGUNDO",
+   "startPage": 678,
+   "endPage": 680
+  },
+  {
+   "name": "RÍO TERCERO",
+   "startPage": 681,
+   "endPage": 682
+  },
+  {
+   "name": "RODEO VIEJO",
+   "startPage": 683,
+   "endPage": 684
+  },
+  {
+   "name": "RODEO VIEJO II",
+   "startPage": 685,
+   "endPage": 686
+  },
+  {
+   "name": "ROSALES",
+   "startPage": 687,
+   "endPage": 688
+  },
+  {
+   "name": "RUTA 60",
+   "startPage": 689,
+   "endPage": 690
+  },
+  {
+   "name": "SACANTA",
+   "startPage": 691,
+   "endPage": 692
+  },
+  {
+   "name": "SAGRADA FAMILIA",
+   "startPage": 693,
+   "endPage": 694
+  },
+  {
+   "name": "SAIRA",
+   "startPage": 695,
+   "endPage": 696
+  },
+  {
+   "name": "SAN AGUSTÍN",
+   "startPage": 697,
+   "endPage": 698
+  },
+  {
+   "name": "SAN AMBROSIO",
+   "startPage": 699,
+   "endPage": 700
+  },
+  {
+   "name": "SAN ANTONIO DE LITÍN",
+   "startPage": 701,
+   "endPage": 702
+  },
+  {
+   "name": "SAN BARTOLOMÉ",
+   "startPage": 703,
+   "endPage": 704
+  },
+  {
+   "name": "SAN BASILIO",
+   "startPage": 705,
+   "endPage": 706
+  },
+  {
+   "name": "SAN CARLOS",
+   "startPage": 707,
+   "endPage": 708
+  },
+  {
+   "name": "SAN FRANCISCO",
+   "startPage": 709,
+   "endPage": 710
+  },
+  {
+   "name": "SAN FRANCISCO DE ASÍS",
+   "startPage": 711,
+   "endPage": 712
+  },
+  {
+   "name": "SAN FRANCISCO DEL CHAÑAR I",
+   "startPage": 713,
+   "endPage": 714
+  },
+  {
+   "name": "SAN FRANCISCO DEL CHAÑAR II",
+   "startPage": 715,
+   "endPage": 716
+  },
+  {
+   "name": "SAN FRANCISCO DEL CHAÑAR III",
+   "startPage": 717,
+   "endPage": 718
+  },
+  {
+   "name": "SAN IGNACIO I",
+   "startPage": 719,
+   "endPage": 720
+  },
+  {
+   "name": "SAN IGNACIO II",
+   "startPage": 721,
+   "endPage": 722
+  },
+  {
+   "name": "SAN IGNACIO III",
+   "startPage": 723,
+   "endPage": 724
+  },
+  {
+   "name": "SAN IGNACIO IV",
+   "startPage": 725,
+   "endPage": 726
+  },
+  {
+   "name": "SAN JOSÉ",
+   "startPage": 727,
+   "endPage": 728
+  },
+  {
+   "name": "SAN JOSÉ DE LAS SALINAS",
+   "startPage": 729,
+   "endPage": 730
+  },
+  {
+   "name": "SAN JULIÁN",
+   "startPage": 731,
+   "endPage": 732
+  },
+  {
+   "name": "SAN PABLO",
+   "startPage": 733,
+   "endPage": 734
+  },
+  {
+   "name": "SAN PANCRACIO",
+   "startPage": 735,
+   "endPage": 736
+  },
+  {
+   "name": "SAN PEDRO",
+   "startPage": 737,
+   "endPage": 738
+  },
+  {
+   "name": "SAN PEDRO DE TOYOS",
+   "startPage": 739,
+   "endPage": 740
+  },
+  {
+   "name": "SAN VICENTE",
+   "startPage": 741,
+   "endPage": 742
+  },
+  {
+   "name": "SANTA CATALINA",
+   "startPage": 743,
+   "endPage": 744
+  },
+  {
+   "name": "SANTA CRUZ",
+   "startPage": 745,
+   "endPage": 746
+  },
+  {
+   "name": "SANTA ELENA",
+   "startPage": 747,
+   "endPage": 748
+  },
+  {
+   "name": "SANTA EUFEMIA",
+   "startPage": 749,
+   "endPage": 750
+  },
+  {
+   "name": "SANTA JUSTA",
+   "startPage": 751,
+   "endPage": 752
+  },
+  {
+   "name": "SANTA ROSA I",
+   "startPage": 753,
+   "endPage": 754
+  },
+  {
+   "name": "SANTA ROSA II",
+   "startPage": 755,
+   "endPage": 756
+  },
+  {
+   "name": "SANTA ROSA III",
+   "startPage": 757,
+   "endPage": 758
+  },
+  {
+   "name": "SANTO DOMINGO",
+   "startPage": 759,
+   "endPage": 760
+  },
+  {
+   "name": "SARITA",
+   "startPage": 761,
+   "endPage": 762
+  },
+  {
+   "name": "SCHIFFNER",
+   "startPage": 763,
+   "endPage": 765
+  },
+  {
+   "name": "SEBASTIÁN ELCANO",
+   "startPage": 766,
+   "endPage": 767
+  },
+  {
+   "name": "SENDERO LUJÁN I",
+   "startPage": 768,
+   "endPage": 769
+  },
+  {
+   "name": "SENDERO LUJÁN II",
+   "startPage": 770,
+   "endPage": 771
+  },
+  {
+   "name": "SILVIO PELLICO",
+   "startPage": 772,
+   "endPage": 773
+  },
+  {
+   "name": "SINSACATE",
+   "startPage": 774,
+   "endPage": 775
+  },
+  {
+   "name": "SOCONCHO",
+   "startPage": 776,
+   "endPage": 777
+  },
+  {
+   "name": "SOTO",
+   "startPage": 778,
+   "endPage": 779
+  },
+  {
+   "name": "SURIPOZO",
+   "startPage": 780,
+   "endPage": 781
+  },
+  {
+   "name": "TANCACHA",
+   "startPage": 782,
+   "endPage": 783
+  },
+  {
+   "name": "TERCERA USINA",
+   "startPage": 784,
+   "endPage": 785
+  },
+  {
+   "name": "TERRAZAS DEL RÍO PINTO",
+   "startPage": 786,
+   "endPage": 787
+  },
+  {
+   "name": "TICINO",
+   "startPage": 788,
+   "endPage": 789
+  },
+  {
+   "name": "TOTORAL",
+   "startPage": 790,
+   "endPage": 791
+  },
+  {
+   "name": "TRONCO POZO",
+   "startPage": 792,
+   "endPage": 793
+  },
+  {
+   "name": "VICENTE AGÜERO",
+   "startPage": 794,
+   "endPage": 795
+  },
+  {
+   "name": "VICUÑA MACKENNA",
+   "startPage": 796,
+   "endPage": 797
+  },
+  {
+   "name": "VILA",
+   "startPage": 798,
+   "endPage": 799
+  },
+  {
+   "name": "VILLA DEL ROSARIO",
+   "startPage": 800,
+   "endPage": 802
+  },
+  {
+   "name": "VILLA FRANCISCA",
+   "startPage": 803,
+   "endPage": 804
+  },
+  {
+   "name": "VILLA GENERAL BELGRANO",
+   "startPage": 805,
+   "endPage": 806
+  },
+  {
+   "name": "VILLA HUIDOBRO",
+   "startPage": 807,
+   "endPage": 808
+  },
+  {
+   "name": "VILLA MARÍA",
+   "startPage": 809,
+   "endPage": 810
+  },
+  {
+   "name": "VILLA QUILINO",
+   "startPage": 811,
+   "endPage": 812
+  },
+  {
+   "name": "VILLA ROSSI",
+   "startPage": 813,
+   "endPage": 814
+  },
+  {
+   "name": "VILLA SAN ESTEBAN",
+   "startPage": 815,
+   "endPage": 816
+  },
+  {
+   "name": "VILLA VALERIA",
+   "startPage": 817,
+   "endPage": 818
+  },
+  {
+   "name": "VILLADA",
+   "startPage": 819,
+   "endPage": 820
+  },
+  {
+   "name": "VIRÁ PITÁ",
+   "startPage": 821,
+   "endPage": 822
+  },
+  {
+   "name": "WENCESLAO ESCALANTE",
+   "startPage": 823,
+   "endPage": 824
+  },
+  {
+   "name": "YACANTO I",
+   "startPage": 825,
+   "endPage": 826
+  },
+  {
+   "name": "YACANTO II",
+   "startPage": 827,
+   "endPage": 828
+  },
+  {
+   "name": "YACANTO III",
+   "startPage": 829,
+   "endPage": 830
+  },
+  {
+   "name": "YACANTO IV",
+   "startPage": 831,
+   "endPage": 832
+  }
+ ]
+}

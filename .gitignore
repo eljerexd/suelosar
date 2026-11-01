@@ -69,6 +69,8 @@ app.*.map.json
 node_modules/
 # Diagnostic logcat captures (never part of the repo).
 suelosar_diag.txt
-
-# Local provincial GIS sources and generated pipeline data.
-/data/provinces/
+# SuelosAR Data Pipeline: per-province data, intermediates and outputs
+# (only province.yaml is versioned).
+/data/provinces/*/source/
+/data/provinces/*/work/
+/data/provinces/*/output/

@@ -206,7 +206,7 @@ class PdftotextExtractor implements PdfTextExtractor {
       'UTF-8',
       pdfFile.path,
       '-',
-    ]);
+    ], stdoutEncoding: utf8);
     if (result.exitCode != 0) {
       throw StateError(
         'Failed to extract text from ${pdfFile.path}: ${result.stderr}',

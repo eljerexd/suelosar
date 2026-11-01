@@ -47,6 +47,7 @@ void main() {
     'soil maps': SoilMapsScreen(
       soilMapsLoader: () async => const <SoilMap>[],
       santaFeCardsLoader: () async => const <SoilCard>[],
+      cordobaCardsLoader: () async => const <SoilCard>[],
     ),
     'personal markers': const PersonalMarkersScreen(),
   }.entries) {
@@ -152,6 +153,7 @@ void main() {
             // inset layout, not catalog content, and doesn't need a real
             // `rootBundle` read.
             santaFeCardsLoader: () async => const <SoilCard>[],
+            cordobaCardsLoader: () async => const <SoilCard>[],
           ),
         ),
       );
@@ -212,6 +214,7 @@ void main() {
               SoilMap(name: 'Azul', pdf: 'Azul.pdf'),
             ],
             santaFeCardsLoader: () async => const <SoilCard>[],
+            cordobaCardsLoader: () async => const <SoilCard>[],
           ),
         ),
       );

@@ -89,16 +89,22 @@ else
   SOURCE_SHAPEFILE="${SHAPEFILES[0]}"
 fi
 
-[[ -f "${SOURCE_SHAPEFILE}" ]] || fail "Shapefile not found: ${SOURCE_SHAPEFILE}"
+[[ -f "${SOURCE_SHAPEFILE}" ]] || fail "Source file not found: ${SOURCE_SHAPEFILE}"
 
-SOURCE_BASE="${SOURCE_SHAPEFILE%.*}"
-find_sidecar "${SOURCE_BASE}" dbf >/dev/null \
-  || fail "Required .dbf sidecar is missing."
-find_sidecar "${SOURCE_BASE}" shx >/dev/null \
-  || fail "Required .shx sidecar is missing."
-if [[ -z "${SOURCE_SRS}" ]]; then
-  find_sidecar "${SOURCE_BASE}" prj >/dev/null \
-    || fail "A .prj sidecar or SOURCE_SRS is required."
+# SOURCE_SHAPEFILE keeps its name for compatibility, but any vector file
+# GDAL can read is accepted (the first step below converts it to
+# FlatGeobuf anyway). Only a shapefile needs sidecars; formats such as
+# GeoJSON carry their own coordinate system.
+if [[ "${SOURCE_SHAPEFILE,,}" == *.shp ]]; then
+  SOURCE_BASE="${SOURCE_SHAPEFILE%.*}"
+  find_sidecar "${SOURCE_BASE}" dbf >/dev/null \
+    || fail "Required .dbf sidecar is missing."
+  find_sidecar "${SOURCE_BASE}" shx >/dev/null \
+    || fail "Required .shx sidecar is missing."
+  if [[ -z "${SOURCE_SRS}" ]]; then
+    find_sidecar "${SOURCE_BASE}" prj >/dev/null \
+      || fail "A .prj sidecar or SOURCE_SRS is required."
+  fi
 fi
 
 WORK_DIR="$(mktemp -d /tmp/suelosar-gis.XXXXXX)"

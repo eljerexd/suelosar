@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:dart_polylabel2/dart_polylabel2.dart' as dart_polylabel2;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -207,6 +208,26 @@ class _GisMapScreenState extends State<GisMapScreen>
       ValueNotifier<GisFeature?>(null);
   final ValueNotifier<_DesktopPanelSection?> _desktopPanelSectionState =
       ValueNotifier<_DesktopPanelSection?>(null);
+  /// Polygons cleared to draw their `SIMBC` right now, decided for the whole
+  /// viewport by [_recomputeUnitSymbolLabels] rather than per tile.
+  final ValueNotifier<Set<_RenderedGisPolygon>> _acceptedUnitSymbols =
+      ValueNotifier(const <_RenderedGisPolygon>{});
+  int? _lastUnitSymbolZoom;
+  LatLng? _lastUnitSymbolCenter;
+
+  /// The zoom bucket [_recomputeUnitSymbolLabels] is currently using for its
+  /// visibility gate and density (Parte 26) — an integer zoom, but sticky
+  /// across the exact boundary: see [_resolveUnitSymbolZoomBucket].
+  int? _unitSymbolZoomBucket;
+
+  /// The zoom bucket and selected feature [_acceptedUnitSymbols] was last
+  /// fully rebuilt for (Parte 27). A pan that changes neither only adds
+  /// candidates on top of what's already accepted — it never re-decides the
+  /// existing ones, so panning feels like sliding a printed map rather than
+  /// a label layer recomputing itself.
+  int? _acceptedUnitSymbolsZoomBucket;
+  String? _acceptedUnitSymbolsSelectedFeatureId;
+
   Map<GisTileCoordinates, _RenderedGisTile> _visibleTiles =
       const <GisTileCoordinates, _RenderedGisTile>{};
   Set<GisTileCoordinates> _visibleTileCoordinates =
@@ -217,6 +238,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   AnimationController? _northRotationAnimation;
   StreamSubscription<GisLocation>? _locationSubscription;
   Timer? _tileLoadDebounce;
+  Timer? _unitSymbolRecomputeDebounce;
   GisArchiveInfo _archiveInfo = _defaultArchiveInfo;
   bool _isMapReady = false;
   bool _isLocating = false;
@@ -608,6 +630,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       GisMapOcclusionObserver.instance.unregister(registeredRoute);
     }
     _tileLoadDebounce?.cancel();
+    _unitSymbolRecomputeDebounce?.cancel();
     _transientMapHintTimer?.cancel();
     _transientMapHintLinkRecognizer?.dispose();
     unawaited(_locationSubscription?.cancel());
@@ -617,6 +640,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       tile.dispose();
     }
     _visibleTileSnapshot.dispose();
+    _acceptedUnitSymbols.dispose();
     _overlayState.dispose();
     _mapViewportState.dispose();
     _parcelRevisionState.dispose();
@@ -3684,6 +3708,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
 
     _mapViewportState.value = nextState;
+    _scheduleUnitSymbolRecompute(camera);
   }
 
   void _animateMapToNorth() {
@@ -3800,6 +3825,355 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
   }
 
+  static const int _unitSymbolMinimumZoom = 10;
+
+  /// Safety ceiling only (Parte 4): density is now decided by real collisions
+  /// instead of a per-zoom quota, which was hiding symbols that had room. It
+  /// exists so a pathological viewport can't run the pass over tens of
+  /// thousands of candidates.
+  static const int _unitSymbolCeiling = 1500;
+
+  /// Minimum on-screen area (px²) a unit must still occupy inside the
+  /// viewport to be worth labelling, per integer zoom. This — not a label
+  /// counter — is what makes density grow with zoom: at zoom 10 only the
+  /// substantial units annotate themselves, and at zoom 13+ (Parte 28) this
+  /// stops being a meaningful filter at all — whether a unit gets its symbol
+  /// is decided by the real checks that follow (does the text fit its own
+  /// bounding box, does its polylabel anchor land on screen, does it collide
+  /// with an already-accepted label), not by how much area it covers.
+  static double _unitSymbolMinimumVisibleArea(int zoom) {
+    return switch (zoom) {
+      10 => 1400,
+      11 => 700,
+      12 => 320,
+      _ => 0,
+    };
+  }
+
+  /// Breathing room around an accepted label. Small (Parte 4): labels may sit
+  /// close together, they just may not overlap.
+  static const double _unitSymbolLabelPadding = 1;
+
+  /// How far below an integer zoom the camera must drop before
+  /// [_resolveUnitSymbolZoomBucket] treats it as having left that zoom's
+  /// bucket (Parte 26). Moving *up* into a bucket still happens exactly at
+  /// the whole zoom — only downward drift is damped, which is all that's
+  /// needed to stop labels flickering while the camera sits right on an
+  /// integer zoom (e.g. 10.0) and drifts by hundredths during a gesture.
+  static const double _unitSymbolZoomHysteresis = 0.4;
+
+  /// The zoom bucket [_recomputeUnitSymbolLabels] should use right now for
+  /// its visibility gate ([_unitSymbolMinimumZoom]) and its density
+  /// ([_unitSymbolMinimumVisibleArea]) — [rawZoom]'s floor, except a downward
+  /// crossing only commits once the camera is [_unitSymbolZoomHysteresis]
+  /// below the current bucket, not merely below its integer boundary. So
+  /// entering bucket 10 still happens at zoom >= 10.0, but leaving it only
+  /// happens below zoom 9.6, matching how a hard integer cut would flicker
+  /// right at 10.0 with no such band.
+  int _resolveUnitSymbolZoomBucket(double rawZoom) {
+    final flooredZoom = rawZoom.floor();
+    final previous = _unitSymbolZoomBucket;
+    if (previous == null) {
+      return _unitSymbolZoomBucket = flooredZoom;
+    }
+    var bucket = previous;
+    while (rawZoom >= bucket + 1) {
+      bucket++;
+    }
+    while (bucket > flooredZoom && rawZoom < bucket - _unitSymbolZoomHysteresis) {
+      bucket--;
+    }
+    return _unitSymbolZoomBucket = bucket;
+  }
+
+  /// How much two label boxes must actually share before one is dropped, as a
+  /// fraction of the smaller box. Mere proximity — or a clipped corner — is
+  /// not a collision.
+  static const double _unitSymbolMaxOverlapRatio = 0.2;
+
+  /// How much narrower than its unit a symbol must be to be drawn inside it.
+  ///
+  /// Parte 5: the symbols are painted by [_UnitSymbolPainter] instead of by
+  /// flutter_map's own label pass, whose hardcoded
+  /// `_buildLabelTextPainter(padding: 20)` refused any label whose polygon
+  /// was not 20 px wider than the text — that single rule, not the collision
+  /// logic, was blanking most of the small and medium units. 2 px is enough
+  /// to keep the glyphs off the unit's own border.
+  static const double _unitSymbolFitPadding = 2;
+
+  /// Recomputes which polygons may show their symbol, for the whole viewport
+  /// at once.
+  ///
+  /// This is the piece flutter_map cannot do for us: labels are drawn by a
+  /// per-tile `PolygonLayer`, so its built-in "does the label fit its own
+  /// polygon" check never sees the neighbouring tiles' labels. Instead of
+  /// adding a second cartographic layer, the decision of *which* polygons
+  /// carry a label is made here, globally, and the tiles keep doing the
+  /// drawing — the symbols stay part of the soil layer's own representation.
+  ///
+  /// Two modes (Parte 27), decided by what changed since the set currently
+  /// in [_acceptedUnitSymbols] was built:
+  /// - Zoom bucket or selection changed → full rebuild, exactly as before:
+  ///   every candidate competes from scratch.
+  /// - Pure pan (same bucket, same selection) → incremental: every already
+  ///   accepted label is kept unconditionally (existing labels outrank new
+  ///   ones), and only genuinely new candidates from newly-visible geometry
+  ///   compete for the screen space those existing labels don't already
+  ///   occupy. A kept label that panned off-screen stays in the set — the
+  ///   painter already clips it — so panning back re-shows it at the same
+  ///   anchor instead of re-deciding it.
+  void _recomputeUnitSymbolLabels() {
+    final engine = _mapEngine;
+    if (engine is! FlutterMapEngine) return;
+    final camera = engine.controller.camera;
+    if (!_isFiniteLatLng(camera.center) || !camera.zoom.isFinite) return;
+
+    final zoom = _resolveUnitSymbolZoomBucket(camera.zoom);
+    if (zoom < _unitSymbolMinimumZoom) {
+      _acceptedUnitSymbolsZoomBucket = zoom;
+      _acceptedUnitSymbolsSelectedFeatureId = _selectedFeatureId;
+      _setAcceptedUnitSymbols(const <_RenderedGisPolygon>{});
+      return;
+    }
+
+    final minimumVisibleArea = _unitSymbolMinimumVisibleArea(zoom);
+    final viewport = Offset.zero & camera.size;
+    final visibleBounds = camera.visibleBounds;
+
+    final fullRebuild =
+        zoom != _acceptedUnitSymbolsZoomBucket ||
+        _selectedFeatureId != _acceptedUnitSymbolsSelectedFeatureId;
+    final kept = fullRebuild
+        ? const <_RenderedGisPolygon>{}
+        : _acceptedUnitSymbols.value;
+
+    // Kept labels seed both the accepted set and the occupied-space list —
+    // new candidates compete only for what's left. Off-screen kept labels
+    // don't reserve space: they can't visually collide with anything.
+    // Computed *before* the candidate loop (Parte 36) because it also
+    // decides which features are still allowed to compete: see [keptKeys].
+    //
+    // A kept polygon only counts as "on screen" if its own tile is still
+    // among _visibleTiles right now (Parte 37) — not just if its anchor's
+    // screen projection happens to land inside the viewport rect. A tile
+    // (and the polygon objects that came from it) can vanish from
+    // _visibleTiles independently of that projection staying "on screen":
+    // most commonly right after a zoom-bucket change, when the full
+    // rebuild that just ran picked its candidates from whatever
+    // _visibleTiles held at that exact instant — tiles for the *previous*
+    // zoom, or a transient empty map, while the real tiles for the new
+    // zoom were still loading. Those candidates get accepted and their
+    // zoom bucket recorded, but their tile never reappears once the
+    // correct tiles finish loading — nothing will ever paint them again
+    // (see the per-tile filter in the polygon-layer widget, which only
+    // draws labels for polygons its own tile still owns). Without this
+    // check they kept "reserving" their feature's label slot forever
+    // (`keptOnScreenKeys`, below) even though they were permanently
+    // invisible, silently blocking the real, currently-visible candidate
+    // for that same feature from ever being accepted.
+    final liveTilePolygons = <_RenderedGisPolygon>{
+      for (final tile in _visibleTiles.values) ...tile.polygons,
+    };
+    final accepted = <_RenderedGisPolygon>{...kept};
+    final occupied = <Rect>[];
+    final keptOnScreenKeys = <String>{};
+    for (final polygon in kept) {
+      if (!liveTilePolygons.contains(polygon)) continue;
+      final anchor = camera.latLngToScreenOffset(polygon.labelAnchor);
+      if (!_isFiniteOffset(anchor)) continue;
+      final size = _unitSymbolTextPainter(polygon.unitSymbol!).size;
+      final labelRect = Rect.fromCenter(
+        center: anchor,
+        width: size.width,
+        height: size.height,
+      );
+      if (labelRect.overlaps(viewport)) {
+        occupied.add(labelRect);
+        keptOnScreenKeys.add(polygon.unitSymbolKey);
+      }
+    }
+
+    // Only a feature whose kept fragment is actually visible *and
+    // paintable* right now keeps blocking new candidates (Parte 36/37). A
+    // feature can be made of several polygon fragments (split across
+    // tiles, or a real MultiPolygon); once panned to reveal a much bigger
+    // fragment of the very same feature, the small/edge fragment its
+    // label first attached to can be off-screen (or orphaned from a stale
+    // tile, see above) — invisible, but still logically "kept" so it
+    // reappears at the same anchor if panned back to a moment where its
+    // own tile is live again. Before Parte 36, an off-screen fragment
+    // still counted as "already labelled" and silently blocked the large,
+    // now-visible fragment from ever being considered, leaving a
+    // perfectly good, sizeable polygon permanently unlabelled. It no
+    // longer blocks — it stays in [accepted] (so it still reappears
+    // unchanged if the same conditions recur, keeping Parte 27/35's
+    // stability), it simply stops reserving its feature's label slot
+    // while nothing is actually drawn for it.
+    final keptKeys = keptOnScreenKeys;
+
+    // One entry per *feature*, so a unit split across tiles competes once —
+    // keeping whichever piece shows more of itself on screen. Already-kept
+    // features whose fragment is currently visible are skipped: they don't
+    // re-enter the competition.
+    final byFeature = <String, _UnitSymbolCandidate>{};
+    for (final tile in _visibleTiles.values) {
+      for (final polygon in tile.polygons) {
+        if (polygon.unitSymbol == null) continue;
+        if (keptKeys.contains(polygon.unitSymbolKey)) continue;
+        if (!polygon.bounds.intersects(visibleBounds)) continue;
+
+        final topLeft = camera.latLngToScreenOffset(
+          LatLng(polygon.bounds.north, polygon.bounds.west),
+        );
+        final bottomRight = camera.latLngToScreenOffset(
+          LatLng(polygon.bounds.south, polygon.bounds.east),
+        );
+        if (!_isFiniteOffset(topLeft) || !_isFiniteOffset(bottomRight)) {
+          continue;
+        }
+
+        final onScreen = Rect.fromPoints(topLeft, bottomRight);
+        final visible = onScreen.intersect(viewport);
+        if (visible.isEmpty) continue;
+        final visibleArea = visible.width * visible.height;
+        if (visibleArea < minimumVisibleArea) continue;
+
+        final isSelected = polygon.feature.id == _selectedFeatureId;
+        // Ranking only decides who gets asked first; it must not amount to a
+        // veto on small units. The square root compresses the scale so a unit
+        // ten times smaller ranks ~3x lower rather than 10x, and the
+        // fully-visible bonus is a nudge (1.08), not a tier. The selected
+        // unit still outranks everything.
+        final priority = isSelected
+            ? double.infinity
+            : math.sqrt(visibleArea) * (visible == onScreen ? 1.08 : 1);
+
+        final existing = byFeature[polygon.unitSymbolKey];
+        if (existing == null || priority > existing.priority) {
+          byFeature[polygon.unitSymbolKey] = _UnitSymbolCandidate(
+            polygon: polygon,
+            priority: priority,
+            onScreen: onScreen,
+          );
+        }
+      }
+    }
+
+    final candidates = byFeature.values.toList(growable: false)
+      ..sort((first, second) => second.priority.compareTo(first.priority));
+
+    for (final candidate in candidates) {
+      if (accepted.length >= _unitSymbolCeiling &&
+          !candidate.priority.isInfinite) {
+        break;
+      }
+
+      // Real measured glyphs, not an estimate: the same cached TextPainter
+      // the painter will draw with, so the box collided against here is
+      // exactly the ink that lands on the canvas.
+      final size = _unitSymbolTextPainter(candidate.polygon.unitSymbol!).size;
+
+      final anchor = camera.latLngToScreenOffset(candidate.polygon.labelAnchor);
+      if (!_isFiniteOffset(anchor)) continue;
+      final labelRect = Rect.fromCenter(
+        center: anchor,
+        width: size.width,
+        height: size.height,
+      );
+      if (!labelRect.overlaps(viewport)) continue;
+
+      // Parte 33: fits against the real polygon geometry (outer ring minus
+      // holes, projected to screen), not a proxy — see
+      // [_RenderedGisPolygon.labelFitsInsidePolygon].
+      if (!candidate.polygon.labelFitsInsidePolygon(
+        camera: camera,
+        textSize: size,
+        padding: _unitSymbolFitPadding,
+      )) {
+        continue;
+      }
+
+      // The selected unit always gets to show its symbol, and still reserves
+      // its box so nothing is drawn on top of it. Existing kept labels are
+      // never evicted here — they were seeded into [occupied] above, so a
+      // new candidate simply loses the collision instead of displacing one.
+      if (!candidate.priority.isInfinite &&
+          occupied.any(
+            (bounds) => _overlapsSignificantly(
+              bounds.inflate(_unitSymbolLabelPadding),
+              labelRect,
+            ),
+          )) {
+        continue;
+      }
+
+      occupied.add(labelRect);
+      accepted.add(candidate.polygon);
+    }
+
+    _acceptedUnitSymbolsZoomBucket = zoom;
+    _acceptedUnitSymbolsSelectedFeatureId = _selectedFeatureId;
+
+    _setAcceptedUnitSymbols(accepted);
+  }
+
+  void _setAcceptedUnitSymbols(Set<_RenderedGisPolygon> accepted) {
+    final current = _acceptedUnitSymbols.value;
+    if (current.length == accepted.length && current.containsAll(accepted)) {
+      return;
+    }
+    _acceptedUnitSymbols.value = Set<_RenderedGisPolygon>.unmodifiable(accepted);
+  }
+
+  /// Skips the *scheduling* while the camera has barely moved: without this
+  /// a pan would re-arm the debounce on every position callback for no
+  /// reason (harmless, but pointless). The actual flicker fix is in
+  /// [_scheduleUnitSymbolLabelRecompute] — see its doc.
+  void _scheduleUnitSymbolRecompute(SoilMapCameraState camera) {
+    final zoom = camera.zoom.floor();
+    final previousCenter = _lastUnitSymbolCenter;
+    if (_lastUnitSymbolZoom == zoom && previousCenter != null) {
+      final movedX = (camera.center.longitude - previousCenter.longitude).abs();
+      final movedY = (camera.center.latitude - previousCenter.latitude).abs();
+      // ~a quarter of a tile at this zoom, in degrees.
+      final threshold = 90 / math.pow(2, zoom);
+      if (movedX < threshold && movedY < threshold) return;
+    }
+    _lastUnitSymbolZoom = zoom;
+    _lastUnitSymbolCenter = camera.center;
+    _scheduleUnitSymbolLabelRecompute();
+  }
+
+  /// Debounces the actual label recompute (Parte 34, widened in Parte 35)
+  /// behind a single shared timer, no matter which of the two triggers
+  /// asks for it: a camera move ([_scheduleUnitSymbolRecompute]) or new
+  /// tile data becoming available ([_publishVisibleTiles]).
+  ///
+  /// Parte 34 only debounced the camera-move trigger. That left a second,
+  /// un-debounced path: [_publishVisibleTiles] calls this unconditionally,
+  /// and during an active zoom gesture it runs *twice* per settle — once
+  /// immediately with whatever tiles are already cached (line ~3790, before
+  /// the newly-needed ones have loaded, so [_visibleTiles] is momentarily
+  /// incomplete for the new viewport) and once again after they finish
+  /// loading (line ~3811). Both calls reached [_recomputeUnitSymbolLabels]
+  /// directly, so a label set computed against that momentarily-incomplete
+  /// geometry would replace the previous, valid one — then get replaced
+  /// again once the real tiles arrived. That was the remaining flicker:
+  /// Parte 34's debounce never saw either of these two calls, since they
+  /// don't go through [_scheduleUnitSymbolRecompute] at all.
+  ///
+  /// Funnelling every trigger through the same timer means the label set
+  /// shown while zoom/pan/tile-loading is still in progress is simply
+  /// whatever was already accepted — unchanged — and exactly one recompute
+  /// runs, after camera movement *and* tile loading have both settled.
+  void _scheduleUnitSymbolLabelRecompute() {
+    _unitSymbolRecomputeDebounce?.cancel();
+    _unitSymbolRecomputeDebounce = Timer(const Duration(milliseconds: 150), () {
+      if (!mounted) return;
+      _recomputeUnitSymbolLabels();
+    });
+  }
+
   void _publishVisibleTiles(
     List<GisTileCoordinates> coordinates,
     LatLngBounds viewport,
@@ -3830,6 +4204,14 @@ class _GisMapScreenState extends State<GisMapScreen>
     if (!_visibleTileSnapshot.value.hasSameWidgets(snapshot)) {
       _visibleTileSnapshot.value = snapshot;
     }
+    // New geometry in view changes the candidate set, so this always
+    // schedules a recompute — the movement guard in
+    // [_scheduleUnitSymbolRecompute] only applies to camera moves. Routed
+    // through the same debounce (Parte 35): this can fire mid-gesture with
+    // [_visibleTiles] only partially caught up to the new viewport, and
+    // recomputing immediately against that incomplete state is exactly
+    // what caused labels to flicker.
+    _scheduleUnitSymbolLabelRecompute();
   }
 
   void _updateOverlay({required bool isLoading, String? error}) {
@@ -3867,6 +4249,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       coordinates: coordinates,
       polygons: polygons,
       renderMetrics: _renderMetrics,
+      acceptedUnitSymbols: _acceptedUnitSymbols,
     );
     tile.updateSelection(_selectedFeatureId);
     final replacedTile = _renderedTileCache.remove(coordinates);
@@ -4585,6 +4968,19 @@ class _GisMapScreenState extends State<GisMapScreen>
     return List<_RenderedGisPolygon>.unmodifiable(polygons);
   }
 
+  /// The map-unit symbol to label a polygon with, or null when it must stay
+  /// unlabelled. Resolve province from the feature's own coverage because all
+  /// coverages are live together and selected per feature by geography.
+  String? _unitSymbolLabel(GisFeature feature) {
+    final coverage = _coverageForFeature(feature);
+    if (coverage.id != ProvinceConfig.cordoba.id ||
+        !coverage.config.showPolygonUnitSymbols) {
+      return null;
+    }
+    final symbol = feature.properties['SIMBC']?.toString().trim();
+    return symbol == null || symbol.isEmpty ? null : symbol;
+  }
+
   _RenderedGisPolygon? _buildRenderedPolygon(
     GisFeature feature,
     Object? coordinates,
@@ -4608,6 +5004,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       feature: feature,
       outerRing: outerRing,
       holes: holes,
+      unitSymbol: _unitSymbolLabel(feature),
     );
   }
 
@@ -5190,6 +5587,9 @@ class _GisMapScreenState extends State<GisMapScreen>
       }
     }
     _mapEngine.setSelectedSoilFeature(feature.id);
+    // The selected unit outranks every other candidate, so the viewport-wide
+    // pass has to run again for it to claim its symbol.
+    _recomputeUnitSymbolLabels();
   }
 
   Future<void> _showFeatureAttributes(GisFeature feature) {
@@ -11607,6 +12007,7 @@ class _RenderedGisTile {
     required this.coordinates,
     required this.polygons,
     required this.renderMetrics,
+    required this.acceptedUnitSymbols,
   }) : featureIds = Set<String>.unmodifiable(
          polygons.map((polygon) => polygon.feature.id),
        );
@@ -11614,6 +12015,10 @@ class _RenderedGisTile {
   final GisTileCoordinates coordinates;
   final List<_RenderedGisPolygon> polygons;
   final GisRenderMetrics renderMetrics;
+
+  /// The screen's viewport-wide decision about which polygons may show their
+  /// symbol — read, never written, by this tile's layer.
+  final ValueListenable<Set<_RenderedGisPolygon>> acceptedUnitSymbols;
   final Set<String> featureIds;
   final ValueNotifier<String?> selectedFeatureId = ValueNotifier(null);
 
@@ -11660,12 +12065,68 @@ class _RenderedGisPolygon {
     required this.feature,
     required this.outerRing,
     required this.holes,
+    this.unitSymbol,
   }) : bounds = _GisBounds.fromPoints(outerRing);
 
   final GisFeature feature;
   final List<LatLng> outerRing;
   final List<List<LatLng>> holes;
   final _GisBounds bounds;
+
+  /// This unit's `SIMBC`, already validated by `_unitSymbolLabel`, or null
+  /// when the polygon must stay unlabelled. Resolved once when the tile is
+  /// built rather than per frame.
+  final String? unitSymbol;
+
+  /// Identity of the *feature* this polygon belongs to, for the viewport-wide
+  /// label pass: `OBJECTID` when the dataset carries one (Córdoba does),
+  /// falling back to the feature id. One feature split across several tiles
+  /// shares this key, which is how it ends up labelled only once.
+  late final String unitSymbolKey =
+      feature.properties['OBJECTID']?.toString().trim().isNotEmpty ?? false
+      ? 'oid:${feature.properties['OBJECTID']}'
+      : 'fid:${feature.id}';
+
+  /// Same precision flutter_map's own [PolygonLabelPlacementCalculator.
+  /// polylabel] defaults to — calibrated for degree-space input (a plain
+  /// `1.0` default would be almost the size of a small unit).
+  static const double _labelPlacementPrecision = 0.0001;
+
+  LatLng? _labelAnchor;
+
+  /// Where this polygon's symbol sits (pole of inaccessibility) — computed
+  /// at most once per polygon, and only for candidates that already
+  /// survived the cheap viewport/size filters, since polylabel is the
+  /// expensive part. The very same point is then handed to the rendered
+  /// [Polygon], so the box used for collision is exactly the box that gets
+  /// drawn.
+  ///
+  /// Calls `dart_polylabel2.polylabel()` directly (Parte 32) instead of
+  /// through flutter_map's [PolygonLabelPlacementCalculator.polylabel],
+  /// which never looks at [holes] at all — so an anchor could in principle
+  /// land inside one; this passes them. (The wrapper also computes a
+  /// `distance` — the radius of the largest circle centred on the anchor —
+  /// which Parte 32 tried using as the fit-check's basis and reverted: for
+  /// any non-circular shape, i.e. nearly every real map unit, that radius
+  /// is bounded by whichever direction is narrowest near the anchor, so it
+  /// rejected labels even more aggressively than the bounding-box check it
+  /// was meant to replace. Parte 33's [labelFitsInsidePolygon] replaces
+  /// that whole line of proxies with a direct check against the real
+  /// geometry instead, so `distance` is no longer kept at all.)
+  LatLng get labelAnchor => _labelAnchor ??= _computeLabelAnchor();
+
+  LatLng _computeLabelAnchor() {
+    final result = dart_polylabel2.polylabel(
+      [
+        [for (final p in outerRing) (x: p.latitude, y: p.longitude)],
+        for (final hole in holes)
+          [for (final p in hole) (x: p.latitude, y: p.longitude)],
+      ],
+      precision: _labelPlacementPrecision,
+    );
+    return LatLng(result.point.x, result.point.y);
+  }
+
   _GisPolygonStyle? _cachedStyle;
   Polygon<GisFeature>? _normalPolygon;
   Polygon<GisFeature>? _selectedPolygon;
@@ -11686,6 +12147,145 @@ class _RenderedGisPolygon {
       return false;
     }
     return !holes.any((hole) => _containsPoint(hole, point));
+  }
+
+  /// Whether a label rectangle — [textSize] centred on [labelAnchor],
+  /// inflated by [padding] on every side — fits entirely inside this
+  /// polygon (outer ring, minus every hole), checked directly against the
+  /// real drawn geometry projected to screen space via [camera] (Parte 33).
+  /// Replaces the bounding-box/scanline/polylabel-radius proxies tried
+  /// before it (all either too loose or too strict for the irregular
+  /// shapes soil units actually have) with a geometric test against the
+  /// same points this polygon renders with.
+  ///
+  /// Two passes:
+  /// 1. The rectangle's 4 corners + 4 edge midpoints must each land inside
+  ///    the polygon — cheap (one ray-cast per point against rings already
+  ///    projected once), and correct on its own for the overwhelming
+  ///    majority of map-unit shapes.
+  /// 2. Only when every sample point already passed: no polygon edge
+  ///    (outer ring or any hole) may cross a rectangle edge either — a
+  ///    concave polygon's boundary can dip between two sample points
+  ///    without touching either one, which pass 1 alone would miss.
+  bool labelFitsInsidePolygon({
+    required MapCamera camera,
+    required Size textSize,
+    required double padding,
+  }) {
+    final center = camera.latLngToScreenOffset(labelAnchor);
+    if (!_isFiniteOffset(center)) return false;
+
+    final screenOuter = _projectRingToScreen(camera, outerRing);
+    if (screenOuter == null) return false;
+    final screenHoles = <List<Offset>>[];
+    for (final hole in holes) {
+      final projected = _projectRingToScreen(camera, hole);
+      if (projected == null) return false;
+      screenHoles.add(projected);
+    }
+
+    final rect = Rect.fromCenter(
+      center: center,
+      width: textSize.width + padding * 2,
+      height: textSize.height + padding * 2,
+    );
+    final samplePoints = [
+      rect.topLeft,
+      rect.topCenter,
+      rect.topRight,
+      Offset(rect.left, rect.center.dy),
+      Offset(rect.right, rect.center.dy),
+      rect.bottomLeft,
+      rect.bottomCenter,
+      rect.bottomRight,
+    ];
+    for (final point in samplePoints) {
+      if (!_screenPointInsidePolygon(point, screenOuter, screenHoles)) {
+        return false;
+      }
+    }
+
+    for (final edge in _rectEdges(rect)) {
+      if (_ringCrossesSegment(screenOuter, edge)) return false;
+      for (final hole in screenHoles) {
+        if (_ringCrossesSegment(hole, edge)) return false;
+      }
+    }
+    return true;
+  }
+
+  static List<Offset>? _projectRingToScreen(
+    MapCamera camera,
+    List<LatLng> ring,
+  ) {
+    final points = <Offset>[];
+    for (final vertex in ring) {
+      final projected = camera.latLngToScreenOffset(vertex);
+      if (!_isFiniteOffset(projected)) return null;
+      points.add(projected);
+    }
+    return points;
+  }
+
+  static bool _screenPointInsidePolygon(
+    Offset point,
+    List<Offset> outer,
+    List<List<Offset>> holes,
+  ) {
+    if (!_screenRingContains(outer, point)) return false;
+    return !holes.any((hole) => _screenRingContains(hole, point));
+  }
+
+  static bool _screenRingContains(List<Offset> ring, Offset point) {
+    var inside = false;
+    for (
+      var current = 0, previous = ring.length - 1;
+      current < ring.length;
+      previous = current++
+    ) {
+      final a = ring[current];
+      final b = ring[previous];
+      final crosses = (a.dy > point.dy) != (b.dy > point.dy);
+      if (!crosses) continue;
+      final crossingX = (b.dx - a.dx) * (point.dy - a.dy) / (b.dy - a.dy) + a.dx;
+      if (point.dx < crossingX) inside = !inside;
+    }
+    return inside;
+  }
+
+  static List<(Offset, Offset)> _rectEdges(Rect rect) => [
+    (rect.topLeft, rect.topRight),
+    (rect.topRight, rect.bottomRight),
+    (rect.bottomRight, rect.bottomLeft),
+    (rect.bottomLeft, rect.topLeft),
+  ];
+
+  static bool _ringCrossesSegment(List<Offset> ring, (Offset, Offset) edge) {
+    for (
+      var current = 0, previous = ring.length - 1;
+      current < ring.length;
+      previous = current++
+    ) {
+      if (_segmentsIntersect(ring[previous], ring[current], edge.$1, edge.$2)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Strict-crossing test (touching endpoints/collinear overlap don't
+  /// count) — the sample-point pass above already handles boundary-adjacent
+  /// cases; this pass only needs to catch a boundary genuinely cutting
+  /// through the rectangle's interior.
+  static bool _segmentsIntersect(Offset p1, Offset p2, Offset p3, Offset p4) {
+    double orientation(Offset o, Offset a, Offset b) =>
+        (a.dx - o.dx) * (b.dy - o.dy) - (a.dy - o.dy) * (b.dx - o.dx);
+    final d1 = orientation(p3, p4, p1);
+    final d2 = orientation(p3, p4, p2);
+    final d3 = orientation(p1, p2, p3);
+    final d4 = orientation(p1, p2, p4);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
   }
 
   _PolygonIntersectionResult intersectParcel(List<_Triangle> parcelTriangles) {
@@ -11739,6 +12339,11 @@ class _RenderedGisPolygon {
       color: isSelected ? style.selectedFill : style.normalFill,
       borderColor: isSelected ? style.selectedBorder : style.normalBorder,
       borderStrokeWidth: isSelected ? 4 : 2,
+      // No `label` here: the symbols are drawn by [_UnitSymbolPainter] at
+      // [labelAnchor] (polylabel, so they land inside the unit even in the
+      // crescent/ring shapes soil units often have). flutter_map's own label
+      // pass would refuse any polygon narrower than the text + 20 px, which
+      // is what kept most small and medium units unlabelled.
     );
     if (isSelected) {
       _selectedPolygon = polygon;
@@ -12125,6 +12730,7 @@ class _GisPolygonStyle {
     required this.selectedFill,
     required this.normalBorder,
     required this.selectedBorder,
+    required this.unitSymbolLabel,
   });
 
   factory _GisPolygonStyle.fromColorScheme(ColorScheme colorScheme) {
@@ -12133,6 +12739,24 @@ class _GisPolygonStyle {
       selectedFill: colorScheme.tertiary.withValues(alpha: 0.55),
       normalBorder: colorScheme.primary,
       selectedBorder: colorScheme.tertiary,
+      // Reads like a cartographic annotation rather than UI text: full
+      // contrast on the glyphs, and a halo strong enough to carry them over a
+      // pale fill, a selected polygon's stronger fill, and the reference
+      // basemap's own lines — no box or bubble, which would fight the
+      // polygon it belongs to. Stacked shadows: a tight opaque one for the
+      // edge, a wider soft one to lift the symbol off busy backgrounds.
+      unitSymbolLabel: TextStyle(
+        fontSize: _unitSymbolFontSize,
+        height: 1,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.1,
+        color: colorScheme.onSurface,
+        shadows: const [
+          Shadow(color: Color(0xFFFFFFFF), blurRadius: 1.5),
+          Shadow(color: Color(0xF2FFFFFF), blurRadius: 3.5),
+          Shadow(color: Color(0xB3FFFFFF), blurRadius: 7),
+        ],
+      ),
     );
   }
 
@@ -12141,18 +12765,28 @@ class _GisPolygonStyle {
   final Color normalBorder;
   final Color selectedBorder;
 
+  /// Style of the per-polygon `SIMBC` label (Córdoba, Parte 2).
+  final TextStyle unitSymbolLabel;
+
   @override
   bool operator ==(Object other) {
     return other is _GisPolygonStyle &&
         other.normalFill == normalFill &&
         other.selectedFill == selectedFill &&
         other.normalBorder == normalBorder &&
-        other.selectedBorder == selectedBorder;
+        other.selectedBorder == selectedBorder &&
+        other.unitSymbolLabel == unitSymbolLabel;
   }
 
   @override
   int get hashCode {
-    return Object.hash(normalFill, selectedFill, normalBorder, selectedBorder);
+    return Object.hash(
+      normalFill,
+      selectedFill,
+      normalBorder,
+      selectedBorder,
+      unitSymbolLabel,
+    );
   }
 }
 
@@ -12238,60 +12872,234 @@ class _GisTilePolygonLayerState extends State<_GisTilePolygonLayer> {
   Widget build(BuildContext context) {
     final renderMetrics = widget.renderMetrics;
     renderMetrics.polygonLayerBuildCount++;
-    final zoom = MapCamera.of(context).zoom.floor();
+    final camera = MapCamera.of(context);
+    final zoom = camera.zoom.floor();
     final style = _GisPolygonStyle.fromColorScheme(
       Theme.of(context).colorScheme,
     );
+    _useUnitSymbolStyle(style.unitSymbolLabel);
 
     return IgnorePointer(
       child: ValueListenableBuilder<String?>(
         valueListenable: widget.tile.selectedFeatureId,
         builder: (context, selectedFeatureId, child) {
-          final cachedLayer = _cachedPolygonLayer;
-          if (cachedLayer != null &&
-              _cachedZoom == zoom &&
-              _cachedSelection == selectedFeatureId &&
-              _cachedStyle == style) {
-            renderMetrics.projectedGeometryCacheHitCount++;
-            return cachedLayer;
-          }
+          return ValueListenableBuilder<Set<_RenderedGisPolygon>>(
+            valueListenable: widget.tile.acceptedUnitSymbols,
+            builder: (context, acceptedUnitSymbols, child) {
+              // This tile's share of the viewport-wide decision. Tiles with
+              // no cleared symbols (every other province, or a zoom below
+              // the threshold) render exactly what they always did.
+              final labelled = acceptedUnitSymbols.isEmpty
+                  ? const <_RenderedGisPolygon>{}
+                  : widget.tile.polygons
+                        .where(acceptedUnitSymbols.contains)
+                        .toSet();
 
-          final polygons = widget.tile.polygons
-              .map(
-                (polygon) =>
-                    polygon.toPolygon(style, selectedFeatureId, renderMetrics),
-              )
-              .toList(growable: false);
-          final vertexCount = widget.tile.polygons.fold<int>(
-            0,
-            (count, polygon) => count + polygon.vertexCount,
-          );
-          renderMetrics.projectedPolygonCount += polygons.length;
-          renderMetrics.projectedVertexCount += vertexCount;
+              final polygonLayer = _buildPolygonLayer(
+                zoom: zoom,
+                style: style,
+                selectedFeatureId: selectedFeatureId,
+                renderMetrics: renderMetrics,
+              );
+              if (labelled.isEmpty) return polygonLayer;
 
-          final polygonLayer = PolygonLayer<GisFeature>(
-            polygonLabels: false,
-            polygonCulling: true,
-            drawInSingleWorld: true,
-            painterFillMethod: PolygonPainterFillMethod.evenOdd,
-            polygons: polygons,
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  polygonLayer,
+                  CustomPaint(
+                    painter: _UnitSymbolPainter(
+                      polygons: labelled,
+                      camera: camera,
+                      style: style.unitSymbolLabel,
+                    ),
+                    size: Size.infinite,
+                  ),
+                ],
+              );
+            },
           );
-          final profiledLayer = !renderMetrics.enabled
-              ? polygonLayer
-              : _GisPaintProfiler(
-                  renderMetrics: renderMetrics,
-                  polygonCount: polygons.length,
-                  vertexCount: vertexCount,
-                  child: polygonLayer,
-                );
-          _cachedZoom = zoom;
-          _cachedSelection = selectedFeatureId;
-          _cachedStyle = style;
-          return _cachedPolygonLayer = profiledLayer;
         },
       ),
     );
   }
+
+  Widget _buildPolygonLayer({
+    required int zoom,
+    required _GisPolygonStyle style,
+    required String? selectedFeatureId,
+    required GisRenderMetrics renderMetrics,
+  }) {
+    // Unchanged from before the symbols existed: labels are painted
+    // separately now, so the polygon layer's cache no longer depends on
+    // them and survives every camera move again.
+    final cachedLayer = _cachedPolygonLayer;
+    if (cachedLayer != null &&
+        _cachedZoom == zoom &&
+        _cachedSelection == selectedFeatureId &&
+        _cachedStyle == style) {
+      renderMetrics.projectedGeometryCacheHitCount++;
+      return cachedLayer;
+    }
+
+    final polygons = widget.tile.polygons
+        .map(
+          (polygon) => polygon.toPolygon(style, selectedFeatureId, renderMetrics),
+        )
+        .toList(growable: false);
+    final vertexCount = widget.tile.polygons.fold<int>(
+      0,
+      (count, polygon) => count + polygon.vertexCount,
+    );
+    renderMetrics.projectedPolygonCount += polygons.length;
+    renderMetrics.projectedVertexCount += vertexCount;
+
+    final polygonLayer = PolygonLayer<GisFeature>(
+      polygonLabels: false,
+      polygonCulling: true,
+      drawInSingleWorld: true,
+      painterFillMethod: PolygonPainterFillMethod.evenOdd,
+      polygons: polygons,
+    );
+    final profiledLayer = !renderMetrics.enabled
+        ? polygonLayer
+        : _GisPaintProfiler(
+            renderMetrics: renderMetrics,
+            polygonCount: polygons.length,
+            vertexCount: vertexCount,
+            child: polygonLayer,
+          );
+    _cachedZoom = zoom;
+    _cachedSelection = selectedFeatureId;
+    _cachedStyle = style;
+    return _cachedPolygonLayer = profiledLayer;
+  }
+}
+
+/// Shaped-once [TextPainter] per symbol, shared by the decluttering pass
+/// (which measures) and the painter (which draws). A viewport repeats the
+/// same handful of symbols many times, so this stays small; it is cleared
+/// whenever the style changes (theme switch).
+final Map<String, TextPainter> _unitSymbolTextPainters = {};
+TextStyle? _unitSymbolTextPainterStyle;
+
+TextPainter _unitSymbolTextPainter(String symbol) {
+  return _unitSymbolTextPainters.putIfAbsent(symbol, () {
+    return TextPainter(
+      text: TextSpan(text: symbol, style: _unitSymbolTextPainterStyle),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+    )..layout();
+  });
+}
+
+/// Points the shared painters at [style], dropping anything shaped with a
+/// previous one.
+void _useUnitSymbolStyle(TextStyle style) {
+  if (_unitSymbolTextPainterStyle == style) return;
+  _unitSymbolTextPainterStyle = style;
+  _unitSymbolTextPainters.clear();
+}
+
+/// Whether two label boxes share enough area to count as a real collision
+/// (Parte 4). Touching corners and near misses are allowed: only an overlap
+/// covering a meaningful share of the smaller box hides a symbol.
+bool _overlapsSignificantly(Rect first, Rect second) {
+  final intersection = first.intersect(second);
+  if (intersection.isEmpty) return false;
+  final sharedArea = intersection.width * intersection.height;
+  final smallestArea = math.min(
+    first.width * first.height,
+    second.width * second.height,
+  );
+  if (smallestArea <= 0) return false;
+  return sharedArea / smallestArea >
+      _GisMapScreenState._unitSymbolMaxOverlapRatio;
+}
+
+/// Font size of a map-unit symbol. Shared by the drawn [TextStyle] and by
+/// the decluttering pass' box estimate, so the two can never drift apart.
+const double _unitSymbolFontSize = 12;
+
+/// Same labelled polygons as last build? Cheap identity comparison — both
+/// sets hold the very same [_RenderedGisPolygon] instances, so nothing deeper
+/// is needed to know the layer can be replayed.
+bool _isSameLabelSet(
+  Set<_RenderedGisPolygon>? previous,
+  Set<_RenderedGisPolygon> next,
+) {
+  if (previous == null) return false;
+  if (previous.length != next.length) return false;
+  return previous.containsAll(next);
+}
+
+/// Draws the map-unit symbols of one tile, for the polygons the screen's
+/// viewport-wide pass already cleared.
+///
+/// Replaces flutter_map's own label pass (Parte 5) for one reason: that pass
+/// refuses to draw any label whose polygon is not 20 px wider than the text,
+/// a hardcoded rule that silently blanked most small and medium units. This
+/// stays inside the soil layer's own per-tile representation — one painter
+/// per tile, never a widget per label — and keeps [Polygon.labelAnchor]'s
+/// polylabel position, so symbols still sit inside their unit.
+class _UnitSymbolPainter extends CustomPainter {
+  const _UnitSymbolPainter({
+    required this.polygons,
+    required this.camera,
+    required this.style,
+  });
+
+  final Set<_RenderedGisPolygon> polygons;
+  final MapCamera camera;
+  final TextStyle style;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (polygons.isEmpty) return;
+    final viewport = Offset.zero & size;
+
+    for (final polygon in polygons) {
+      final anchor = camera.latLngToScreenOffset(polygon.labelAnchor);
+      if (!_isFiniteOffset(anchor)) continue;
+
+      final painter = _unitSymbolTextPainter(polygon.unitSymbol!);
+      final origin = Offset(
+        anchor.dx - painter.width / 2,
+        anchor.dy - painter.height / 2,
+      );
+      if (!(origin & painter.size).overlaps(viewport)) continue;
+      painter.paint(canvas, origin);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_UnitSymbolPainter oldDelegate) {
+    return oldDelegate.style != style ||
+        oldDelegate.camera.center != camera.center ||
+        oldDelegate.camera.zoom != camera.zoom ||
+        oldDelegate.camera.rotation != camera.rotation ||
+        !_isSameLabelSet(oldDelegate.polygons, polygons);
+  }
+}
+
+/// One polygon competing for the right to draw its symbol this frame.
+/// Deliberately a plain value object, not a widget: a viewport can hold
+/// thousands of these for the length of one pass and nothing else.
+class _UnitSymbolCandidate {
+  const _UnitSymbolCandidate({
+    required this.polygon,
+    required this.priority,
+    required this.onScreen,
+  });
+
+  final _RenderedGisPolygon polygon;
+
+  /// Visible on-screen area, boosted when the unit is fully in view, and
+  /// infinite for the selected unit.
+  final double priority;
+
+  /// The unit's bounding box in screen pixels.
+  final Rect onScreen;
 }
 
 class _GisPaintProfiler extends SingleChildRenderObjectWidget {

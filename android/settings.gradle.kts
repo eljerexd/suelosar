@@ -30,3 +30,4 @@ plugins {
 include(":app")
 include(":santaFePmtiles")
 include(":buenosAiresPmtiles")
+include(":cordobaPmtiles")

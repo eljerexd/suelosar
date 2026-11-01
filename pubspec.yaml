@@ -33,6 +33,7 @@ dependencies:
 
   flutter_lucide: ^1.11.0
   flutter_map: 8.3.1
+  dart_polylabel2: ^1.0.0
   latlong2: ^0.9.1
   pdfrx: 2.6.1
   syncfusion_flutter_pdf: ^33.2.15
@@ -60,6 +61,12 @@ dev_dependencies:
     sdk: flutter
   vm_service: 15.3.0
   flutter_launcher_icons: ^0.14.4
+  # SuelosAR Data Pipeline (tool/suelosar_data.dart) — already resolved
+  # transitively; declared so the tool may import them directly.
+  args: ^2.7.0
+  crypto: ^3.0.7
+  path: ^1.9.1
+  yaml: ^3.1.4
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -89,6 +96,9 @@ flutter:
     - assets/data/santa_fe_series_index.json
     - assets/pdfs_santa_fe/
     - assets/maps/agronomic_reference_map_santa_fe.json
+    - assets/data/cordoba_series_index.json
+    - assets/pdfs_cordoba/
+    - assets/maps/agronomic_reference_map_cordoba.json
   # assets:
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
@@ -114,6 +124,10 @@ flutter:
       assets:
         - assets/maps/soil_polygons.pmtiles
         - assets/maps/soil_polygons.pmtiles.sha256
+    - name: cordobaPmtiles
+      assets:
+        - assets/maps/cordoba_soil_polygons.pmtiles
+        - assets/maps/cordoba_soil_polygons.pmtiles.sha256
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

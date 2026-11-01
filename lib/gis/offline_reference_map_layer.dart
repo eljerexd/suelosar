@@ -46,7 +46,6 @@ class OfflineReferenceMapLayer extends StatelessWidget {
     );
   }
 
-  static const double _maxGeometryZoom = 13;
   static const Color _backgroundColor = Color(0xFFFAFAF8);
 
   @override
@@ -68,10 +67,14 @@ class OfflineReferenceMapLayer extends StatelessWidget {
           builder: (context, snapshot) {
             final basemap = snapshot.data;
 
-            final content =
-                basemap == null ||
-                    !cameraIsUsable ||
-                    (!foreground && camera.zoom >= _maxGeometryZoom)
+            // Parte 7B: no zoom-level cutoff here anymore — the layer keeps
+            // existing all the way to the map's own real maxZoom (16 for
+            // Córdoba). What used to be a hard "stop building the geometry
+            // pass past zoom 13" is now each individual line type fading to
+            // 0% opacity on its own curve (see `_linePictureForZoom`), so at
+            // extreme zoom this still builds a `CustomPaint` — it just
+            // records an empty (or near-empty) Picture, at negligible cost.
+            final content = basemap == null || !cameraIsUsable
                 ? const SizedBox.expand()
                 : CustomPaint(
                     painter: _AgronomicReferencePainter(
@@ -97,11 +100,17 @@ class _AgronomicReferencePainter extends CustomPainter {
     required this.camera,
     required this.foreground,
   }) : _provincialBoundaryPaint = _linePaint(
-         const Color(0xB0AEB4AC),
-         strokeWidth: _provincialBoundaryStrokeWidth,
+         const Color(0xDD2B2B2B),
+         strokeWidth: 1,
        ),
+       // Fase 6 Parte 38: a plain dark-charcoal stroke (no halo — a white
+       // casing read as too heavy a "GIS layer" look against the app's own
+       // muted palette) drawn in `_paintProvincialBoundary`, not here. Not
+       // green, deliberately: the soil-unit borders already use the app's
+       // primary green (`_GisPolygonStyle.normalBorder`), so the two
+       // boundary kinds never get confused for one another.
        _departmentBoundaryPaint = _linePaint(
-         const Color(0x8FCFD3CC),
+         const Color(0xB2545A50),
          strokeWidth: _departmentBoundaryStrokeWidth,
        ),
        _riverCasingPaint = _linePaint(
@@ -132,7 +141,6 @@ class _AgronomicReferencePainter extends CustomPainter {
   // Named so both the initial Paint construction and the per-frame
   // stroke-width rescale in `_paintLineLayers` (needed to counteract the
   // canvas scale used to reposition cached geometry) read the same values.
-  static const double _provincialBoundaryStrokeWidth = 0.9;
   static const double _departmentBoundaryStrokeWidth = 0.5;
   static const double _riverCasingStrokeWidth = 3;
   static const double _riverStrokeWidth = 1.55;
@@ -158,8 +166,27 @@ class _AgronomicReferencePainter extends CustomPainter {
     if (!foreground) {
       _paintLineLayers(canvas);
     } else {
-      final labelOpacity = _labelOpacity(camera.zoom);
-      _drawCityLabels(canvas, size, labelOpacity);
+      // Fase 6 Parte 38: painted above the soil polygons (this is the
+      // `foreground` pass), unlike every other reference line, which stays
+      // in the background pass below them — a province boundary needs to
+      // stay legible across neighbouring provinces' polygon fills, not be
+      // covered by them. Drawn before the labels so a city/department label
+      // always wins if the two ever overlap.
+      _paintProvincialBoundary(canvas);
+
+      // Shared between both label passes so a department name and a city
+      // name never overlap each other either — cities are drawn second, so
+      // a named settlement always wins a collision against a jurisdiction
+      // label, consistent with the reference layer staying subordinate to
+      // the more specific, more useful annotation.
+      final occupiedLabels = <Rect>[];
+      _drawDepartmentLabels(
+        canvas,
+        size,
+        _departmentOpacity(camera.zoom),
+        occupiedLabels,
+      );
+      _drawCityLabels(canvas, size, _labelOpacity(camera.zoom), occupiedLabels);
     }
   }
 
@@ -249,8 +276,6 @@ class _AgronomicReferencePainter extends CustomPainter {
     // scale above would otherwise scale them right along with the geometry,
     // so it's cancelled out here to keep the rendered thickness unchanged.
     final inverseScale = 1 / scale;
-    _provincialBoundaryPaint.strokeWidth =
-        _provincialBoundaryStrokeWidth * inverseScale;
     _departmentBoundaryPaint.strokeWidth =
         _departmentBoundaryStrokeWidth * inverseScale;
     _riverCasingPaint.strokeWidth = _riverCasingStrokeWidth * inverseScale;
@@ -263,12 +288,7 @@ class _AgronomicReferencePainter extends CustomPainter {
     _provincialRoadPaint.strokeWidth =
         _provincialRoadStrokeWidth * inverseScale;
 
-    recordingCanvas.drawPath(
-      basemap.provincialBoundariesPath,
-      _provincialBoundaryPaint,
-    );
-
-    final departmentOpacity = _zoomOpacity(snappedZoom, 7.8, 9);
+    final departmentOpacity = _departmentOpacity(snappedZoom);
     if (departmentOpacity > 0) {
       recordingCanvas.drawPath(
         basemap.departmentBoundariesPath,
@@ -276,15 +296,42 @@ class _AgronomicReferencePainter extends CustomPainter {
       );
     }
 
-    recordingCanvas.drawPath(basemap.majorRiversPath, _riverCasingPaint);
-    recordingCanvas.drawPath(basemap.majorRiversPath, _riverPaint);
-    recordingCanvas.drawPath(
-      basemap.nationalRoadsPath,
-      _nationalRoadCasingPaint,
-    );
-    recordingCanvas.drawPath(basemap.nationalRoadsPath, _nationalRoadPaint);
+    final riverOpacity = _piecewiseOpacity(snappedZoom, _riverOpacityCurve);
+    if (riverOpacity > 0) {
+      recordingCanvas.drawPath(
+        basemap.majorRiversPath,
+        _paintAtOpacity(_riverCasingPaint, riverOpacity),
+      );
+      recordingCanvas.drawPath(
+        basemap.majorRiversPath,
+        _paintAtOpacity(_riverPaint, riverOpacity),
+      );
+    }
 
-    final regionalRoadOpacity = _zoomOpacity(snappedZoom, 8.2, 9.5);
+    final nationalRoadOpacity = _piecewiseOpacity(
+      snappedZoom,
+      _roadOpacityCurve,
+    );
+    if (nationalRoadOpacity > 0) {
+      recordingCanvas.drawPath(
+        basemap.nationalRoadsPath,
+        _paintAtOpacity(_nationalRoadCasingPaint, nationalRoadOpacity),
+      );
+      recordingCanvas.drawPath(
+        basemap.nationalRoadsPath,
+        _paintAtOpacity(_nationalRoadPaint, nationalRoadOpacity),
+      );
+    }
+
+    // Keeps its own existing appear-curve (8.2→9.5 — provincial roads stay
+    // invisible until the map is zoomed in enough to be legible at all)
+    // multiplied by the same never-reaches-0 fade-out roads share with
+    // national roads — "caminos/rutas" is one design concept, both floor at
+    // 40%. The appear-curve is already 1.0 well before zoom 10, so this
+    // still floors at 0.4 rather than being dragged back down.
+    final regionalRoadOpacity =
+        _zoomOpacity(snappedZoom, 8.2, 9.5) *
+        _piecewiseOpacity(snappedZoom, _roadOpacityCurve);
     if (regionalRoadOpacity > 0) {
       recordingCanvas.drawPath(
         basemap.provincialRoadsPath,
@@ -303,8 +350,73 @@ class _AgronomicReferencePainter extends CustomPainter {
     return picture;
   }
 
-  void _drawCityLabels(Canvas canvas, Size size, double opacity) {
-    final occupiedLabels = <Rect>[];
+  /// Fase 6 Parte 38: province boundary, painted in the `foreground` pass
+  /// (above the soil polygons) instead of bundled into [_linePictureForZoom]
+  /// with the rest of the reference lines — same source geometry
+  /// (`basemap.provincialBoundariesPath`, loaded once from each province's
+  /// `ProvinceConfig.referenceMapAsset`, see `_ProvinceBoundaryLoader` for
+  /// the equivalent reader the on-demand-download boundary highlight uses).
+  /// Painted directly every frame rather than through the `ui.Picture`
+  /// cache [_linePictureForZoom] uses — see Parte 43's note below on why.
+  void _paintProvincialBoundary(Canvas canvas) {
+    final snappedZoom = _AgronomicReferenceBasemap.snapZoomForCache(
+      camera.zoom,
+    );
+    final opacity = _piecewiseOpacity(
+      snappedZoom,
+      _provincialBoundaryOpacityCurve,
+    );
+    if (opacity <= 0) return;
+
+    final halfSize = camera.nonRotatedSize.center(Offset.zero);
+    final scale = camera.getZoomScale(
+      snappedZoom,
+      _AgronomicReferenceBasemap.geometryCacheZoom,
+    );
+    final cachedCenter = camera.projectAtZoom(
+      camera.center,
+      _AgronomicReferenceBasemap.geometryCacheZoom,
+    );
+    final inverseScale = 1 / scale;
+    final strokeWidth = _piecewiseOpacity(
+      snappedZoom,
+      _provincialBoundaryWidthCurve,
+    );
+
+    // Fase 6 Parte 43: drawn directly every frame instead of through a
+    // cached `ui.Picture` (Parte 38's original approach) — recording this
+    // specific path (a merged, 50-subpath path spanning all three
+    // provinces, stroked at a large scale-up factor at low zoom) into a
+    // `ui.Picture` and replaying it reproducibly dropped one long straight
+    // stretch of Córdoba's boundary (confirmed on-device: the segment is
+    // present and correctly positioned in the path data — `drawPath` called
+    // directly renders it — but it silently failed to render whenever it
+    // went through `PictureRecorder`/`Canvas.drawPicture`). The background
+    // reference lines keep their own Picture cache (`_linePictureForZoom`)
+    // since that one isn't affected — only this layer's cache is removed.
+    canvas.save();
+    canvas.translate(halfSize.dx, halfSize.dy);
+    if (camera.rotation != 0) {
+      canvas.rotate(camera.rotationRad);
+    }
+    canvas.translate(-cachedCenter.dx * scale, -cachedCenter.dy * scale);
+    canvas.scale(scale);
+    canvas.drawPath(
+      basemap.provincialBoundariesPath,
+      _paintAtOpacity(
+        _provincialBoundaryPaint..strokeWidth = strokeWidth * inverseScale,
+        opacity,
+      ),
+    );
+    canvas.restore();
+  }
+
+  void _drawCityLabels(
+    Canvas canvas,
+    Size size,
+    double opacity,
+    List<Rect> occupiedLabels,
+  ) {
     final symbolPaint = Paint()
       ..color = const Color(0xFF303632).withValues(alpha: opacity)
       ..style = PaintingStyle.fill
@@ -446,6 +558,106 @@ class _AgronomicReferencePainter extends CustomPainter {
     }
   }
 
+  /// Jurisdiction name labels (Parte 6) — deliberately quieter than
+  /// [_drawCityLabels]: uppercase with letter-spacing (a standard
+  /// cartographic convention for administrative areas, as opposed to point
+  /// places), a dark-but-not-black neutral tone, and no marker glyph (a
+  /// department is an area, not a point — there is nothing to mark). Centred
+  /// on its own centroid rather than offset beside it, since there is no
+  /// point symbol to sit next to.
+  void _drawDepartmentLabels(
+    Canvas canvas,
+    Size size,
+    double opacity,
+    List<Rect> occupiedLabels,
+  ) {
+    if (opacity <= 0 || basemap.departmentLabels.isEmpty) return;
+
+    final mapCenter = camera.projectAtZoom(camera.center);
+    final nonRotatedPixelOrigin =
+        mapCenter - camera.nonRotatedSize.center(Offset.zero);
+    Offset project(LatLng latLng) {
+      var point = camera.projectAtZoom(latLng);
+      if (camera.rotation != 0) {
+        point = camera.rotatePoint(mapCenter, point, counterRotation: false);
+      }
+      return point - nonRotatedPixelOrigin;
+    }
+
+    for (final department in basemap.departmentLabels) {
+      final offset = project(department.position);
+      if (!_isFiniteOffset(offset)) continue;
+      // Same cheap off-screen reject as `_drawCityLabels`, generous enough
+      // to never cull a label that would actually end up visible.
+      if (offset.dx < -140 ||
+          offset.dx > size.width + 140 ||
+          offset.dy < -20 ||
+          offset.dy > size.height + 20) {
+        continue;
+      }
+
+      if (department._cachedOpacity != opacity ||
+          department._cachedLabelPicture == null) {
+        final style = TextStyle(
+          color: const Color(0xFF4B5148).withValues(alpha: opacity),
+          fontSize: 10.5,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.8,
+          height: 1,
+        );
+        final label = department.name.toUpperCase();
+        final textPainter = TextPainter(
+          text: TextSpan(text: label, style: style),
+          textAlign: TextAlign.center,
+          textDirection: TextDirection.ltr,
+        )..layout();
+
+        final haloStyle = style.copyWith(
+          foreground: Paint()
+            ..color = const Color(0xFFFCFCFA).withValues(alpha: opacity * 0.98)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 3.4
+            ..strokeJoin = StrokeJoin.round,
+        );
+        final haloPainter = TextPainter(
+          text: TextSpan(text: label, style: haloStyle),
+          textAlign: TextAlign.center,
+          textDirection: TextDirection.ltr,
+        )..layout();
+
+        final recorder = ui.PictureRecorder();
+        final recordingCanvas = Canvas(recorder);
+        haloPainter.paint(recordingCanvas, Offset.zero);
+        textPainter.paint(recordingCanvas, Offset.zero);
+
+        department._cachedLabelPicture?.dispose();
+        department._cachedLabelPicture = recorder.endRecording();
+        department._cachedLabelSize = textPainter.size;
+        department._cachedLabelHeight = textPainter.height;
+        department._cachedOpacity = opacity;
+      }
+
+      final labelSize = department._cachedLabelSize!;
+      final labelOffset = Offset(
+        offset.dx - labelSize.width / 2,
+        offset.dy - department._cachedLabelHeight! / 2,
+      );
+      final labelBounds = labelOffset & labelSize;
+      if (!labelBounds.overlaps(Offset.zero & size)) continue;
+      if (occupiedLabels.any(
+        (bounds) => bounds.inflate(3).overlaps(labelBounds),
+      )) {
+        continue;
+      }
+      occupiedLabels.add(labelBounds);
+
+      canvas.save();
+      canvas.translate(labelOffset.dx, labelOffset.dy);
+      canvas.drawPicture(department._cachedLabelPicture!);
+      canvas.restore();
+    }
+  }
+
   double _labelOpacity(double zoom) {
     return (0.78 + (zoom - 5).clamp(0.0, 2.5) * 0.072).clamp(0.78, 0.96);
   }
@@ -454,8 +666,94 @@ class _AgronomicReferencePainter extends CustomPainter {
     return city.isPrimary ? 1 : _zoomOpacity(camera.zoom, 7.7, 9.4);
   }
 
+  /// Jurisdiction boundary lines AND their name labels (Parte 6) share this
+  /// exact curve, so the labels never linger after their lines have already
+  /// faded — a linear ramp from fully visible at zoom 7-8 down to invisible
+  /// at zoom 12, well before the soil layer's own detail (map-unit symbols
+  /// start at zoom 10) becomes the protagonist:
+  /// zoom <=8 -> 100%, 9 -> 75%, 10 -> 50%, 11 -> 25%, >=12 -> 0%.
+  static double _departmentOpacity(double zoom) {
+    return 1 - _zoomOpacity(zoom, 8, 12);
+  }
+
   static double _zoomOpacity(double zoom, double start, double end) {
     return ((zoom - start) / (end - start)).clamp(0.0, 1.0);
+  }
+
+  /// Fase 6 Parte 38: unlike the other reference lines below, this one has
+  /// to be gone well before the soil layer's own detail (map-unit symbols
+  /// from zoom 10, SIMBC labels competing for the same screen space) takes
+  /// over — it's now painted above the polygons, so lingering into that
+  /// range would mean a province-edge halo cutting across unit labels.
+  /// Clearly visible at the province-overview zooms (<=7, where it's the
+  /// whole point — telling neighbouring provinces' polygons apart), then
+  /// eases out through the mid zooms and is fully gone by 13. Control
+  /// points, not a single linear ramp — see [_piecewiseOpacity].
+  static const List<(double, double)> _provincialBoundaryOpacityCurve = [
+    (7, 1.0),
+    (9, 0.85),
+    (10, 0.6),
+    (11, 0.35),
+    (12, 0.15),
+    (13, 0.0),
+  ];
+
+  /// Companion to [_provincialBoundaryOpacityCurve] — logical-pixel stroke
+  /// width, authored in on-screen px (see the `inverseScale` cancellation in
+  /// [_paintProvincialBoundary]) so it shrinks as the province overview
+  /// gives way to the soil layer's own detail, same reasoning as the
+  /// opacity fade above.
+  static const List<(double, double)> _provincialBoundaryWidthCurve = [
+    (7, 2.2),
+    (9, 1.7),
+    (10, 1.2),
+    (11, 0.8),
+    (12, 0.4),
+    (13, 0.0),
+  ];
+
+  /// A touch faster than the provincial boundary — rivers are the least
+  /// essential wayfinding element of the three once the soil layer is doing
+  /// most of the work, so they're fully gone by zoom 15 rather than 16.
+  static const List<(double, double)> _riverOpacityCurve = [
+    (10, 1.0),
+    (11, 0.75),
+    (12, 0.5),
+    (13, 0.3),
+    (14, 0.15),
+    (15, 0.0),
+  ];
+
+  /// Design adjustment: roads never go all the way to 0% like the other
+  /// reference elements do — the map's own soil-navigation actions (search,
+  /// GPS) keep referring to roads by name, so a road stays a usable anchor
+  /// even at the soil layer's own maximum detail. Floors at 40%, never
+  /// fully invisible. Shared by both national and provincial/regional
+  /// roads — "caminos/rutas" is one concept here, not two.
+  static const List<(double, double)> _roadOpacityCurve = [
+    (10, 1.0),
+    (11, 0.9),
+    (12, 0.8),
+    (13, 0.7),
+    (14, 0.6),
+    (15, 0.5),
+    (16, 0.4),
+  ];
+
+  /// Linear interpolation through [points] (sorted by zoom, ascending).
+  /// Below the first point or above the last, the curve holds flat at that
+  /// point's opacity — it does not extrapolate past the data.
+  static double _piecewiseOpacity(double zoom, List<(double, double)> points) {
+    if (zoom <= points.first.$1) return points.first.$2;
+    if (zoom >= points.last.$1) return points.last.$2;
+    for (var i = 0; i < points.length - 1; i++) {
+      final (z0, o0) = points[i];
+      final (z1, o1) = points[i + 1];
+      if (zoom <= z1) {
+        return o0 + (o1 - o0) * (zoom - z0) / (z1 - z0);
+      }
+    }
+    return points.last.$2; // Unreachable: the loop above always returns.
   }
 
   static Paint _paintAtOpacity(Paint source, double opacity) {
@@ -487,6 +785,7 @@ class _AgronomicReferenceBasemap {
     required this.nationalRoads,
     required this.provincialRoads,
     required this.majorCities,
+    required this.departmentLabels,
     required this.provincialBoundariesPath,
     required this.departmentBoundariesPath,
     required this.majorRiversPath,
@@ -500,6 +799,12 @@ class _AgronomicReferenceBasemap {
   final List<List<LatLng>> nationalRoads;
   final List<List<LatLng>> provincialRoads;
   final List<_ReferenceCity> majorCities;
+
+  /// One label per department/jurisdiction (Parte 6) — empty for a basemap
+  /// asset that predates this layer (Buenos Aires', Santa Fe's), which is
+  /// why every reader of this list must tolerate empty, not assume Córdoba's
+  /// 26.
+  final List<_ReferenceDepartmentLabel> departmentLabels;
 
   /// Line geometry pre-projected once, at [geometryCacheZoom], into cached
   /// [ui.Path]s (Fase 8C perf fix) — see `_AgronomicReferencePainter
@@ -515,9 +820,9 @@ class _AgronomicReferenceBasemap {
   /// doesn't depend on this value (Web Mercator scaling is exact for any
   /// zoom pair — see the painter's math test), but real on-device profiling
   /// (Fase 8C) measured a real, if modest, extra improvement from picking a
-  /// value near this app's actual operating zoom range (`_maxGeometryZoom`
-  /// caps it at 13) over an arbitrary one like 0, which needs a much larger
-  /// `canvas.scale` factor at typical zoom levels.
+  /// value near this app's actual operating zoom range over an arbitrary
+  /// one like 0, which needs a much larger `canvas.scale` factor at typical
+  /// zoom levels.
   static const double geometryCacheZoom = 10;
 
   /// Rounds [zoom] to the nearest 1/1000-of-a-zoom-level grid point, so
@@ -567,6 +872,9 @@ class _AgronomicReferenceBasemap {
     final majorCities = [
       for (final basemap in basemaps) ...basemap.majorCities,
     ]..sort((first, second) => second.priority.compareTo(first.priority));
+    final departmentLabels = [
+      for (final basemap in basemaps) ...basemap.departmentLabels,
+    ];
 
     return _AgronomicReferenceBasemap(
       provincialBoundaries: [
@@ -583,6 +891,7 @@ class _AgronomicReferenceBasemap {
         for (final basemap in basemaps) ...basemap.provincialRoads,
       ],
       majorCities: majorCities,
+      departmentLabels: departmentLabels,
       // Merged from each basemap's already-projected cache (`Path.addPath`
       // just copies path data) rather than rebuilt from lat/lng, since every
       // basemap shares the same `geometryCacheZoom` reference frame.
@@ -636,6 +945,7 @@ class _AgronomicReferenceBasemap {
       nationalRoads: nationalRoads,
       provincialRoads: provincialRoads,
       majorCities: _parseCities(layers['majorCities']),
+      departmentLabels: _parseDepartmentLabels(layers['departmentLabels']),
       provincialBoundariesPath: _buildPath(provincialBoundaries),
       departmentBoundariesPath: _buildPath(departmentBoundaries),
       majorRiversPath: _buildPath(majorRivers),
@@ -697,6 +1007,18 @@ class _AgronomicReferenceBasemap {
     return parsedCities;
   }
 
+  static List<_ReferenceDepartmentLabel> _parseDepartmentLabels(
+    Object? rawLabels,
+  ) {
+    final labels = rawLabels as List<dynamic>? ?? const <dynamic>[];
+    return [
+      for (final rawLabel in labels)
+        ?_ReferenceDepartmentLabel.fromJson(
+          Map<String, dynamic>.from(rawLabel as Map),
+        ),
+    ];
+  }
+
   static LatLng? _parsePoint(List<dynamic> rawPoint) {
     final longitude = (rawPoint[0] as num).toDouble();
     final latitude = (rawPoint[1] as num).toDouble();
@@ -739,6 +1061,35 @@ class _ReferenceCity {
       name: json['name'] as String,
       position: position,
       isPrimary: json['importance'] == 'primary',
+    );
+  }
+}
+
+/// One department/jurisdiction name label (Parte 6), at the polygon
+/// centroid `tool/build_reference_map.dart` computed. Caching fields mirror
+/// [_ReferenceCity]'s own — same "record the rendered label once, replay it"
+/// reasoning (Fase 8C), since the fade curve holds the opacity constant
+/// across a pure pan just like a city's does.
+class _ReferenceDepartmentLabel {
+  _ReferenceDepartmentLabel({required this.name, required this.position});
+
+  final String name;
+  final LatLng position;
+
+  double? _cachedOpacity;
+  ui.Picture? _cachedLabelPicture;
+  Size? _cachedLabelSize;
+  double? _cachedLabelHeight;
+
+  static _ReferenceDepartmentLabel? fromJson(Map<String, dynamic> json) {
+    final position = _safeLatLng(
+      (json['lat'] as num).toDouble(),
+      (json['lon'] as num).toDouble(),
+    );
+    if (position == null) return null;
+    return _ReferenceDepartmentLabel(
+      name: json['name'] as String,
+      position: position,
     );
   }
 }
