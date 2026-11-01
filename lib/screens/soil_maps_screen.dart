@@ -577,21 +577,23 @@ String _provinceDisplayName(SoilCardProvince province) {
   }
 }
 
-/// Accent color for a [SoilCardProvince]'s [_ProvinceTag]. Centralized here
-/// so a future province only needs one more switch arm (alongside
-/// [_provinceDisplayName]) — [_ProvinceTag] itself never changes.
-/// Soft, muted tones consistent with SuelosAR's earthy palette, chosen to
-/// read clearly as small text on a barely-tinted background (see
-/// [_ProvinceTag]) rather than as a saturated/loud color.
-Color _provinceAccentColor(SoilCardProvince province) {
+/// Text color for a [SoilCardProvince]'s [_ProvinceTag].
+Color _provinceTagTextColor(SoilCardProvince province) {
   switch (province) {
     case SoilCardProvince.buenosAires:
       return const Color(0xFF4A6FA5);
     case SoilCardProvince.santaFe:
       return const Color(0xFF9C6B3F);
     case SoilCardProvince.cordoba:
-      return const Color(0xFF6B8E5A);
+      return const Color(0xFF765D83);
   }
+}
+
+Color _provinceTagBackgroundColor(SoilCardProvince province) {
+  if (province == SoilCardProvince.cordoba) {
+    return const Color(0xFFEEE7F2);
+  }
+  return _provinceTagTextColor(province).withValues(alpha: 0.14);
 }
 
 /// The province metadata tag shown under a catalog card's title — replaces
@@ -605,11 +607,10 @@ class _ProvinceTag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = _provinceAccentColor(province);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
+        color: _provinceTagBackgroundColor(province),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
@@ -618,7 +619,7 @@ class _ProvinceTag extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         softWrap: false,
         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: color,
+          color: _provinceTagTextColor(province),
           fontWeight: FontWeight.w600,
           height: 1.1,
         ),

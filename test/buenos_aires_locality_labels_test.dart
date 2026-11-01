@@ -103,7 +103,14 @@ void main() {
         isNotEmpty,
       );
       for (final record in added) {
-        if (record['sourceCategory'] == 'Entidad') {
+        final importanceOverride = switch (record['sourceId']) {
+          '06623140' => 'secondary',
+          '06714010' => 'primary',
+          _ => null,
+        };
+        if (importanceOverride != null) {
+          expect(record['importance'], importanceOverride);
+        } else if (record['sourceCategory'] == 'Entidad') {
           expect(record['minZoom'], 11.5);
           expect(record['fadeInEndZoom'], 12.3);
           expect(record['importance'], 'quaternary');
@@ -113,6 +120,28 @@ void main() {
           expect(record['importance'], 'tertiary');
         }
       }
+    });
+
+    test('prioritizes Arroyo Dulce over nearby Villa San Jose', () {
+      final villaSanJose = named('Villa San José');
+      final arroyoDulce = named('Arroyo Dulce');
+
+      expect(villaSanJose['sourceId'], '06623140');
+      expect(villaSanJose['departmentId'], '06623');
+      expect(villaSanJose['importance'], 'secondary');
+      expect(villaSanJose['minZoom'], 9.5);
+      expect(villaSanJose['fadeInEndZoom'], 10.3);
+
+      expect(arroyoDulce['sourceId'], '06714010');
+      expect(arroyoDulce['departmentId'], '06714');
+      expect(arroyoDulce['importance'], 'primary');
+      expect(arroyoDulce['minZoom'], 9.5);
+      expect(arroyoDulce['fadeInEndZoom'], 10.3);
+
+      expect(villaSanJose['lat'], -34.091668);
+      expect(villaSanJose['lon'], -60.413504);
+      expect(arroyoDulce['lat'], -34.101388);
+      expect(arroyoDulce['lon'], -60.408777);
     });
   });
 
@@ -270,4 +299,41 @@ void main() {
       );
     },
   );
+
+  test('generator applies locality display priorities by GeoRef ID', () {
+    final records = buildBuenosAiresLocalityRecords(
+      officialRecords: [
+        {
+          'id': '06623140',
+          'nombre': 'Villa San José',
+          'categoria': 'Componente de localidad compuesta',
+          'provincia': {'id': '06'},
+          'departamento': {'id': '06623', 'nombre': 'Pergamino'},
+          'centroide': {'lat': -34.091668, 'lon': -60.413504},
+        },
+        {
+          'id': '06714010',
+          'nombre': 'Arroyo Dulce',
+          'categoria': 'Componente de localidad compuesta',
+          'provincia': {'id': '06'},
+          'departamento': {'id': '06714', 'nombre': 'Salto'},
+          'centroide': {'lat': -34.101388, 'lon': -60.408777},
+        },
+      ],
+      existingRecords: const [],
+    );
+
+    expect(
+      records.singleWhere(
+        (record) => record['sourceId'] == '06623140',
+      )['importance'],
+      'secondary',
+    );
+    expect(
+      records.singleWhere(
+        (record) => record['sourceId'] == '06714010',
+      )['importance'],
+      'primary',
+    );
+  });
 }

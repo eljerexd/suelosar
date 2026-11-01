@@ -7,6 +7,7 @@ import 'package:suelosar/constants/app_icons.dart';
 import 'package:suelosar/models/pdf_soil_sheet_favorite.dart';
 import 'package:suelosar/models/soil_card.dart';
 import 'package:suelosar/models/soil_map.dart';
+import 'package:suelosar/repositories/cordoba_series_repository.dart';
 import 'package:suelosar/repositories/santa_fe_series_repository.dart';
 import 'package:suelosar/screens/favorites_screen.dart';
 import 'package:suelosar/screens/pdf_viewer_screen.dart';
@@ -73,6 +74,78 @@ Future<void> _waitForText(WidgetTester tester, String text) async {
 }
 
 void main() {
+  testWidgets(
+    'province catalog tags use their assigned colors in both themes',
+    (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      for (final theme in [ThemeData.light(), ThemeData.dark()]) {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: theme,
+            home: SoilMapsScreen(
+              soilMapsLoader: () async => _buenosAiresFixture(),
+              santaFeCardsLoader: () async => _santaFeFixture(),
+              cordobaCardsLoader: () async => [
+                SoilCard.cordoba(
+                  const CordobaSeriesEntry(
+                    name: 'Córdoba de prueba',
+                    startPage: 1,
+                    endPage: 2,
+                  ),
+                  pdfAsset: 'assets/pdfs_cordoba/cordoba_series.pdf',
+                ),
+              ],
+            ),
+          ),
+        );
+        await _waitForText(tester, 'Todas las cartas');
+
+        void expectTagColors({
+          required String cardKey,
+          required String province,
+          required Color background,
+          required Color text,
+        }) {
+          final tagText = find.descendant(
+            of: find.byKey(ValueKey('soil-card-$cardKey')),
+            matching: find.text(province),
+          );
+          expect(tagText, findsOneWidget);
+          final tagContainer = find
+              .ancestor(of: tagText, matching: find.byType(Container))
+              .first;
+          final decoration = tester.widget<Container>(tagContainer).decoration!
+              as BoxDecoration;
+          expect(decoration.color, background);
+          expect(tester.widget<Text>(tagText).style?.color, text);
+        }
+
+        expectTagColors(
+          cardKey: 'Lincoln.pdf',
+          province: 'Buenos Aires',
+          background: const Color(0xFF4A6FA5).withValues(alpha: 0.14),
+          text: const Color(0xFF4A6FA5),
+        );
+        expectTagColors(
+          cardKey: 'santa_fe:RSA',
+          province: 'Santa Fe',
+          background: const Color(0xFF9C6B3F).withValues(alpha: 0.14),
+          text: const Color(0xFF9C6B3F),
+        );
+        expectTagColors(
+          cardKey: 'cordoba:Córdoba de prueba',
+          province: 'Córdoba',
+          background: const Color(0xFFEEE7F2),
+          text: const Color(0xFF765D83),
+        );
+      }
+    },
+  );
+
   testWidgets(
     'Santa Fe series show their real name, never the raw code, and default '
     'filter (Todas) shows both provinces',

@@ -158,6 +158,14 @@ const String _buenosAiresReferenceMapPath =
 const String _indecWfsEndpoint =
     'https://geonode.indec.gob.ar/geoserver/geonode/ows';
 const String _buenosAiresIndecCode = '06';
+
+// These neighbouring settlements have separate official GeoRef identities,
+// but their labels overlap at the shared locality zoom tier. Keep Arroyo
+// Dulce ahead of Villa San Jose in the renderer's collision pass.
+const Map<String, String> _buenosAiresLocalityImportanceOverrides = {
+  '06623140': 'secondary', // Villa San Jose, Partido de Pergamino.
+  '06714010': 'primary', // Arroyo Dulce, Partido de Salto.
+};
 const int _buenosAiresPartidoCount = 135;
 const double _buenosAiresAreaKm2PerSphericalDegree = 6371.0088;
 
@@ -754,7 +762,9 @@ List<Map<String, Object?>> buildBuenosAiresLocalityRecords({
       'name': source['nombre'],
       'lon': _roundToSixDecimals((centroid['lon'] as num).toDouble()),
       'lat': _roundToSixDecimals((centroid['lat'] as num).toDouble()),
-      'importance': isEntity ? 'quaternary' : 'tertiary',
+      'importance':
+          _buenosAiresLocalityImportanceOverrides[source['id'] as String] ??
+          (isEntity ? 'quaternary' : 'tertiary'),
       'sourceId': source['id'],
       'sourceCategory': category,
       'departmentId': department['id'],
