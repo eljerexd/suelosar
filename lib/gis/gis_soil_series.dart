@@ -1,9 +1,16 @@
 /// A soil series referenced by a polygon's vector-tile attributes.
 class GisSoilSeries {
-  const GisSoilSeries({required this.name, required this.percentage});
+  const GisSoilSeries({
+    required this.name,
+    required this.percentage,
+    this.phase = '',
+    this.position = '',
+  });
 
   final String name;
   final String percentage;
+  final String phase;
+  final String position;
 
   String get displayLabel {
     if (percentage.isEmpty) {
@@ -19,7 +26,7 @@ class GisSoilSeries {
   static List<GisSoilSeries> fromProperties(Map<String, Object?> properties) {
     final series = <GisSoilSeries>[];
 
-    for (var index = 1; index <= 6; index++) {
+    for (var index = 1; index <= 8; index++) {
       final name = properties['SERIE$index']?.toString().trim() ?? '';
       if (name.isEmpty) {
         continue;
@@ -29,6 +36,8 @@ class GisSoilSeries {
         GisSoilSeries(
           name: name,
           percentage: _readPercentage(properties['PORC$index']),
+          phase: properties['FASE$index']?.toString().trim() ?? '',
+          position: properties['POSIC$index']?.toString().trim() ?? '',
         ),
       );
     }

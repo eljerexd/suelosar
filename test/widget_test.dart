@@ -17,6 +17,7 @@ import 'package:suelosar/gis/gis_layer.dart';
 import 'package:suelosar/gis/gis_location_service.dart';
 import 'package:suelosar/gis/gis_repository.dart';
 import 'package:suelosar/gis/gis_soil_series.dart';
+import 'package:suelosar/gis/province_config.dart';
 import 'package:suelosar/models/soil_map.dart';
 import 'package:suelosar/models/favorite_soil_feature.dart';
 import 'package:suelosar/models/measurement_color_option.dart';
@@ -1134,10 +1135,7 @@ void main() {
     // measurement) until _finishMeasurement kept
     // distanceMeasurementPoints/areaMeasurementPoints populated
     // unconditionally instead of only for MapLibreEngine.
-    expect(
-      find.byKey(const ValueKey('measurement-distance')),
-      findsNothing,
-    );
+    expect(find.byKey(const ValueKey('measurement-distance')), findsNothing);
     expect(find.byKey(const ValueKey('save-measurement')), findsNothing);
 
     await _selectMapTool(tester, 'Measure Area');
@@ -2405,6 +2403,784 @@ void main() {
     expect(favorites.single, contains('favorite.pdf'));
   });
 
+  testWidgets('Córdoba E23/17 titles the unit from its dominant soil series', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    const narrative =
+        'Complejo de Series EL VEINTITRÉS 40%; HUINCA RENANCÓ en fase '
+        'moderada a severamente erosionada 30%; EL VEINTITRÉS variante '
+        'calcárea 15% y EL PEQUÉN 15%';
+    final feature = _soilDetailFeature(
+      id: 'cordoba:68',
+      center: const LatLng(-32.296, -62.655),
+      properties: const <String, Object?>{
+        'SIMBC': 'E23/17',
+        'Nombre_UC': narrative,
+        'TIPO': 'Complejo diferenciado',
+        'CAP_USO': 'IVes',
+        'PAISAJE': null,
+        'SERIE1': 'EL VEINTITRÉS',
+        'PORC1': 40,
+        'SERIE2': 'HUINCA RENANCÓ',
+        'PORC2': 30,
+        'SERIE3': 'EL VEINTITRÉS',
+        'PORC3': 15,
+        'SERIE4': 'EL PEQUÉN',
+        'PORC4': 15,
+        'OBJECTID': 68,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -32.296,
+            centerLongitude: -62.655,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'E23/17', 'E23/17');
+
+    final title = find.text('El Veintitrés');
+    expect(title, findsOneWidget);
+    expect(find.text('Complejo diferenciado El Veintitrés'), findsNothing);
+    expect((tester.widget<Text>(title)).data, isNot(contains('%')));
+    expect(find.text('E23/17'), findsOneWidget);
+    expect(find.text(narrative), findsOneWidget);
+    expect(find.text('Descripción de la unidad'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('40%'), findsOneWidget);
+    expect(find.text('30%'), findsOneWidget);
+    expect(find.text('15%'), findsNWidgets(2));
+    expect(find.text('Paisaje'), findsNothing);
+  });
+
+  testWidgets('Córdoba Rs3 card shows series and hides unavailable landscape', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    const narrative =
+        'Complejo de Series ROSALES en fase salina 50%; LAS MARINAS 30% '
+        'y ESTANCIA LA ALICIA en fase salina 20%';
+    final feature = _soilDetailFeature(
+      id: 'cordoba:1150',
+      center: const LatLng(-32.296, -62.655),
+      properties: const <String, Object?>{
+        'SIMBC': 'Rs3',
+        'Nombre_UC': narrative,
+        'TIPO': 'Complejo diferenciado',
+        'CAP_USO': 'IVws',
+        'SERIE1': 'ROSALES',
+        'PORC1': 50,
+        'SERIE2': 'LAS MARINAS',
+        'PORC2': 30,
+        'SERIE3': 'ESTANCIA LA ALICIA',
+        'PORC3': 20,
+        'OBJECTID': 1150,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -32.296,
+            centerLongitude: -62.655,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'Rosales', 'ROSALES');
+
+    expect(find.text('Rosales'), findsOneWidget);
+    expect(find.text('Complejo diferenciado Rosales'), findsNothing);
+    expect(find.text('Símbolo'), findsOneWidget);
+    expect(find.text('Rs3'), findsOneWidget);
+    expect(find.text(narrative), findsOneWidget);
+    expect(find.text('Paisaje'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('50%'), findsOneWidget);
+    expect(find.text('30%'), findsOneWidget);
+    expect(find.text('20%'), findsOneWidget);
+  });
+
+  testWidgets('Córdoba 1:500,000 displays available taxonomy fields', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    // Source fixture: carta_suelo_500mil_2024.json, id 17 (MNtc-2).
+    final feature = _soilDetailFeature(
+      id: 'cordoba:500k:17',
+      center: const LatLng(-32.296, -62.655),
+      properties: const <String, Object?>{
+        'SIMBC': 'MNtc-2',
+        'TIPO': 'Consociación',
+        'CAP_USO': 'IVe',
+        'PAISAJE': 'Piedemonte Sierras de Las peñas',
+        'CLASE': 'IV',
+        'SUBCLASE': 'e',
+        'IP': '24',
+        'SUBGRUPO1': 'Haplustol típico',
+        'POSICION1': 'Pendientes pronunciadas',
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -32.296,
+            centerLongitude: -62.655,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'MNtc-2', 'MNtc-2');
+
+    await tester.scrollUntilVisible(
+      find.text('Clasificación del suelo y taxonomía'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('MNtc-2'), findsWidgets);
+    expect(find.text('Consociación MNtc-2'), findsNothing);
+    expect(find.text('Clasificación del suelo y taxonomía'), findsOneWidget);
+    expect(find.text('Clase'), findsOneWidget);
+    expect(find.text('IV'), findsOneWidget);
+    expect(find.text('Subclase'), findsOneWidget);
+    expect(find.text('e'), findsOneWidget);
+    expect(find.text('Índice de productividad (IP)'), findsOneWidget);
+    expect(find.text('24'), findsOneWidget);
+    expect(find.text('Haplustol típico'), findsOneWidget);
+    expect(find.text('Pendientes pronunciadas'), findsOneWidget);
+    expect(find.text('Piedemonte Sierras de Las peñas'), findsOneWidget);
+    expect(find.text('Paisaje'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('Series de suelo'), findsOneWidget);
+    expect(find.text('No hay series disponibles.'), findsNWidgets(2));
+  });
+
+  testWidgets('Córdoba 1:100,000 detail card retains series 7 and 8', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    // Source fixture: carta_suelo_100mil_2025.json, id 86 (CoD1).
+    final feature = _soilDetailFeature(
+      id: 'cordoba:100k:CoD1',
+      center: const LatLng(-32.296, -62.655),
+      properties: const <String, Object?>{
+        'SIMBC': 'CoD1',
+        'Nombre_UC':
+            'Complejo indiferenciado Pampa Serrana de Series YACANTO I; '
+            'YACANTO II; YACANTO III; YACANTO IV; CALAMUCHITA III; '
+            'SAN IGNACIO IV; FUNDACIÓN y SAN PANCRACIO',
+        'TIPO': 'Complejo indiferenciado',
+        'CAP_USO': 'IV/VIes',
+        'SERIE1': 'YACANTO I',
+        'SERIE2': 'YACANTO II',
+        'SERIE3': 'YACANTO III',
+        'SERIE4': 'YACANTO IV',
+        'SERIE5': 'CALAMUCHITA III',
+        'SERIE6': 'SAN IGNACIO IV',
+        'SERIE7': 'FUNDACIÓN',
+        'SERIE8': 'SAN PANCRACIO',
+        'OBJECTID': 100086,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -32.296,
+            centerLongitude: -62.655,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'CoD1', 'CoD1');
+    expect(find.text('Yacanto I'), findsOneWidget);
+    expect(find.text('Complejo indiferenciado Yacanto I'), findsNothing);
+    expect(find.text('CoD1'), findsOneWidget);
+    expect(
+      find.text(
+        'Complejo indiferenciado Pampa Serrana de Series YACANTO I; '
+        'YACANTO II; YACANTO III; YACANTO IV; CALAMUCHITA III; '
+        'SAN IGNACIO IV; FUNDACIÓN y SAN PANCRACIO',
+      ),
+      findsOneWidget,
+    );
+    await tester.scrollUntilVisible(
+      find.text('SAN PANCRACIO'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+
+    expect(find.text('YACANTO I'), findsOneWidget);
+    expect(find.text('FUNDACIÓN'), findsOneWidget);
+    expect(find.text('SAN PANCRACIO'), findsOneWidget);
+    expect(find.text('YACANTO II'), findsOneWidget);
+    expect(find.text('YACANTO III'), findsOneWidget);
+    expect(find.text('YACANTO IV'), findsOneWidget);
+    expect(find.text('CALAMUCHITA III'), findsOneWidget);
+    expect(find.text('SAN IGNACIO IV'), findsOneWidget);
+    expect(find.text('Sin porcentaje'), findsNWidgets(8));
+    expect(find.textContaining('%'), findsNothing);
+    expect(find.text('Clasificación del suelo y taxonomía'), findsOneWidget);
+    expect(find.text('IV/VI'), findsOneWidget);
+    expect(find.text('es'), findsOneWidget);
+    expect(find.text('38'), findsOneWidget);
+  });
+
+  testWidgets('Córdoba SEl3 card restores official series percentages', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final feature = _soilDetailFeature(
+      id: 'cordoba:50k:SEl3',
+      center: const LatLng(-32.15, -63.75),
+      properties: const <String, Object?>{
+        'OBJECTID': 617,
+        'SIMBC': 'SEl3',
+        'Nombre_UC':
+            'Complejo indiferenciado en fase poco anegable de Series '
+            'SANTA ELENA; FLORA y ACHALAY',
+        'TIPO': 'Complejo indiferenciado',
+        'CAP_USO': 'VIIws',
+        'SERIE1': 'SANTA ELENA',
+        'PORC1': null,
+        'SERIE2': 'FLORA',
+        'PORC2': null,
+        'SERIE3': 'ACHALAY',
+        'PORC3': null,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -32.15,
+            centerLongitude: -63.75,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'SEl3', 'SEl3');
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+
+    expect(find.text('SANTA ELENA'), findsOneWidget);
+    expect(find.text('FLORA'), findsOneWidget);
+    expect(find.text('ACHALAY'), findsOneWidget);
+    expect(find.text('40%'), findsNWidgets(2));
+    expect(find.text('20%'), findsOneWidget);
+    expect(find.text('Sin porcentaje'), findsNothing);
+  });
+
+  testWidgets('Córdoba Ota5 card displays the three official proportions', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final feature = _soilDetailFeature(
+      id: 'cordoba:50k:Ota5',
+      center: const LatLng(-33.2, -63.8),
+      properties: const <String, Object?>{
+        'OBJECTID': 1281,
+        'SIMBC': 'Ota5',
+        'Nombre_UC':
+            'Complejo de series OLAETA; LA VICTORIA y OLAETA en fase '
+            'moderadamente alcalina en profundidad',
+        'TIPO': 'Complejo indiferenciado',
+        'CAP_USO': 'IVws',
+        'SERIE1': 'OLAETA',
+        'FASE1': null,
+        'PORC1': null,
+        'SERIE2': 'LA VICTORIA',
+        'FASE2': null,
+        'PORC2': null,
+        'SERIE3': 'OLAETA',
+        // FASE3 is omitted from the PMTiles and restored by the Córdoba
+        // feature metadata asset before supplement percentages are matched.
+        'PORC3': null,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -33.2,
+            centerLongitude: -63.8,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'Ota5', 'Ota5');
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+
+    expect(find.text('OLAETA'), findsNWidgets(2));
+    expect(find.text('LA VICTORIA'), findsOneWidget);
+    expect(find.text('40%'), findsOneWidget);
+    expect(find.text('30%'), findsNWidgets(2));
+    expect(find.text('Sin porcentaje'), findsNothing);
+  });
+
+  testWidgets('Córdoba BYc3 card labels the 60% only as an aggregate', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final feature = _soilDetailFeature(
+      id: 'cordoba:50k:BYc3',
+      center: const LatLng(-30.6, -63.9),
+      properties: const <String, Object?>{
+        'OBJECTID': 1371,
+        'SIMBC': 'BYc3',
+        'Nombre_UC':
+            'Complejo indiferenciado de Series BARRANCA YACO; LA EMILIA',
+        'TIPO': 'Complejo indiferenciado',
+        'CAP_USO': 'IVsc',
+        'SERIE1': 'BARRANCA YACO',
+        'PORC1': null,
+        'SERIE2': 'LA EMILIA',
+        'PORC2': null,
+        'SERIE3': 'PUERTA DE HIERRO II',
+        'PORC3': null,
+        'SERIE4': 'suelos de textura arenosa franca poco desarrollados',
+        'PORC4': null,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -30.6,
+            centerLongitude: -63.9,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'BYc3', 'BYc3');
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+
+    expect(find.text('Composición agregada (no individual)'), findsOneWidget);
+    expect(
+      find.textContaining('representan aproximadamente 60% en conjunto'),
+      findsOneWidget,
+    );
+    expect(find.text('BARRANCA YACO'), findsOneWidget);
+    expect(find.text('LA EMILIA'), findsOneWidget);
+    expect(find.text('Sin porcentaje'), findsNWidgets(4));
+  });
+
+  testWidgets('Córdoba title falls back to stable OBJECTID without SIMBC', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    const narrative = 'Complejo de suelos sin símbolo cartográfico publicado';
+    final feature = _soilDetailFeature(
+      id: 'cordoba:stable-fallback',
+      center: const LatLng(-32.296, -62.655),
+      properties: const <String, Object?>{
+        'Nombre_UC': narrative,
+        'OBJECTID': 99017,
+        'TIPO': 'Complejo diferenciado',
+        'CAP_USO': 'IVs',
+        'SERIE1': 'SERIE FALLBACK',
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -32.296,
+            centerLongitude: -62.655,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'SERIE FALLBACK', 'SERIE FALLBACK');
+
+    expect(find.text('Serie Fallback'), findsOneWidget);
+    expect(find.text('Complejo diferenciado Serie Fallback'), findsNothing);
+    expect(find.text(narrative), findsOneWidget);
+    expect(find.text('Paisaje'), findsNothing);
+    expect(find.text('Clasificación del suelo y taxonomía'), findsNothing);
+  });
+
+  testWidgets('Córdoba AEtc-2 title uses one leading source series', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    const narrative =
+        'Complejo en fase moderadamente salina de Series PERFIL N°15 30%; '
+        'PERFIL N°16 30%; PERFIL N°9 20% y otros suelos hidro-halomórficos';
+    final feature = _soilDetailFeature(
+      id: 'cordoba:aetc-2',
+      center: const LatLng(-32.296, -62.655),
+      properties: const <String, Object?>{
+        'SIMBC': 'AEtc-2',
+        'Nombre_UC': narrative,
+        'TIPO': 'Complejo diferenciado',
+        'CAP_USO': 'VIIws',
+        'CLASE': 'VII',
+        'SUBCLASE': 'ws',
+        'IP': 10,
+        'SERIE1': 'ARROYITO',
+        'FASE1': 'en fase moderadamente salina',
+        'PORC1': 30,
+        'SERIE2': 'ALTOS DE CHIPIÓN',
+        'FASE2': 'en fase moderadamente salina',
+        'PORC2': 30,
+        'SERIE3': 'LA ARGENTINA',
+        'FASE3': 'en fase moderadamente salina',
+        'PORC3': 20,
+        'SERIE4': 'suelos hidro-halomórficos',
+        'PORC4': 20,
+        'OBJECTID': 1556,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -32.296,
+            centerLongitude: -62.655,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'AEtc-2', 'AEtc-2');
+
+    expect(find.text('Arroyito'), findsOneWidget);
+    expect(find.text('Complejo diferenciado Arroyito'), findsNothing);
+    expect(find.text('AEtc-2'), findsOneWidget);
+    expect(find.text(narrative), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('ARROYITO'), findsOneWidget);
+    expect(find.text('ALTOS DE CHIPIÓN'), findsOneWidget);
+    expect(find.text('LA ARGENTINA'), findsOneWidget);
+    expect(find.text('suelos hidro-halomórficos'), findsOneWidget);
+    expect(find.text('30%'), findsNWidgets(2));
+    expect(find.text('20%'), findsNWidgets(2));
+    expect(find.text('Clase'), findsOneWidget);
+    expect(find.text('VII'), findsOneWidget);
+    expect(find.text('Subclase'), findsOneWidget);
+    expect(find.text('ws'), findsOneWidget);
+    expect(find.text('Índice de productividad (IP)'), findsOneWidget);
+    expect(find.text('10'), findsOneWidget);
+    expect(find.text('en fase moderadamente salina'), findsNWidgets(3));
+  });
+
+  testWidgets('Córdoba packaged metadata enriches selected AEtc-2 card', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    const narrative =
+        'Complejo en fase moderadamente salina de Series PERFIL N°15 30%; '
+        'PERFIL N°16 30%; PERFIL N°9 20% y otros suelos hidro-halomórficos';
+    final feature = _soilDetailFeature(
+      id: 'cordoba:100271',
+      center: const LatLng(-32.296, -62.655),
+      properties: const <String, Object?>{
+        'OBJECTID': 100271,
+        'SIMBC': 'AEtc-2',
+        'Nombre_UC': narrative,
+        'TIPO': 'Complejo diferenciado',
+        'CAP_USO': 'VIIws',
+        'SERIE1': 'ARROYITO',
+        'PORC1': 30,
+        'SERIE2': 'ALTOS DE CHIPIÓN',
+        'PORC2': 30,
+        'SERIE3': 'LA ARGENTINA',
+        'PORC3': 20,
+        'SERIE4': 'suelos hidro-halomórficos',
+        'PORC4': 20,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -32.296,
+            centerLongitude: -62.655,
+          ),
+          provinceConfig: ProvinceConfig.cordoba,
+          cardAssetBundle: _cordobaCardTestAssetBundle(),
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'AEtc-2', 'AEtc-2');
+
+    expect(find.text('Arroyito'), findsOneWidget);
+    expect(find.text('Complejo diferenciado Arroyito'), findsNothing);
+    expect(find.text('AEtc-2'), findsOneWidget);
+    expect(find.text(narrative), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('Clase'), findsOneWidget);
+    expect(find.text('VII'), findsOneWidget);
+    expect(find.text('Subclase'), findsOneWidget);
+    expect(find.text('ws'), findsOneWidget);
+    expect(find.text('Índice de productividad (IP)'), findsOneWidget);
+    expect(find.text('10'), findsOneWidget);
+    expect(find.text('en fase moderadamente salina'), findsNWidgets(3));
+    expect(find.text('30%'), findsNWidgets(2));
+    expect(find.text('20%'), findsNWidgets(2));
+  });
+
+  testWidgets(
+    'Buenos Aires Bragado title is the leading series and keeps its data',
+    (tester) async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      final feature = _soilDetailFeature(
+        id: 'ba:bragado-title-test',
+        center: const LatLng(-36.5, -60),
+        properties: const <String, Object?>{
+          'SIMBC': 'Bra',
+          'Nombre_UC': 'Asociacion Bragado',
+          'TIPO': 'Asociacion',
+          'CAP_USO': 'IIs',
+          'PAISAJE': 'Lomas y llanos altos',
+          'SERIE1': 'Bragado',
+          'PORC1': 70,
+          'SERIE2': 'Norumbega',
+          'PORC2': 15,
+          'SERIE3': 'Henry Bell',
+          'PORC3': 15,
+        },
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GisMapScreen(
+            repository: _SingleFeatureGisRepository(feature),
+            provinceConfig: ProvinceConfig.buenosAires,
+          ),
+        ),
+      );
+      await _waitForMapTiles(tester);
+      await _selectMapSearchResult(tester, 'Bra', 'Bra');
+
+      expect(find.text('Bragado'), findsOneWidget);
+      expect(find.text('Asociacion Bragado'), findsNothing);
+      expect(find.text('Lomas y llanos altos'), findsOneWidget);
+      expect(find.text('Paisaje'), findsOneWidget);
+      expect(find.text('Clasificación del suelo y taxonomía'), findsNothing);
+      await tester.scrollUntilVisible(
+        find.text('Series de suelo'),
+        120,
+        scrollable: find.byType(Scrollable).last,
+      );
+      expect(find.text('Bragado'), findsOneWidget);
+      expect(find.text('70%'), findsOneWidget);
+      expect(find.text('15%'), findsNWidgets(2));
+    },
+  );
+
+  testWidgets('Buenos Aires title omits type and the series composition', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    const narrative =
+        'Consociacion Bolivar 60%; Henderson 25%; Urdampilleta 15%';
+    final feature = _soilDetailFeature(
+      id: 'ba:bolivar-test',
+      center: const LatLng(-36.5, -60),
+      properties: const <String, Object?>{
+        'SIMBC': 'Bol',
+        'Nombre_UC': narrative,
+        'TIPO': 'Consociacion',
+        'CAP_USO': 'IIIe',
+        'SERIE1': 'BOLIVAR',
+        'PORC1': 60,
+        'SERIE2': 'HENDERSON',
+        'PORC2': 25,
+        'SERIE3': 'URDAMPILLETA',
+        'PORC3': 15,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(feature),
+          provinceConfig: ProvinceConfig.buenosAires,
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'Bol', 'Bol');
+
+    expect(find.text('Bolivar'), findsOneWidget);
+    expect(find.text('Consociacion Bolivar'), findsNothing);
+    expect(find.text(narrative), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('BOLIVAR'), findsOneWidget);
+    expect(find.text('HENDERSON'), findsOneWidget);
+    expect(find.text('URDAMPILLETA'), findsOneWidget);
+    expect(find.text('60%'), findsOneWidget);
+    expect(find.text('25%'), findsOneWidget);
+    expect(find.text('15%'), findsOneWidget);
+  });
+
+  testWidgets('Santa Fe MLA-04 resolves each source series and its memory', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final feature = _soilDetailFeature(
+      id: 'santa_fe:1362',
+      center: const LatLng(-30.18, -60.8),
+      properties: const <String, Object?>{
+        'SIMBC': 'MLA-04',
+        'Nombre_UC': 'María Luisa',
+        'TIPO': 'Cp',
+        'CAP_USO': '3/4ws',
+        'SERIE1': 'MLA cc',
+        'PORC1': 40,
+        'SERIE2': 'PEA cc',
+        'PORC2': 30,
+        'SERIE3': 'RSA cc',
+        'PORC3': 30,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -30.18,
+            centerLongitude: -60.8,
+          ),
+          provinceConfig: ProvinceConfig.santaFe,
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'María Luisa', 'María Luisa');
+    expect(find.text('María Luisa'), findsNWidgets(2));
+    expect(find.text('Símbolo'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Series de suelo'),
+      120,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.text('María Luisa'), findsNWidgets(2));
+    expect(find.text('Petronila'), findsOneWidget);
+    expect(find.text('Río Salado'), findsOneWidget);
+    expect(find.text('40%'), findsOneWidget);
+    expect(find.text('30%'), findsNWidgets(2));
+    expect(find.text('cc'), findsNothing);
+    expect(find.text('Paisaje'), findsNothing);
+    expect(find.text('Abrir PDF'), findsNWidgets(3));
+  });
+
+  testWidgets('Santa Fe card title is its dominant resolved series', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final feature = _soilDetailFeature(
+      id: 'santa_fe:title-dominant-series-test',
+      center: const LatLng(-30.18, -60.8),
+      properties: const <String, Object?>{
+        'SIMBC': 'MLA-04',
+        'Nombre_UC': 'María Luisa',
+        'TIPO': 'Cp',
+        'SERIE1': 'MLA cc',
+        'PORC1': 40,
+        'SERIE2': 'PEA cc',
+        'PORC2': 30,
+        'SERIE3': 'RSA cc',
+        'PORC3': 30,
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GisMapScreen(
+          repository: _SingleFeatureGisRepository(
+            feature,
+            centerLatitude: -30.18,
+            centerLongitude: -60.8,
+          ),
+          provinceConfig: ProvinceConfig.santaFe,
+        ),
+      ),
+    );
+    await _waitForMapTiles(tester);
+    await _selectMapSearchResult(tester, 'María Luisa', 'María Luisa');
+
+    expect(find.text('María Luisa'), findsNWidgets(2));
+    expect(find.text('Unidad cartográfica'), findsOneWidget);
+    expect(find.text('Símbolo'), findsOneWidget);
+  });
+
   testWidgets('GIS favorite reuses search centering and selection workflow', (
     WidgetTester tester,
   ) async {
@@ -2863,6 +3639,32 @@ void main() {
   });
 }
 
+GisFeature _soilDetailFeature({
+  required String id,
+  required LatLng center,
+  required Map<String, Object?> properties,
+}) {
+  const half = 0.002;
+  return GisFeature(
+    id: id,
+    geometry: GisGeometry(
+      type: 'Polygon',
+      coordinates: [
+        [
+          [center.longitude - half, center.latitude - half],
+          [center.longitude + half, center.latitude - half],
+          [center.longitude + half, center.latitude + half],
+          [center.longitude - half, center.latitude + half],
+          [center.longitude - half, center.latitude - half],
+        ],
+      ],
+    ),
+    properties: properties,
+    locality: '',
+    soilMapId: 0,
+  );
+}
+
 class _DeferredGisRepository implements GisRepository {
   final Completer<GisArchiveInfo> _initialization = Completer<GisArchiveInfo>();
   int initializeCalls = 0;
@@ -2903,17 +3705,23 @@ class _DeferredGisRepository implements GisRepository {
 }
 
 class _SingleFeatureGisRepository implements GisRepository {
-  const _SingleFeatureGisRepository(this.feature);
+  const _SingleFeatureGisRepository(
+    this.feature, {
+    this.centerLatitude = -36.5,
+    this.centerLongitude = -60,
+  });
 
   final GisFeature feature;
+  final double centerLatitude;
+  final double centerLongitude;
 
   @override
   Future<GisArchiveInfo> initialize() async {
-    return const GisArchiveInfo(
+    return GisArchiveInfo(
       minZoom: 4,
       maxZoom: 14,
-      centerLatitude: -36.5,
-      centerLongitude: -60,
+      centerLatitude: centerLatitude,
+      centerLongitude: centerLongitude,
     );
   }
 
@@ -2937,7 +3745,7 @@ class _MultiFeatureGisRepository implements GisRepository {
 
   @override
   Future<GisArchiveInfo> initialize() async {
-    return const GisArchiveInfo(
+    return GisArchiveInfo(
       minZoom: 4,
       maxZoom: 14,
       centerLatitude: -36.5,
@@ -3073,13 +3881,76 @@ Future<void> _selectMapSearchResult(
   await tester.pumpAndSettle();
   await tester.tap(find.text(result).last);
   await tester.pumpAndSettle();
+  final unitChoices = find.textContaining('unidades cartográficas');
+  final cardOverview = find.text('Información general');
+  await _pumpUntilVisible(
+    tester,
+    () =>
+        unitChoices.evaluate().isNotEmpty ||
+        (cardOverview.evaluate().isNotEmpty &&
+            find.byType(TextField).evaluate().isEmpty),
+    failure: 'Search selection did not open unit choices or the detail card.',
+  );
   final seriesUnitRows = find.descendant(
     of: find.byType(BottomSheet),
     matching: find.byType(ListTile),
   );
-  if (seriesUnitRows.evaluate().isNotEmpty) {
+  if (unitChoices.evaluate().isNotEmpty) {
     await tester.tap(seriesUnitRows.first);
-    await tester.pumpAndSettle();
+    await _pumpUntilVisible(
+      tester,
+      () => cardOverview.evaluate().isNotEmpty,
+      failure: 'Selected map unit did not open its detail card.',
+    );
+  }
+}
+
+Future<void> _pumpUntilVisible(
+  WidgetTester tester,
+  bool Function() condition, {
+  required String failure,
+}) async {
+  const frameStep = Duration(milliseconds: 50);
+  const maxFrames = 40;
+  for (var frame = 0; frame < maxFrames; frame++) {
+    if (condition()) return;
+    await tester.pump(frameStep);
+  }
+  if (condition()) return;
+  fail('$failure (waited ${frameStep * maxFrames}).');
+}
+
+AssetBundle _cordobaCardTestAssetBundle() => _SynchronousMapAssetBundle({
+  AssetPaths.cordobaFeatureMetadata: File(
+    AssetPaths.cordobaFeatureMetadata,
+  ).readAsStringSync(),
+  AssetPaths.cordobaSeriesPercentageSupplement: File(
+    AssetPaths.cordobaSeriesPercentageSupplement,
+  ).readAsStringSync(),
+});
+
+class _SynchronousMapAssetBundle extends CachingAssetBundle {
+  _SynchronousMapAssetBundle(this._assets);
+
+  final Map<String, String> _assets;
+
+  @override
+  Future<ByteData> load(String key) {
+    final contents = _assets[key];
+    if (contents == null) {
+      return Future<ByteData>.error(FlutterError('Missing test asset: $key'));
+    }
+    final bytes = Uint8List.fromList(utf8.encode(contents));
+    return SynchronousFuture(ByteData.sublistView(bytes));
+  }
+
+  @override
+  Future<String> loadString(String key, {bool cache = true}) {
+    final contents = _assets[key];
+    if (contents == null) {
+      return Future<String>.error(FlutterError('Missing test asset: $key'));
+    }
+    return SynchronousFuture(contents);
   }
 }
 

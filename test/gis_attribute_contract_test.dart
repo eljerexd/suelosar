@@ -16,7 +16,7 @@ import '../tool/optimize_buenos_aires_pmtiles.dart' as optimizer;
 Set<String> _attributesReadByMapScreen() {
   final source = File('lib/gis/gis_map_screen.dart').readAsStringSync();
   final pattern = RegExp(
-    r"(?:_readAttribute|_featureValue|_propertyValue)\(\s*\w+\s*,\s*'([^']+)'\s*\)"
+    r"(?:_readAttribute|_optionalAttribute|_featureValue|_propertyValue)\(\s*\w+\s*,\s*'([^']+)'\s*\)"
     r"|properties\['([^']+)'\]",
   );
   return {
@@ -35,22 +35,24 @@ void main() {
     );
   });
 
-  test('the Buenos Aires optimizer keeps every attribute the map screen reads',
-      () {
-    final read = _attributesReadByMapScreen();
-    expect(
-      read.difference(optimizer.keptAttributes),
-      isEmpty,
-      reason:
-          'tool/optimize_buenos_aires_pmtiles.dart would strip these from the '
-          'Buenos Aires archive, and the map screen would show "Sin datos"',
-    );
-    expect(read.intersection(optimizer.droppedAttributes), isEmpty);
-    expect(
-      optimizer.keptAttributes.intersection(optimizer.droppedAttributes),
-      isEmpty,
-    );
-  });
+  test(
+    'the Buenos Aires optimizer keeps every attribute the map screen reads',
+    () {
+      final read = _attributesReadByMapScreen();
+      expect(
+        read.difference(optimizer.keptAttributes),
+        isEmpty,
+        reason:
+            'tool/optimize_buenos_aires_pmtiles.dart would strip these from the '
+            'Buenos Aires archive, and the map screen would show "Sin datos"',
+      );
+      expect(read.intersection(optimizer.droppedAttributes), isEmpty);
+      expect(
+        optimizer.keptAttributes.intersection(optimizer.droppedAttributes),
+        isEmpty,
+      );
+    },
+  );
 
   test('the shipped Buenos Aires archive carries TIPO and PAISAJE', () async {
     final repository = PmTilesGisRepository.fromFile(

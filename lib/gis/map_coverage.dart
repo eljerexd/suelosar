@@ -100,9 +100,9 @@ class MapCoverage {
     config: ProvinceConfig.cordoba,
     bounds: const GeoBounds(
       minLatitude: -35.047987,
-      maxLatitude: -30.281602,
-      minLongitude: -65.1708979,
-      maxLongitude: -61.759644,
+      maxLatitude: -29.496988,
+      minLongitude: -65.772057,
+      maxLongitude: -61.743164,
     ),
     onDemandDelivery: CordobaPmtilesDelivery.instance,
   );

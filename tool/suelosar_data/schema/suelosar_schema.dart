@@ -62,6 +62,12 @@ abstract final class SuelosArSchema {
     'OBJECTID',
     'SERIE7',
     'SERIE8',
+    'FASE1',
+    'FASE2',
+    'FASE3',
+    'FASE4',
+    'CLASE',
+    'SUBCLASE',
     'SUBGRUPO1',
     'SUBGRUPO2',
     'SUBGRUPO3',
@@ -75,7 +81,7 @@ abstract final class SuelosArSchema {
     'IP',
   ];
 
-  /// Every attribute the app reads from a feature (18).
+  /// Every attribute the app may read from a feature.
   static final appAttributes = {...requiredFields, ...optionalFields};
 
   /// Fields whose coverage is held to the province's thresholds by default.

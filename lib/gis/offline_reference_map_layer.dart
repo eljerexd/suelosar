@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,179 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../constants/asset_paths.dart';
+import 'pmtiles_delivery.dart';
+
+bool shouldUseEnhancedBuenosAiresBoundaryStyle({
+  required PmtilesDeliveryStatus deliveryStatus,
+  required bool soilPolygonsVisible,
+  required bool mapReady,
+  required bool hasVisibleBuenosAiresPolygons,
+}) => shouldUseEnhancedAdministrativeBoundaryStyle(
+  deliveryStatus: deliveryStatus,
+  soilPolygonsVisible: soilPolygonsVisible,
+  mapReady: mapReady,
+  hasVisiblePolygons: hasVisibleBuenosAiresPolygons,
+);
+
+bool shouldUseEnhancedAdministrativeBoundaryStyle({
+  required PmtilesDeliveryStatus deliveryStatus,
+  required bool soilPolygonsVisible,
+  required bool mapReady,
+  required bool hasVisiblePolygons,
+}) {
+  return deliveryStatus == PmtilesDeliveryStatus.available &&
+      soilPolygonsVisible &&
+      mapReady &&
+      hasVisiblePolygons;
+}
+
+typedef AdministrativeBoundaryStyle = ({
+  Color color,
+  double strokeWidth,
+  double opacity,
+});
+
+AdministrativeBoundaryStyle administrativeBoundaryStyleAtZoom({
+  required bool enhancedForSoilPolygons,
+  required double zoom,
+}) => enhancedForSoilPolygons
+    ? (
+        color: const Color(0xFF252A25),
+        strokeWidth: 2.5,
+        opacity: enhancedBuenosAiresBoundaryOpacityAtZoom(zoom),
+      )
+    : (color: const Color(0xFF62695C), strokeWidth: 1.5, opacity: 0.78);
+
+bool shouldEnhanceGeographicLabelForProvince({
+  required String provinceId,
+  required bool enhancedBuenosAiresBoundaries,
+}) => provinceId == 'buenos_aires' && enhancedBuenosAiresBoundaries;
+
+double localityVisibilityAtZoom({
+  required double zoom,
+  required double? minZoom,
+  required double? fadeInEndZoom,
+  required String? category,
+}) {
+  if (minZoom != null && fadeInEndZoom != null) {
+    if (fadeInEndZoom <= minZoom) return zoom >= fadeInEndZoom ? 1 : 0;
+    return ((zoom - minZoom) / (fadeInEndZoom - minZoom)).clamp(0.0, 1.0);
+  }
+  if (category == null) return 0;
+  return buenosAiresLocalityVisibilityAtZoom(category: category, zoom: zoom);
+}
+
+double enhancedBuenosAiresBoundaryOpacityAtZoom(double zoom) {
+  const points = <(double, double)>[
+    (10, 1),
+    (11, 0.75),
+    (12, 0.5),
+    (13, 0.3),
+    (14, 0.15),
+    (15, 0.08),
+    (16, 0.045),
+  ];
+  if (zoom <= points.first.$1) return points.first.$2;
+  if (zoom >= points.last.$1) return points.last.$2;
+  for (var index = 0; index < points.length - 1; index++) {
+    final (startZoom, startOpacity) = points[index];
+    final (endZoom, endOpacity) = points[index + 1];
+    if (zoom <= endZoom) {
+      final progress = (zoom - startZoom) / (endZoom - startZoom);
+      return startOpacity + (endOpacity - startOpacity) * progress;
+    }
+  }
+  return points.last.$2;
+}
+
+Color geographicLabelTextColor({required bool enhancedForSoilPolygons}) =>
+    enhancedForSoilPolygons ? const Color(0xFF20271F) : const Color(0xFF29312C);
+
+Color jurisdictionLabelTextColor({required bool enhancedForSoilPolygons}) =>
+    enhancedForSoilPolygons ? const Color(0xFF20271F) : const Color(0xFF4B5148);
+
+Color geographicLabelHaloColor({required bool enhancedForSoilPolygons}) =>
+    enhancedForSoilPolygons ? const Color(0xFFF7F7F1) : const Color(0xFFFCFCFA);
+
+double localityLabelHaloWidth({
+  required bool enhancedForSoilPolygons,
+  required bool isPrimary,
+}) => enhancedForSoilPolygons ? 3.8 : (isPrimary ? 5 : 4.5);
+
+double jurisdictionLabelHaloWidth({required bool enhancedForSoilPolygons}) =>
+    enhancedForSoilPolygons ? 3.8 : 3.4;
+
+double buenosAiresLocalityVisibilityAtZoom({
+  required String category,
+  required double zoom,
+}) {
+  final (start, end) = switch (category) {
+    'Localidad simple' || 'Componente de localidad compuesta' => (9.5, 10.3),
+    'Entidad' => (11.5, 12.3),
+    _ => (double.infinity, double.infinity),
+  };
+  if (start.isInfinite) return 0;
+  return ((zoom - start) / (end - start)).clamp(0.0, 1.0);
+}
+
+bool shouldSuppressPartidoForLocality({
+  required String partidoName,
+  required Set<String> localityPartidoNames,
+  required Set<String> legacyLocalityNames,
+}) =>
+    localityPartidoNames.contains(partidoName.trim().toLowerCase()) ||
+    legacyLocalityNames.contains(partidoName);
+
+bool _sameStrings(Set<String> first, Set<String> second) =>
+    first.length == second.length && first.containsAll(second);
+
+String _referenceProvinceIdForAsset(String assetPath) => switch (assetPath) {
+  AssetPaths.agronomicReferenceMap => 'buenos_aires',
+  AssetPaths.santaFeAgronomicReferenceMap => 'santa_fe',
+  AssetPaths.cordobaAgronomicReferenceMap => 'cordoba',
+  _ => throw ArgumentError.value(assetPath, 'assetPath'),
+};
+
+/// Spreads non-Buenos-Aires jurisdiction labels across the same four zoom
+/// tiers already used by the Buenos Aires reference asset. Closer official
+/// label anchors are deferred until users zoom in, while existing collision
+/// handling remains the final screen-space guard.
+List<double> progressiveJurisdictionMinZooms(List<LatLng> positions) {
+  return [
+    for (var index = 0; index < positions.length; index++)
+      _jurisdictionMinZoomForNearestDistance(
+        _nearestJurisdictionDistanceKm(positions, index),
+      ),
+  ];
+}
+
+double _nearestJurisdictionDistanceKm(List<LatLng> positions, int index) {
+  if (positions.length < 2) return double.infinity;
+  final point = positions[index];
+  var nearest = double.infinity;
+  for (var otherIndex = 0; otherIndex < positions.length; otherIndex++) {
+    if (otherIndex == index) continue;
+    final other = positions[otherIndex];
+    const radians = math.pi / 180;
+    final latitudeDelta = (other.latitude - point.latitude) * radians;
+    final longitudeDelta = (other.longitude - point.longitude) * radians;
+    final a =
+        math.pow(math.sin(latitudeDelta / 2), 2) +
+        math.cos(point.latitude * radians) *
+            math.cos(other.latitude * radians) *
+            math.pow(math.sin(longitudeDelta / 2), 2);
+    final distance = 2 * 6371 * math.asin(math.sqrt(a));
+    if (distance < nearest) nearest = distance;
+  }
+  return nearest;
+}
+
+double _jurisdictionMinZoomForNearestDistance(double distanceKm) {
+  if (distanceKm >= 90) return 7;
+  if (distanceKm >= 65) return 7.7;
+  if (distanceKm >= 45) return 8.6;
+  return 9.4;
+}
 
 /// Offline agronomic reference basemap rendered behind the soil polygons.
 ///
@@ -15,11 +189,15 @@ import '../constants/asset_paths.dart';
 class OfflineReferenceMapLayer extends StatelessWidget {
   const OfflineReferenceMapLayer({
     this.foreground = false,
+    this.enhancedBuenosAiresBoundaries = false,
+    this.enhancedAdministrativeBoundaryProvinceIds = const <String>{},
     this.assetPaths = const [AssetPaths.agronomicReferenceMap],
     super.key,
   });
 
   final bool foreground;
+  final bool enhancedBuenosAiresBoundaries;
+  final Set<String> enhancedAdministrativeBoundaryProvinceIds;
 
   /// Basemap JSON assets to render, merged into one basemap — Fase 6: a
   /// single map screen spanning several provinces' coverage renders all of
@@ -81,6 +259,10 @@ class OfflineReferenceMapLayer extends StatelessWidget {
                       basemap: basemap,
                       camera: camera,
                       foreground: foreground,
+                      enhancedBuenosAiresBoundaries:
+                          enhancedBuenosAiresBoundaries,
+                      enhancedAdministrativeBoundaryProvinceIds:
+                          enhancedAdministrativeBoundaryProvinceIds,
                     ),
                     size: Size.infinite,
                   );
@@ -99,6 +281,8 @@ class _AgronomicReferencePainter extends CustomPainter {
     required this.basemap,
     required this.camera,
     required this.foreground,
+    required this.enhancedBuenosAiresBoundaries,
+    required this.enhancedAdministrativeBoundaryProvinceIds,
   }) : _provincialBoundaryPaint = _linePaint(
          const Color(0xDD2B2B2B),
          strokeWidth: 1,
@@ -109,9 +293,13 @@ class _AgronomicReferencePainter extends CustomPainter {
        // green, deliberately: the soil-unit borders already use the app's
        // primary green (`_GisPolygonStyle.normalBorder`), so the two
        // boundary kinds never get confused for one another.
-       _departmentBoundaryPaint = _linePaint(
-         const Color(0xB2545A50),
-         strokeWidth: _departmentBoundaryStrokeWidth,
+       _buenosAiresDepartmentBoundaryPaint = _linePaint(
+         const Color(0xFF62695C),
+         strokeWidth: _buenosAiresDepartmentBoundaryDefaultStrokeWidth,
+       ),
+       _enhancedBuenosAiresDepartmentBoundaryPaint = _linePaint(
+         const Color(0xFF252A25),
+         strokeWidth: _buenosAiresDepartmentBoundaryStrokeWidth,
        ),
        _riverCasingPaint = _linePaint(
          const Color(0xB8F7FBFC),
@@ -141,7 +329,8 @@ class _AgronomicReferencePainter extends CustomPainter {
   // Named so both the initial Paint construction and the per-frame
   // stroke-width rescale in `_paintLineLayers` (needed to counteract the
   // canvas scale used to reposition cached geometry) read the same values.
-  static const double _departmentBoundaryStrokeWidth = 0.5;
+  static const double _buenosAiresDepartmentBoundaryDefaultStrokeWidth = 1.5;
+  static const double _buenosAiresDepartmentBoundaryStrokeWidth = 2.5;
   static const double _riverCasingStrokeWidth = 3;
   static const double _riverStrokeWidth = 1.55;
   static const double _nationalRoadCasingStrokeWidth = 3.4;
@@ -152,8 +341,11 @@ class _AgronomicReferencePainter extends CustomPainter {
   final _AgronomicReferenceBasemap basemap;
   final MapCamera camera;
   final bool foreground;
+  final bool enhancedBuenosAiresBoundaries;
+  final Set<String> enhancedAdministrativeBoundaryProvinceIds;
   final Paint _provincialBoundaryPaint;
-  final Paint _departmentBoundaryPaint;
+  final Paint _buenosAiresDepartmentBoundaryPaint;
+  final Paint _enhancedBuenosAiresDepartmentBoundaryPaint;
   final Paint _riverCasingPaint;
   final Paint _riverPaint;
   final Paint _nationalRoadCasingPaint;
@@ -166,27 +358,36 @@ class _AgronomicReferencePainter extends CustomPainter {
     if (!foreground) {
       _paintLineLayers(canvas);
     } else {
-      // Fase 6 Parte 38: painted above the soil polygons (this is the
-      // `foreground` pass), unlike every other reference line, which stays
-      // in the background pass below them — a province boundary needs to
-      // stay legible across neighbouring provinces' polygon fills, not be
-      // covered by them. Drawn before the labels so a city/department label
-      // always wins if the two ever overlap.
+      // Administrative jurisdiction boundaries are drawn after the soil
+      // polygons. Labels are painted after both boundary passes.
       _paintProvincialBoundary(canvas);
+      _paintBuenosAiresDepartmentBoundaries(canvas);
+      _paintOtherDepartmentBoundaries(canvas);
 
       // Shared between both label passes so a department name and a city
-      // name never overlap each other either — cities are drawn second, so
-      // a named settlement always wins a collision against a jurisdiction
-      // label, consistent with the reference layer staying subordinate to
-      // the more specific, more useful annotation.
+      // name never overlap. Cities reserve space first, so a named
+      // settlement wins collisions against jurisdiction labels.
       final occupiedLabels = <Rect>[];
+      final localityPartidoNames = <String>{};
+      final legacyLocalityNames = <String>{};
+      _drawCityLabels(
+        canvas,
+        size,
+        _labelOpacity(camera.zoom),
+        occupiedLabels,
+        localityPartidoNames,
+        legacyLocalityNames,
+        enhancedBuenosAiresBoundaries,
+      );
       _drawDepartmentLabels(
         canvas,
         size,
         _departmentOpacity(camera.zoom),
         occupiedLabels,
+        localityPartidoNames,
+        legacyLocalityNames,
+        enhancedBuenosAiresBoundaries,
       );
-      _drawCityLabels(canvas, size, _labelOpacity(camera.zoom), occupiedLabels);
     }
   }
 
@@ -194,7 +395,13 @@ class _AgronomicReferencePainter extends CustomPainter {
   bool shouldRepaint(_AgronomicReferencePainter oldDelegate) {
     return oldDelegate.basemap != basemap ||
         oldDelegate.camera != camera ||
-        oldDelegate.foreground != foreground;
+        oldDelegate.foreground != foreground ||
+        oldDelegate.enhancedBuenosAiresBoundaries !=
+            enhancedBuenosAiresBoundaries ||
+        !_sameStrings(
+          oldDelegate.enhancedAdministrativeBoundaryProvinceIds,
+          enhancedAdministrativeBoundaryProvinceIds,
+        );
   }
 
   // Fase 8C perf fix: line geometry is static (it only ever comes from the
@@ -260,8 +467,8 @@ class _AgronomicReferencePainter extends CustomPainter {
   /// [_AgronomicReferenceBasemap] for why this is safe to share across
   /// camera positions/rotations and bounded to one entry).
   ui.Picture _linePictureForZoom(double snappedZoom, double scale) {
-    final cachedZoom = basemap._cachedLineZoom;
-    if (cachedZoom == snappedZoom) {
+    final cacheKey = '$snappedZoom';
+    if (basemap._cachedLineKey == cacheKey) {
       final cached = basemap._cachedLinePicture;
       if (cached != null) {
         return cached;
@@ -276,8 +483,6 @@ class _AgronomicReferencePainter extends CustomPainter {
     // scale above would otherwise scale them right along with the geometry,
     // so it's cancelled out here to keep the rendered thickness unchanged.
     final inverseScale = 1 / scale;
-    _departmentBoundaryPaint.strokeWidth =
-        _departmentBoundaryStrokeWidth * inverseScale;
     _riverCasingPaint.strokeWidth = _riverCasingStrokeWidth * inverseScale;
     _riverPaint.strokeWidth = _riverStrokeWidth * inverseScale;
     _nationalRoadCasingPaint.strokeWidth =
@@ -287,14 +492,6 @@ class _AgronomicReferencePainter extends CustomPainter {
         _provincialRoadCasingStrokeWidth * inverseScale;
     _provincialRoadPaint.strokeWidth =
         _provincialRoadStrokeWidth * inverseScale;
-
-    final departmentOpacity = _departmentOpacity(snappedZoom);
-    if (departmentOpacity > 0) {
-      recordingCanvas.drawPath(
-        basemap.departmentBoundariesPath,
-        _paintAtOpacity(_departmentBoundaryPaint, departmentOpacity),
-      );
-    }
 
     final riverOpacity = _piecewiseOpacity(snappedZoom, _riverOpacityCurve);
     if (riverOpacity > 0) {
@@ -345,7 +542,7 @@ class _AgronomicReferencePainter extends CustomPainter {
 
     basemap._cachedLinePicture?.dispose();
     final picture = recorder.endRecording();
-    basemap._cachedLineZoom = snappedZoom;
+    basemap._cachedLineKey = cacheKey;
     basemap._cachedLinePicture = picture;
     return picture;
   }
@@ -411,11 +608,119 @@ class _AgronomicReferencePainter extends CustomPainter {
     canvas.restore();
   }
 
+  /// Buenos Aires Partido boundaries use the official reference geometry.
+  void _paintBuenosAiresDepartmentBoundaries(Canvas canvas) {
+    final snappedZoom = _AgronomicReferenceBasemap.snapZoomForCache(
+      camera.zoom,
+    );
+    final halfSize = camera.nonRotatedSize.center(Offset.zero);
+    final scale = camera.getZoomScale(
+      snappedZoom,
+      _AgronomicReferenceBasemap.geometryCacheZoom,
+    );
+    final cachedCenter = camera.projectAtZoom(
+      camera.center,
+      _AgronomicReferenceBasemap.geometryCacheZoom,
+    );
+    final inverseScale = 1 / scale;
+
+    canvas.save();
+    canvas.translate(halfSize.dx, halfSize.dy);
+    if (camera.rotation != 0) {
+      canvas.rotate(camera.rotationRad);
+    }
+    canvas.translate(-cachedCenter.dx * scale, -cachedCenter.dy * scale);
+    canvas.scale(scale);
+    final style = administrativeBoundaryStyleAtZoom(
+      enhancedForSoilPolygons: enhancedBuenosAiresBoundaries,
+      zoom: camera.zoom,
+    );
+    final paint = enhancedBuenosAiresBoundaries
+        ? _enhancedBuenosAiresDepartmentBoundaryPaint
+        : _buenosAiresDepartmentBoundaryPaint;
+    canvas.drawPath(
+      basemap.buenosAiresDepartmentBoundariesPath,
+      _paintAtOpacity(
+        paint
+          ..color = style.color
+          ..strokeWidth = style.strokeWidth * inverseScale,
+        style.opacity,
+      ),
+    );
+    canvas.restore();
+  }
+
+  void _paintOtherDepartmentBoundaries(Canvas canvas) {
+    for (final (provinceId, path) in <(String, ui.Path)>[
+      ('santa_fe', basemap.santaFeDepartmentBoundariesPath),
+      ('cordoba', basemap.cordobaDepartmentBoundariesPath),
+    ]) {
+      final enhanced = enhancedAdministrativeBoundaryProvinceIds.contains(
+        provinceId,
+      );
+      final style = administrativeBoundaryStyleAtZoom(
+        enhancedForSoilPolygons: enhanced,
+        zoom: camera.zoom,
+      );
+      _paintDepartmentBoundaryPath(
+        canvas,
+        path,
+        enhanced
+            ? _enhancedBuenosAiresDepartmentBoundaryPaint
+            : _buenosAiresDepartmentBoundaryPaint,
+        style.strokeWidth,
+        style.color,
+        style.opacity,
+      );
+    }
+  }
+
+  void _paintDepartmentBoundaryPath(
+    Canvas canvas,
+    ui.Path path,
+    Paint paint,
+    double strokeWidth,
+    Color color,
+    double opacity,
+  ) {
+    if (opacity <= 0) return;
+    final snappedZoom = _AgronomicReferenceBasemap.snapZoomForCache(
+      camera.zoom,
+    );
+    final halfSize = camera.nonRotatedSize.center(Offset.zero);
+    final scale = camera.getZoomScale(
+      snappedZoom,
+      _AgronomicReferenceBasemap.geometryCacheZoom,
+    );
+    final cachedCenter = camera.projectAtZoom(
+      camera.center,
+      _AgronomicReferenceBasemap.geometryCacheZoom,
+    );
+    canvas.save();
+    canvas.translate(halfSize.dx, halfSize.dy);
+    if (camera.rotation != 0) canvas.rotate(camera.rotationRad);
+    canvas.translate(-cachedCenter.dx * scale, -cachedCenter.dy * scale);
+    canvas.scale(scale);
+    canvas.drawPath(
+      path,
+      _paintAtOpacity(
+        paint
+          ..color = color
+          ..strokeWidth = strokeWidth / scale,
+        opacity,
+      ),
+    );
+    canvas.restore();
+  }
+
   void _drawCityLabels(
     Canvas canvas,
     Size size,
     double opacity,
     List<Rect> occupiedLabels,
+    Set<String> localityPartidoNames,
+    Set<String> legacyLocalityNames,
+    bool enhancedForSoilPolygons,
   ) {
     final symbolPaint = Paint()
       ..color = const Color(0xFF303632).withValues(alpha: opacity)
@@ -438,6 +743,7 @@ class _AgronomicReferencePainter extends CustomPainter {
     }
 
     for (final city in basemap.majorCities) {
+      if (city.isOfficialSupplement) continue;
       final cityOpacity = opacity * _cityVisibility(city);
       if (cityOpacity <= 0) {
         continue;
@@ -453,7 +759,7 @@ class _AgronomicReferencePainter extends CustomPainter {
         symbolPaint.color = const Color(
           0xFF303632,
         ).withValues(alpha: cityOpacity);
-        canvas.drawCircle(offset, city.isPrimary ? 2.7 : 2.3, symbolPaint);
+        canvas.drawCircle(offset, city.markerRadius, symbolPaint);
       }
     }
 
@@ -492,12 +798,19 @@ class _AgronomicReferencePainter extends CustomPainter {
       // (translated into place) on every later frame — same "record once,
       // reposition cheaply" idea as `_paintLineLayers`, applied to whichever
       // part of the pipeline is actually doing the expensive work. Rebuilt
-      // only when `cityOpacity` changes (zoom-only, per `_labelOpacity`/
-      // `_cityVisibility` — constant across a pure pan).
+      // when `cityOpacity` or the effective soil-polygon styling changes;
+      // both remain constant during a pure pan.
+      final enhanceCityLabel = shouldEnhanceGeographicLabelForProvince(
+        provinceId: city.provinceId,
+        enhancedBuenosAiresBoundaries: enhancedForSoilPolygons,
+      );
       if (city._cachedOpacity != cityOpacity ||
+          city._cachedEnhancedPolygonStyle != enhanceCityLabel ||
           city._cachedLabelPicture == null) {
         final style = TextStyle(
-          color: const Color(0xFF29312C).withValues(alpha: cityOpacity),
+          color: geographicLabelTextColor(
+            enhancedForSoilPolygons: enhanceCityLabel,
+          ).withValues(alpha: cityOpacity),
           fontSize: city.isPrimary ? 16 : 14.5,
           fontWeight: city.isPrimary ? FontWeight.w700 : FontWeight.w600,
           height: 1.05,
@@ -510,11 +823,14 @@ class _AgronomicReferencePainter extends CustomPainter {
 
         final haloStyle = style.copyWith(
           foreground: Paint()
-            ..color = const Color(
-              0xFFFCFCFA,
+            ..color = geographicLabelHaloColor(
+              enhancedForSoilPolygons: enhanceCityLabel,
             ).withValues(alpha: cityOpacity * 0.98)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = city.isPrimary ? 5 : 4.5
+            ..strokeWidth = localityLabelHaloWidth(
+              enhancedForSoilPolygons: enhanceCityLabel,
+              isPrimary: city.isPrimary,
+            )
             ..strokeJoin = StrokeJoin.round,
         );
         final haloPainter = TextPainter(
@@ -533,6 +849,7 @@ class _AgronomicReferencePainter extends CustomPainter {
         city._cachedLabelSize = textPainter.size;
         city._cachedLabelHeight = textPainter.height;
         city._cachedOpacity = cityOpacity;
+        city._cachedEnhancedPolygonStyle = enhanceCityLabel;
       }
 
       final labelSize = city._cachedLabelSize!;
@@ -544,12 +861,32 @@ class _AgronomicReferencePainter extends CustomPainter {
       if (!labelBounds.overlaps(Offset.zero & size)) {
         continue;
       }
+      final occupiedBounds = city.isOfficialSupplement
+          ? Rect.fromLTRB(
+              math.min(offset.dx - 4, labelBounds.left),
+              labelBounds.top,
+              labelBounds.right,
+              labelBounds.bottom,
+            )
+          : labelBounds;
       if (occupiedLabels.any(
-        (bounds) => bounds.inflate(3).overlaps(labelBounds),
+        (bounds) => bounds.inflate(3).overlaps(occupiedBounds),
       )) {
         continue;
       }
-      occupiedLabels.add(labelBounds);
+      occupiedLabels.add(occupiedBounds);
+      if (city.departmentName case final departmentName?) {
+        localityPartidoNames.add(departmentName.trim().toLowerCase());
+      } else {
+        legacyLocalityNames.add(city.name);
+      }
+
+      if (city.isOfficialSupplement) {
+        symbolPaint.color = const Color(
+          0xFF303632,
+        ).withValues(alpha: cityOpacity);
+        canvas.drawCircle(offset, city.markerRadius, symbolPaint);
+      }
 
       canvas.save();
       canvas.translate(labelOffset.dx, labelOffset.dy);
@@ -570,6 +907,9 @@ class _AgronomicReferencePainter extends CustomPainter {
     Size size,
     double opacity,
     List<Rect> occupiedLabels,
+    Set<String> localityPartidoNames,
+    Set<String> legacyLocalityNames,
+    bool enhancedForSoilPolygons,
   ) {
     if (opacity <= 0 || basemap.departmentLabels.isEmpty) return;
 
@@ -585,6 +925,14 @@ class _AgronomicReferencePainter extends CustomPainter {
     }
 
     for (final department in basemap.departmentLabels) {
+      if (shouldSuppressPartidoForLocality(
+        partidoName: department.name,
+        localityPartidoNames: localityPartidoNames,
+        legacyLocalityNames: legacyLocalityNames,
+      )) {
+        continue;
+      }
+      if (camera.zoom < department.minZoom) continue;
       final offset = project(department.position);
       if (!_isFiniteOffset(offset)) continue;
       // Same cheap off-screen reject as `_drawCityLabels`, generous enough
@@ -596,10 +944,17 @@ class _AgronomicReferencePainter extends CustomPainter {
         continue;
       }
 
+      final enhanceDepartmentLabel = shouldEnhanceGeographicLabelForProvince(
+        provinceId: department.provinceId,
+        enhancedBuenosAiresBoundaries: enhancedForSoilPolygons,
+      );
       if (department._cachedOpacity != opacity ||
+          department._cachedEnhancedPolygonStyle != enhanceDepartmentLabel ||
           department._cachedLabelPicture == null) {
         final style = TextStyle(
-          color: const Color(0xFF4B5148).withValues(alpha: opacity),
+          color: jurisdictionLabelTextColor(
+            enhancedForSoilPolygons: enhanceDepartmentLabel,
+          ).withValues(alpha: opacity),
           fontSize: 10.5,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.8,
@@ -614,9 +969,13 @@ class _AgronomicReferencePainter extends CustomPainter {
 
         final haloStyle = style.copyWith(
           foreground: Paint()
-            ..color = const Color(0xFFFCFCFA).withValues(alpha: opacity * 0.98)
+            ..color = geographicLabelHaloColor(
+              enhancedForSoilPolygons: enhanceDepartmentLabel,
+            ).withValues(alpha: opacity * 0.98)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 3.4
+            ..strokeWidth = jurisdictionLabelHaloWidth(
+              enhancedForSoilPolygons: enhanceDepartmentLabel,
+            )
             ..strokeJoin = StrokeJoin.round,
         );
         final haloPainter = TextPainter(
@@ -635,6 +994,7 @@ class _AgronomicReferencePainter extends CustomPainter {
         department._cachedLabelSize = textPainter.size;
         department._cachedLabelHeight = textPainter.height;
         department._cachedOpacity = opacity;
+        department._cachedEnhancedPolygonStyle = enhanceDepartmentLabel;
       }
 
       final labelSize = department._cachedLabelSize!;
@@ -663,6 +1023,15 @@ class _AgronomicReferencePainter extends CustomPainter {
   }
 
   double _cityVisibility(_ReferenceCity city) {
+    final category = city.sourceCategory;
+    if (city.isOfficialSupplement && category != null) {
+      return localityVisibilityAtZoom(
+        zoom: camera.zoom,
+        minZoom: city.minZoom,
+        fadeInEndZoom: city.fadeInEndZoom,
+        category: category,
+      );
+    }
     return city.isPrimary ? 1 : _zoomOpacity(camera.zoom, 7.7, 9.4);
   }
 
@@ -787,7 +1156,9 @@ class _AgronomicReferenceBasemap {
     required this.majorCities,
     required this.departmentLabels,
     required this.provincialBoundariesPath,
-    required this.departmentBoundariesPath,
+    required this.buenosAiresDepartmentBoundariesPath,
+    required this.santaFeDepartmentBoundariesPath,
+    required this.cordobaDepartmentBoundariesPath,
     required this.majorRiversPath,
     required this.nationalRoadsPath,
     required this.provincialRoadsPath,
@@ -811,7 +1182,9 @@ class _AgronomicReferenceBasemap {
   ///._paintLineLayers` for how these are repositioned per frame without
   /// re-projecting every vertex.
   final ui.Path provincialBoundariesPath;
-  final ui.Path departmentBoundariesPath;
+  final ui.Path buenosAiresDepartmentBoundariesPath;
+  final ui.Path santaFeDepartmentBoundariesPath;
+  final ui.Path cordobaDepartmentBoundariesPath;
   final ui.Path majorRiversPath;
   final ui.Path nationalRoadsPath;
   final ui.Path provincialRoadsPath;
@@ -855,7 +1228,7 @@ class _AgronomicReferenceBasemap {
   /// there — same cost as before, not worse. Deliberately bounded to one
   /// entry (not a growing cache): the previous [ui.Picture] is disposed
   /// whenever a new zoom evicts it.
-  double? _cachedLineZoom;
+  String? _cachedLineKey;
   ui.Picture? _cachedLinePicture;
 
   /// Loads every asset in [assetPaths] via [load] and concatenates their
@@ -869,9 +1242,8 @@ class _AgronomicReferenceBasemap {
     final basemaps = await Future.wait(assetPaths.map(load));
     if (basemaps.length == 1) return basemaps.single;
 
-    final majorCities = [
-      for (final basemap in basemaps) ...basemap.majorCities,
-    ]..sort((first, second) => second.priority.compareTo(first.priority));
+    final majorCities = [for (final basemap in basemaps) ...basemap.majorCities]
+      ..sort((first, second) => second.priority.compareTo(first.priority));
     final departmentLabels = [
       for (final basemap in basemaps) ...basemap.departmentLabels,
     ];
@@ -884,9 +1256,7 @@ class _AgronomicReferenceBasemap {
         for (final basemap in basemaps) ...basemap.departmentBoundaries,
       ],
       majorRivers: [for (final basemap in basemaps) ...basemap.majorRivers],
-      nationalRoads: [
-        for (final basemap in basemaps) ...basemap.nationalRoads,
-      ],
+      nationalRoads: [for (final basemap in basemaps) ...basemap.nationalRoads],
       provincialRoads: [
         for (final basemap in basemaps) ...basemap.provincialRoads,
       ],
@@ -898,8 +1268,14 @@ class _AgronomicReferenceBasemap {
       provincialBoundariesPath: _mergePaths(
         basemaps.map((basemap) => basemap.provincialBoundariesPath),
       ),
-      departmentBoundariesPath: _mergePaths(
-        basemaps.map((basemap) => basemap.departmentBoundariesPath),
+      buenosAiresDepartmentBoundariesPath: _mergePaths(
+        basemaps.map((basemap) => basemap.buenosAiresDepartmentBoundariesPath),
+      ),
+      santaFeDepartmentBoundariesPath: _mergePaths(
+        basemaps.map((basemap) => basemap.santaFeDepartmentBoundariesPath),
+      ),
+      cordobaDepartmentBoundariesPath: _mergePaths(
+        basemaps.map((basemap) => basemap.cordobaDepartmentBoundariesPath),
       ),
       majorRiversPath: _mergePaths(
         basemaps.map((basemap) => basemap.majorRiversPath),
@@ -937,6 +1313,7 @@ class _AgronomicReferenceBasemap {
     final majorRivers = _parseLines(layers['majorRivers']);
     final nationalRoads = _parseLines(layers['nationalRoads']);
     final provincialRoads = _parseLines(layers['provincialRoads']);
+    final provinceId = _referenceProvinceIdForAsset(assetPath);
 
     return _AgronomicReferenceBasemap(
       provincialBoundaries: provincialBoundaries,
@@ -944,10 +1321,28 @@ class _AgronomicReferenceBasemap {
       majorRivers: majorRivers,
       nationalRoads: nationalRoads,
       provincialRoads: provincialRoads,
-      majorCities: _parseCities(layers['majorCities']),
-      departmentLabels: _parseDepartmentLabels(layers['departmentLabels']),
+      majorCities: _parseCities(layers['majorCities'], provinceId: provinceId),
+      departmentLabels: _parseDepartmentLabels(
+        layers['departmentLabels'],
+        provinceId: provinceId,
+        assignProgressiveZooms: assetPath != AssetPaths.agronomicReferenceMap,
+      ),
       provincialBoundariesPath: _buildPath(provincialBoundaries),
-      departmentBoundariesPath: _buildPath(departmentBoundaries),
+      buenosAiresDepartmentBoundariesPath: _buildPath(
+        assetPath == AssetPaths.agronomicReferenceMap
+            ? departmentBoundaries
+            : const <List<LatLng>>[],
+      ),
+      santaFeDepartmentBoundariesPath: _buildPath(
+        assetPath == AssetPaths.santaFeAgronomicReferenceMap
+            ? departmentBoundaries
+            : const <List<LatLng>>[],
+      ),
+      cordobaDepartmentBoundariesPath: _buildPath(
+        assetPath == AssetPaths.cordobaAgronomicReferenceMap
+            ? departmentBoundaries
+            : const <List<LatLng>>[],
+      ),
       majorRiversPath: _buildPath(majorRivers),
       nationalRoadsPath: _buildPath(nationalRoads),
       provincialRoadsPath: _buildPath(provincialRoads),
@@ -994,12 +1389,18 @@ class _AgronomicReferenceBasemap {
     ];
   }
 
-  static List<_ReferenceCity> _parseCities(Object? rawCities) {
+  static List<_ReferenceCity> _parseCities(
+    Object? rawCities, {
+    required String provinceId,
+  }) {
     final cities = rawCities as List<dynamic>? ?? const <dynamic>[];
 
     final parsedCities = [
       for (final rawCity in cities)
-        ?_ReferenceCity.fromJson(Map<String, dynamic>.from(rawCity as Map)),
+        ?_ReferenceCity.fromJson(
+          Map<String, dynamic>.from(rawCity as Map),
+          provinceId: provinceId,
+        ),
     ];
     parsedCities.sort(
       (first, second) => second.priority.compareTo(first.priority),
@@ -1008,13 +1409,32 @@ class _AgronomicReferenceBasemap {
   }
 
   static List<_ReferenceDepartmentLabel> _parseDepartmentLabels(
-    Object? rawLabels,
-  ) {
+    Object? rawLabels, {
+    required String provinceId,
+    bool assignProgressiveZooms = false,
+  }) {
     final labels = rawLabels as List<dynamic>? ?? const <dynamic>[];
+    final records = [
+      for (final rawLabel in labels) Map<String, dynamic>.from(rawLabel as Map),
+    ];
+    final positions = [
+      for (final record in records)
+        LatLng(
+          (record['lat'] as num).toDouble(),
+          (record['lon'] as num).toDouble(),
+        ),
+    ];
+    final progressiveZooms = assignProgressiveZooms
+        ? progressiveJurisdictionMinZooms(positions)
+        : const <double>[];
     return [
-      for (final rawLabel in labels)
+      for (var index = 0; index < records.length; index++)
         ?_ReferenceDepartmentLabel.fromJson(
-          Map<String, dynamic>.from(rawLabel as Map),
+          records[index],
+          provinceId: provinceId,
+          minZoomOverride: assignProgressiveZooms
+              ? progressiveZooms[index]
+              : null,
         ),
     ];
   }
@@ -1030,13 +1450,38 @@ class _AgronomicReferenceBasemap {
 class _ReferenceCity {
   _ReferenceCity({
     required this.name,
+    required this.provinceId,
     required this.position,
     required this.isPrimary,
+    this.sourceId,
+    this.sourceCategory,
+    this.departmentId,
+    this.departmentName,
+    this.minZoom,
+    this.fadeInEndZoom,
+    this.markerRadiusOverride,
+    this.isOfficialSupplement = false,
   });
 
   final String name;
+  final String provinceId;
   final LatLng position;
   final bool isPrimary;
+  final String? sourceId;
+  final String? sourceCategory;
+  final String? departmentId;
+  final String? departmentName;
+  final double? minZoom;
+  final double? fadeInEndZoom;
+  final double? markerRadiusOverride;
+  final bool isOfficialSupplement;
+  double get markerRadius =>
+      markerRadiusOverride ??
+      (isPrimary
+          ? 2.7
+          : isOfficialSupplement
+          ? 2.1
+          : 2.3);
   int get priority => isPrimary ? 1 : 0;
 
   // Fase 8C perf fix: a label's rendered look (its shaped+stroked halo and
@@ -1044,14 +1489,18 @@ class _ReferenceCity {
   // style's color) — never on screen position. `cityOpacity` itself depends
   // only on `camera.zoom` (see `_labelOpacity`/`_cityVisibility`), so it's
   // identical on every frame of a pure pan. The fully rendered label is
-  // cached here as a `ui.Picture`, keyed by the opacity it was built for —
-  // see `_AgronomicReferencePainter._drawCityLabels`.
+  // cached here as a `ui.Picture`, keyed by its opacity and effective soil-
+  // polygon style — see `_AgronomicReferencePainter._drawCityLabels`.
   double? _cachedOpacity;
+  bool? _cachedEnhancedPolygonStyle;
   ui.Picture? _cachedLabelPicture;
   Size? _cachedLabelSize;
   double? _cachedLabelHeight;
 
-  static _ReferenceCity? fromJson(Map<String, dynamic> json) {
+  static _ReferenceCity? fromJson(
+    Map<String, dynamic> json, {
+    required String provinceId,
+  }) {
     final position = _safeLatLng(
       (json['lat'] as num).toDouble(),
       (json['lon'] as num).toDouble(),
@@ -1059,8 +1508,17 @@ class _ReferenceCity {
     if (position == null) return null;
     return _ReferenceCity(
       name: json['name'] as String,
+      provinceId: provinceId,
       position: position,
       isPrimary: json['importance'] == 'primary',
+      sourceId: json['sourceId'] as String?,
+      sourceCategory: json['sourceCategory'] as String?,
+      departmentId: json['departmentId'] as String?,
+      departmentName: json['departmentName'] as String?,
+      minZoom: (json['minZoom'] as num?)?.toDouble(),
+      fadeInEndZoom: (json['fadeInEndZoom'] as num?)?.toDouble(),
+      markerRadiusOverride: (json['markerRadius'] as num?)?.toDouble(),
+      isOfficialSupplement: json['officialSupplement'] == true,
     );
   }
 }
@@ -1071,17 +1529,29 @@ class _ReferenceCity {
 /// reasoning (Fase 8C), since the fade curve holds the opacity constant
 /// across a pure pan just like a city's does.
 class _ReferenceDepartmentLabel {
-  _ReferenceDepartmentLabel({required this.name, required this.position});
+  _ReferenceDepartmentLabel({
+    required this.name,
+    required this.provinceId,
+    required this.position,
+    this.minZoom = 0,
+  });
 
   final String name;
+  final String provinceId;
   final LatLng position;
+  final double minZoom;
 
   double? _cachedOpacity;
+  bool? _cachedEnhancedPolygonStyle;
   ui.Picture? _cachedLabelPicture;
   Size? _cachedLabelSize;
   double? _cachedLabelHeight;
 
-  static _ReferenceDepartmentLabel? fromJson(Map<String, dynamic> json) {
+  static _ReferenceDepartmentLabel? fromJson(
+    Map<String, dynamic> json, {
+    required String provinceId,
+    double? minZoomOverride,
+  }) {
     final position = _safeLatLng(
       (json['lat'] as num).toDouble(),
       (json['lon'] as num).toDouble(),
@@ -1089,7 +1559,9 @@ class _ReferenceDepartmentLabel {
     if (position == null) return null;
     return _ReferenceDepartmentLabel(
       name: json['name'] as String,
+      provinceId: provinceId,
       position: position,
+      minZoom: (json['minZoom'] as num?)?.toDouble() ?? minZoomOverride ?? 0,
     );
   }
 }

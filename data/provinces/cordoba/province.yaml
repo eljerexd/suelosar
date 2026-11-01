@@ -56,10 +56,14 @@ gis:
     Nombre_UC: { from: nombre }
     TIPO:      { from: tipo_unida }
     CAP_USO:   { from: cu }
+    CLASE:     { from: clase }
+    SUBCLASE:  { from: subclase }
+    IP:        { from: ip }
     PAISAJE:   { absent: "El WFS de IDECOR no tiene un campo de paisaje (solo prosa libre en las memorias)", value: null }
     # serie_N es el nombre legible; pdf_serieN es el mismo valor con "_"
     # (misma clave normalizada).
     "SERIE{n}": { from: "serie_{n}", n: [1, 6] }
+    "FASE{n}":  { from: "fase_{n}", n: [1, 4] }
     # SERIE7/SERIE8 (Parte 12B): serie_7/serie_8 no existen en la 50mil —
     # declarados `absent` aquí solo para que TODAS las features de Córdoba
     # (50mil y 100mil) compartan el mismo conjunto de propiedades. Son
@@ -70,8 +74,8 @@ gis:
     "PORC{n}":  { from: "porc_{n}", n: [1, 5] }
     PORC6:     { absent: "El WFS de IDECOR publica porc_1..porc_5 (no existe porc_6)", value: null }
     OBJECTID:  { from: id }
-    # Sin destino en el esquema SuelosAR (la app no los lee): fase_1..4,
-    # clase, subclase, ip, au_2m, au_1_5m, au_1m, pdf_serie7/8. Nunca hay
+    # Sin destino en el esquema SuelosAR (la app no los lee): au_2m,
+    # au_1_5m, au_1m, pdf_serie7/8. Nunca hay
     # PORC7/PORC8: la fuente no publica un porcentaje para esas dos series
     # adicionales (ver Parte 9 §E / Parte 12 §5) — no se inventan.
 
@@ -127,8 +131,12 @@ gis:
         Nombre_UC: { from: nombre }
         TIPO:      { from: tipo_unida }
         CAP_USO:   { from: cu }
+        CLASE:     { from: clase }
+        SUBCLASE:  { from: subclase }
+        IP:        { from: ip }
         PAISAJE:   { absent: "El WFS de IDECOR no tiene un campo de paisaje en carta_suelo_100mil_2025 tampoco", value: null }
         "SERIE{n}": { from: "serie_{n}", n: [1, 8] }
+        "FASE{n}":  { from: "fase_{n}", n: [1, 4] }
         "PORC{n}":  { from: "porc_{n}", n: [1, 5] }
         PORC6:     { absent: "carta_suelo_100mil_2025 tampoco publica porc_6", value: null }
         OBJECTID:  { from: id }
@@ -162,6 +170,8 @@ gis:
         # asumido.
         TIPO:      { from: tipo_un }
         CAP_USO:   { from: cu }
+        CLASE:     { from: clase }
+        SUBCLASE:  { from: subclase }
         PAISAJE:   { from: paisaje }
         "SERIE{n}": { absent: "carta_suelo_500mil_2024 no tiene series con nombre, solo taxonomía (subgrupo_n/posicion_n)", value: null, n: [1, 8] }
         "PORC{n}":  { absent: "PORC1-6 es el porcentaje de SERIEn; carta_suelo_500mil_2024 no tiene series, así que no le corresponde ningún PORCn (ver subgrupo_n/porc_n más abajo, sin mapear: mezclarlos confundiría porcentaje de taxonomía con porcentaje de serie)", value: null, n: [1, 6] }
@@ -169,8 +179,6 @@ gis:
         IP:        { from: ip }
         "SUBGRUPO{n}": { from: "subgrupo_{n}", n: [1, 5] }
         "POSICION{n}": { from: "posicion_{n}", n: [1, 5] }
-        # Sin destino en el esquema SuelosAR (la app no los lee): clase,
-        # subclase (desglose de cu, igual que en 50mil/100mil) y
         # porc_1..5 (porcentaje de cada subgrupo_n — deliberadamente sin
         # mapear a PORC1-6, que es semánticamente "porcentaje de SERIEn";
         # ver la nota de PORC{n} arriba. Si se necesita mostrar el

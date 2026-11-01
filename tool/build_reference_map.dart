@@ -13,6 +13,8 @@
 // Usage:
 //   dart run tool/build_reference_map.dart cordoba [--cache-dir <dir>] [--dry-run]
 //   dart run tool/build_reference_map.dart cordoba --northern-reference-only
+//   dart run tool/build_reference_map.dart santa_fe --department-labels-only
+//   dart run tool/build_reference_map.dart <province> --localities-only
 //
 // `--cache-dir` reuses (and populates) raw WFS downloads on disk, so the
 // asset can be regenerated with different simplification tolerances without
@@ -147,7 +149,21 @@ const ProvinceSpec _cordoba = ProvinceSpec(
 
 const Map<String, ProvinceSpec> _provinces = {'cordoba': _cordoba};
 
+const String _santaFeReferenceMapPath =
+    'assets/maps/agronomic_reference_map_santa_fe.json';
+const String _santaFeIndecCode = '82';
+const int _santaFeDepartmentCount = 19;
+const String _buenosAiresReferenceMapPath =
+    'assets/maps/agronomic_reference_map.json';
+const String _indecWfsEndpoint =
+    'https://geonode.indec.gob.ar/geoserver/geonode/ows';
+const String _buenosAiresIndecCode = '06';
+const int _buenosAiresPartidoCount = 135;
+const double _buenosAiresAreaKm2PerSphericalDegree = 6371.0088;
+
 Future<void> main(List<String> arguments) async {
+  final departmentLabelsOnly = arguments.contains('--department-labels-only');
+  final localitiesOnly = arguments.contains('--localities-only');
   final cacheFlag = arguments.indexOf('--cache-dir');
   final positional = [
     for (var index = 0; index < arguments.length; index++)
@@ -160,21 +176,66 @@ Future<void> main(List<String> arguments) async {
           (cacheFlag == -1 || index != cacheFlag + 1))
         arguments[index],
   ];
-  if (positional.length != 1 || !_provinces.containsKey(positional.single)) {
+  final validTarget =
+      positional.length == 1 &&
+      (_provinces.containsKey(positional.single) ||
+          (departmentLabelsOnly &&
+              (positional.single == 'santa_fe' ||
+                  positional.single == 'buenos_aires')) ||
+          (localitiesOnly &&
+              (positional.single == 'buenos_aires' ||
+                  positional.single == 'santa_fe' ||
+                  positional.single == 'cordoba')));
+  if (!validTarget) {
     stderr.writeln(
-      'Usage: dart run tool/build_reference_map.dart <${_provinces.keys.join('|')}> '
-      '[--cache-dir <dir>] [--dry-run]',
+      'Usage: dart run tool/build_reference_map.dart cordoba '
+      '[--cache-dir <dir>] [--dry-run]\n'
+      '   or: dart run tool/build_reference_map.dart santa_fe '
+      '--department-labels-only [--cache-dir <dir>] [--dry-run]\n'
+      '   or: dart run tool/build_reference_map.dart buenos_aires '
+      '--department-labels-only [--dry-run]\n'
+      '   or: dart run tool/build_reference_map.dart <province> '
+      '--localities-only [--dry-run]',
     );
     exitCode = 64;
     return;
   }
 
-  final spec = _provinces[positional.single]!;
   final dryRun = arguments.contains('--dry-run');
   final cacheIndex = arguments.indexOf('--cache-dir');
   final cacheDir = cacheIndex >= 0 && cacheIndex + 1 < arguments.length
       ? Directory(arguments[cacheIndex + 1])
       : null;
+
+  if (localitiesOnly) {
+    if (positional.single == 'buenos_aires') {
+      await _regenerateBuenosAiresLocalitiesOnly(dryRun: dryRun);
+    } else {
+      await _regenerateOtherProvinceLocalitiesOnly(
+        provinceId: positional.single,
+        dryRun: dryRun,
+      );
+    }
+    return;
+  }
+
+  if (departmentLabelsOnly) {
+    if (positional.single == 'buenos_aires') {
+      await _regenerateBuenosAiresPartidoLabelsOnly(dryRun: dryRun);
+      return;
+    }
+    if (positional.single != 'santa_fe') return;
+    await _regenerateDepartmentLabelsOnly(
+      outputPath: _santaFeReferenceMapPath,
+      indecCode: _santaFeIndecCode,
+      expectedCount: _santaFeDepartmentCount,
+      dryRun: dryRun,
+      cacheDir: cacheDir,
+    );
+    return;
+  }
+
+  final spec = _provinces[positional.single]!;
 
   // Fase 6 Parte 42B: `wms.ign.gob.ar` (the WFS endpoint every fetch below
   // uses) is unreachable from every network path available in this repo's
@@ -297,6 +358,636 @@ Future<void> main(List<String> arguments) async {
 
   File(spec.outputPath).writeAsStringSync(encoded);
   stdout.writeln('wrote ${spec.outputPath}');
+}
+
+/// Rebuilds only Buenos Aires locality point records from the official
+/// Georef API. Existing curated major cities keep their names, coordinates,
+/// and importance; additional settlements are introduced at close zoom.
+Future<void> _regenerateBuenosAiresLocalitiesOnly({
+  required bool dryRun,
+}) async {
+  final endpoint = Uri.parse(
+    'https://apis.datos.gob.ar/georef/api/v2.0/localidades'
+    '?provincia=$_buenosAiresIndecCode&max=5000',
+  );
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 60);
+  late final Map<String, dynamic> responseJson;
+  try {
+    final response = await (await client.getUrl(endpoint)).close();
+    if (response.statusCode != HttpStatus.ok) {
+      throw StateError('GeoRef localidades: HTTP ${response.statusCode}');
+    }
+    final body = await response.transform(utf8.decoder).join();
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic>) {
+      throw StateError('GeoRef localidades: respuesta inesperada');
+    }
+    responseJson = decoded;
+  } finally {
+    client.close();
+  }
+
+  final rawRecords = responseJson['localidades'];
+  if (rawRecords is! List ||
+      rawRecords.length != responseJson['total'] ||
+      responseJson['total'] != responseJson['cantidad']) {
+    throw StateError('GeoRef localidades: respuesta incompleta');
+  }
+  final records = rawRecords.cast<Map<String, dynamic>>();
+  final output = File(_buenosAiresReferenceMapPath);
+  final original = output.readAsStringSync();
+  final document = jsonDecode(original) as Map<String, dynamic>;
+  final layers = Map<String, Object?>.from(document['layers'] as Map);
+  final existing = (layers['majorCities'] as List)
+      .cast<Map<String, dynamic>>()
+      .where((record) => record['officialSupplement'] != true)
+      .toList();
+  final localities = buildBuenosAiresLocalityRecords(
+    officialRecords: records,
+    existingRecords: existing,
+  );
+  layers['majorCities'] = localities;
+  document['layers'] = layers;
+  document['localitySource'] =
+      'GeoRef Argentina API v2.0 /localidades?provincia=06; '
+      'official locality IDs, categories, centroids and Partido IDs; '
+      'retrieved 2026-10-31. Duplicate same-name records within one Partido '
+      'resolve to one source record, preferring component, simple locality, '
+      'then entity. Existing curated labels retain their display name, point '
+      'and importance; added simple/component labels fade in z9.5-10.3, '
+      'entities z11.5-12.3.';
+
+  final encoded = jsonEncode(document);
+  stdout.writeln(
+    'Buenos Aires: ${records.length} official rows -> '
+    '${localities.length} point labels (${localities.length - existing.length} '
+    'added); ${encoded.length} bytes (was ${original.length})',
+  );
+  if (dryRun) {
+    stdout.writeln('--dry-run: $_buenosAiresReferenceMapPath not written');
+    return;
+  }
+  output.writeAsStringSync(encoded);
+  stdout.writeln('wrote $_buenosAiresReferenceMapPath');
+}
+
+Future<void> _regenerateOtherProvinceLocalitiesOnly({
+  required String provinceId,
+  required bool dryRun,
+}) async {
+  final (provinceCode, assetPath) = switch (provinceId) {
+    'santa_fe' => (_santaFeIndecCode, _santaFeReferenceMapPath),
+    'cordoba' => (_cordoba.indecCode, _cordoba.outputPath),
+    _ => throw ArgumentError.value(provinceId, 'provinceId'),
+  };
+  final endpoint = Uri.https(
+    'apis.datos.gob.ar',
+    '/georef/api/v2.0/localidades',
+    {'provincia': provinceCode, 'max': '5000'},
+  );
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 60);
+  late final Map<String, dynamic> responseJson;
+  try {
+    final response = await (await client.getUrl(endpoint)).close();
+    if (response.statusCode != HttpStatus.ok) {
+      throw StateError('GeoRef localidades: HTTP ${response.statusCode}');
+    }
+    final decoded = jsonDecode(await response.transform(utf8.decoder).join());
+    if (decoded is! Map<String, dynamic>) {
+      throw StateError('GeoRef localidades: respuesta inesperada');
+    }
+    responseJson = decoded;
+  } finally {
+    client.close();
+  }
+
+  final rawRecords = responseJson['localidades'];
+  if (rawRecords is! List ||
+      rawRecords.length != responseJson['total'] ||
+      responseJson['total'] != responseJson['cantidad']) {
+    throw StateError('GeoRef localidades: respuesta incompleta');
+  }
+  final file = File(assetPath);
+  final original = file.readAsStringSync();
+  final document = jsonDecode(original) as Map<String, dynamic>;
+  final layers = Map<String, Object?>.from(document['layers'] as Map);
+  final existing = (layers['majorCities'] as List).cast<Map<String, dynamic>>();
+  final localities = buildOfficialProvinceLocalityRecords(
+    officialRecords: rawRecords.cast<Map<String, dynamic>>(),
+    existingRecords: existing,
+    provinceCode: provinceCode,
+  );
+  layers['majorCities'] = localities;
+  document['layers'] = layers;
+  document['localitySource'] =
+      'GeoRef Argentina API v2.0 /localidades?provincia=$provinceCode; '
+      'official locality IDs, categories, centroids and department IDs; '
+      'retrieved 2026-10-31. Existing curated point names, coordinates and '
+      'importance are retained; source identity is joined by exact normalized '
+      'name and nearest official locality group. Added points use simple or '
+      'compound locality visibility at z9.5-10.3 and entity visibility at '
+      'z11.5-12.3.';
+
+  final encoded = jsonEncode(document);
+  stdout.writeln(
+    '$provinceId: ${rawRecords.length} official rows -> '
+    '${localities.length} point labels (${localities.length - existing.length} '
+    'added); ${encoded.length} bytes (was ${original.length})',
+  );
+  if (dryRun) {
+    stdout.writeln('--dry-run: $assetPath not written');
+    return;
+  }
+  file.writeAsStringSync(encoded);
+  stdout.writeln('wrote $assetPath');
+}
+
+/// Merges official GeoRef locality points into the existing Santa Fe or
+/// Córdoba basemap. Curated points retain their exact display name,
+/// coordinates, and importance; verified GeoRef identity enriches locality
+/// priority, while only genuinely unmatched department/name groups add a
+/// new point.
+List<Map<String, Object?>> buildOfficialProvinceLocalityRecords({
+  required List<Map<String, dynamic>> officialRecords,
+  required List<Map<String, dynamic>> existingRecords,
+  required String provinceCode,
+}) {
+  final sourceIds = <String>{};
+  final groups = <String, List<Map<String, dynamic>>>{};
+  for (final record in officialRecords) {
+    final id = record['id'];
+    final province = record['provincia'] as Map?;
+    final department = record['departamento'] as Map?;
+    final centroid = record['centroide'] as Map?;
+    final name = record['nombre'];
+    if (id is! String ||
+        id.isEmpty ||
+        !sourceIds.add(id) ||
+        province?['id'] != provinceCode ||
+        department?['id'] is! String ||
+        name is! String ||
+        name.trim().isEmpty ||
+        centroid?['lat'] is! num ||
+        centroid?['lon'] is! num) {
+      throw StateError(
+        'GeoRef localidades contiene identidad o punto inválido',
+      );
+    }
+    final latitude = (centroid!['lat'] as num).toDouble();
+    final longitude = (centroid['lon'] as num).toDouble();
+    if (!latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180) {
+      throw StateError('GeoRef localidad $id tiene coordenadas inválidas');
+    }
+    final key = '${department!['id']}|${_localityKey(name)}';
+    groups.putIfAbsent(key, () => []).add(record);
+  }
+  for (final group in groups.values) {
+    group.sort(_compareLocalitySourcePriority);
+  }
+
+  final consumedGroups = <String>{};
+  final retained = <Map<String, Object?>>[];
+  for (final current in existingRecords) {
+    final name = current['name'];
+    final latitude = current['lat'];
+    final longitude = current['lon'];
+    if (name is! String || latitude is! num || longitude is! num) {
+      throw StateError(
+        'El punto curado de localidad no tiene nombre/coordenadas',
+      );
+    }
+    final matches = <(String, Map<String, dynamic>)>[];
+    for (final entry in groups.entries) {
+      if (consumedGroups.contains(entry.key)) continue;
+      final source = entry.value.first;
+      if (_localityKey(source['nombre'] as String) == _localityKey(name)) {
+        matches.add((entry.key, source));
+      }
+    }
+    if (matches.isEmpty) {
+      retained.add(Map<String, Object?>.from(current));
+      continue;
+    }
+    matches.sort((first, second) {
+      double distance(Map<String, dynamic> source) {
+        final point = source['centroide'] as Map;
+        return _coordinateDistance(
+          latitude.toDouble(),
+          longitude.toDouble(),
+          (point['lat'] as num).toDouble(),
+          (point['lon'] as num).toDouble(),
+        );
+      }
+
+      return distance(first.$2).compareTo(distance(second.$2));
+    });
+    final selected = matches.first;
+    if (consumedGroups.add(selected.$1)) {
+      final source = groups[selected.$1]!..sort(_compareLocalitySourcePriority);
+      final canonical = source.first;
+      final department = canonical['departamento'] as Map;
+      retained.add({
+        ...current,
+        'sourceId': canonical['id'],
+        'sourceCategory': canonical['categoria'],
+        'departmentId': department['id'],
+        'departmentName': department['nombre'],
+        'provinceCode': provinceCode,
+      });
+    } else {
+      retained.add(Map<String, Object?>.from(current));
+    }
+  }
+
+  final added = <Map<String, Object?>>[];
+  for (final entry in groups.entries) {
+    if (consumedGroups.contains(entry.key)) continue;
+    final candidates = entry.value..sort(_compareLocalitySourcePriority);
+    final source = candidates.first;
+    final centroid = source['centroide'] as Map;
+    final department = source['departamento'] as Map;
+    final category = source['categoria'] as String;
+    final isEntity = category == 'Entidad';
+    added.add({
+      'name': source['nombre'],
+      'lon': _roundToSixDecimals((centroid['lon'] as num).toDouble()),
+      'lat': _roundToSixDecimals((centroid['lat'] as num).toDouble()),
+      'importance': isEntity ? 'quaternary' : 'tertiary',
+      'sourceId': source['id'],
+      'sourceCategory': category,
+      'departmentId': department['id'],
+      'departmentName': department['nombre'],
+      'provinceCode': provinceCode,
+      'minZoom': isEntity ? 11.5 : 9.5,
+      'fadeInEndZoom': isEntity ? 12.3 : 10.3,
+      'markerRadius': 2.3,
+      'officialSupplement': true,
+    });
+  }
+  added.sort((first, second) {
+    final zoom = (first['minZoom'] as double).compareTo(
+      second['minZoom'] as double,
+    );
+    if (zoom != 0) return zoom;
+    final department = (first['departmentId'] as String).compareTo(
+      second['departmentId'] as String,
+    );
+    if (department != 0) return department;
+    return (first['name'] as String).compareTo(second['name'] as String);
+  });
+  return [...retained, ...added];
+}
+
+/// Joins the 30 established cartographic labels to official Georef identity,
+/// then adds one canonical point for each remaining official locality group.
+/// Public so the source-selection rules can be covered with deterministic
+/// fixtures without a network request.
+List<Map<String, Object?>> buildBuenosAiresLocalityRecords({
+  required List<Map<String, dynamic>> officialRecords,
+  required List<Map<String, dynamic>> existingRecords,
+}) {
+  final ids = <String>{};
+  final groups = <String, List<Map<String, dynamic>>>{};
+  for (final record in officialRecords) {
+    final id = record['id'];
+    final province = record['provincia'] as Map?;
+    final department = record['departamento'] as Map?;
+    final centroid = record['centroide'] as Map?;
+    final name = record['nombre'];
+    if (id is! String ||
+        id.isEmpty ||
+        !ids.add(id) ||
+        province?['id'] != _buenosAiresIndecCode ||
+        department?['id'] is! String ||
+        name is! String ||
+        name.trim().isEmpty ||
+        centroid?['lat'] is! num ||
+        centroid?['lon'] is! num) {
+      throw StateError(
+        'GeoRef localidades contiene identidad o punto inválido',
+      );
+    }
+    final lat = (centroid!['lat'] as num).toDouble();
+    final lon = (centroid['lon'] as num).toDouble();
+    if (!lat.isFinite ||
+        !lon.isFinite ||
+        lat < -90 ||
+        lat > 90 ||
+        lon < -180 ||
+        lon > 180) {
+      throw StateError('GeoRef localidad $id tiene coordenadas inválidas');
+    }
+    final key = '${department!['id']}|${_localityKey(name)}';
+    groups.putIfAbsent(key, () => []).add(record);
+  }
+
+  final result = <Map<String, Object?>>[];
+  final consumedGroups = <String>{};
+  for (final current in existingRecords) {
+    final name = current['name'] as String;
+    final oldLat = (current['lat'] as num).toDouble();
+    final oldLon = (current['lon'] as num).toDouble();
+    final candidates =
+        officialRecords
+            .where(
+              (record) =>
+                  _normalize(record['nombre'] as String) == _normalize(name),
+            )
+            .toList()
+          ..sort((a, b) {
+            final aPoint = a['centroide'] as Map;
+            final bPoint = b['centroide'] as Map;
+            final aDistance = _coordinateDistance(
+              oldLat,
+              oldLon,
+              (aPoint['lat'] as num).toDouble(),
+              (aPoint['lon'] as num).toDouble(),
+            );
+            final bDistance = _coordinateDistance(
+              oldLat,
+              oldLon,
+              (bPoint['lat'] as num).toDouble(),
+              (bPoint['lon'] as num).toDouble(),
+            );
+            return aDistance.compareTo(bDistance);
+          });
+    if (candidates.isEmpty ||
+        _coordinateDistance(
+              oldLat,
+              oldLon,
+              ((candidates.first['centroide'] as Map)['lat'] as num).toDouble(),
+              ((candidates.first['centroide'] as Map)['lon'] as num).toDouble(),
+            ) >
+            0.002) {
+      throw StateError('No hay identidad GeoRef inequívoca para $name');
+    }
+    final source = candidates.first;
+    final sourceDepartment = source['departamento'] as Map;
+    consumedGroups.add(
+      '${sourceDepartment['id']}|${_localityKey(source['nombre'] as String)}',
+    );
+    result.add({
+      ...current,
+      'sourceId': source['id'],
+      'sourceCategory': source['categoria'],
+      'departmentId': sourceDepartment['id'],
+      'departmentName': sourceDepartment['nombre'],
+      'provinceCode': _buenosAiresIndecCode,
+    });
+  }
+
+  final added = <Map<String, Object?>>[];
+  for (final entry in groups.entries) {
+    if (consumedGroups.contains(entry.key)) continue;
+    final candidates = entry.value..sort(_compareLocalitySourcePriority);
+    final source = candidates.first;
+    final centroid = source['centroide'] as Map;
+    final category = source['categoria'] as String;
+    final isEntity = category == 'Entidad';
+    final department = source['departamento'] as Map;
+    added.add({
+      'name': source['nombre'],
+      'lon': _roundToSixDecimals((centroid['lon'] as num).toDouble()),
+      'lat': _roundToSixDecimals((centroid['lat'] as num).toDouble()),
+      'importance': isEntity ? 'quaternary' : 'tertiary',
+      'sourceId': source['id'],
+      'sourceCategory': category,
+      'departmentId': department['id'],
+      'departmentName': department['nombre'],
+      'provinceCode': _buenosAiresIndecCode,
+      'minZoom': isEntity ? 11.5 : 9.5,
+      'fadeInEndZoom': isEntity ? 12.3 : 10.3,
+      'officialSupplement': true,
+    });
+  }
+  added.sort((a, b) {
+    final zoom = (a['minZoom'] as double).compareTo(b['minZoom'] as double);
+    if (zoom != 0) return zoom;
+    final department = (a['departmentId'] as String).compareTo(
+      b['departmentId'] as String,
+    );
+    if (department != 0) return department;
+    return (a['name'] as String).compareTo(b['name'] as String);
+  });
+  return [...result, ...added];
+}
+
+int _compareLocalitySourcePriority(
+  Map<String, dynamic> first,
+  Map<String, dynamic> second,
+) {
+  int rank(Map<String, dynamic> record) => switch (record['categoria']) {
+    'Componente de localidad compuesta' => 0,
+    'Localidad simple' => 1,
+    'Entidad' => 2,
+    _ => 3,
+  };
+  final priority = rank(first).compareTo(rank(second));
+  return priority != 0
+      ? priority
+      : (first['id'] as String).compareTo(second['id'] as String);
+}
+
+String _localityKey(String value) =>
+    _normalize(value.replaceAll('ñ', '~').replaceAll('Ñ', '~'));
+
+double _coordinateDistance(
+  double latA,
+  double lonA,
+  double latB,
+  double lonB,
+) => math.sqrt(math.pow(latA - latB, 2) + math.pow(lonA - lonB, 2));
+
+double _roundToSixDecimals(double value) => (value * 1000000).round() / 1000000;
+
+/// Adds Buenos Aires' official Partido names and interior label points to the
+/// existing basemap. The INDEC geometries are used only to derive positions;
+/// the renderer and all existing IGN line layers remain unchanged.
+Future<void> _regenerateBuenosAiresPartidoLabelsOnly({
+  required bool dryRun,
+}) async {
+  final uri = Uri.parse(_indecWfsEndpoint).replace(
+    queryParameters: {
+      'service': 'WFS',
+      'version': '1.1.0',
+      'request': 'GetFeature',
+      'typeName': 'geonode:departamentos',
+      'outputFormat': 'application/json',
+      'srsName': 'EPSG:4326',
+      'CQL_FILTER': "cpr='$_buenosAiresIndecCode' AND gna='Partido'",
+    },
+  );
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 30);
+  late final Map<String, Object?> partidos;
+  try {
+    final response = await (await client.getUrl(uri)).close();
+    if (response.statusCode != HttpStatus.ok) {
+      throw StateError('INDEC WFS: HTTP ${response.statusCode}');
+    }
+    final decoded = jsonDecode(await response.transform(utf8.decoder).join());
+    if (decoded is! Map<String, dynamic>) {
+      throw StateError('INDEC WFS returned an unexpected response');
+    }
+    partidos = decoded;
+  } finally {
+    client.close();
+  }
+
+  final features = partidos['features'] as List? ?? const [];
+  if (features.length != _buenosAiresPartidoCount) {
+    throw StateError(
+      'Expected $_buenosAiresPartidoCount INDEC Partidos, got '
+      '${features.length}',
+    );
+  }
+  final names = <String>{};
+  final codes = <String>{};
+  for (final feature in features.cast<Map>()) {
+    final properties = feature['properties'] as Map;
+    final name = (properties['nam'] as String?)?.trim() ?? '';
+    final code = (properties['cde'] as String?)?.trim() ?? '';
+    if (properties['cpr'] != _buenosAiresIndecCode ||
+        properties['gna'] != 'Partido' ||
+        name.isEmpty ||
+        code.isEmpty ||
+        !names.add(name) ||
+        !codes.add(code)) {
+      throw StateError(
+        'INDEC Partido record has missing or duplicate identity',
+      );
+    }
+    if (feature['geometry'] is! Map) {
+      throw StateError('$name has no polygon geometry in INDEC');
+    }
+  }
+
+  final labels = _buildDepartmentLabels(
+    partidos,
+    minZoomForGeometry: (geometry) =>
+        _buenosAiresPartidoMinZoom(_geometryAreaSquareKm(geometry)),
+  );
+  if (labels.length != _buenosAiresPartidoCount ||
+      labels.map((label) => label['name']).toSet().length != names.length) {
+    throw StateError(
+      'Could not derive an interior label point for every INDEC Partido',
+    );
+  }
+  for (final feature in features.cast<Map>()) {
+    final properties = feature['properties'] as Map;
+    final name = (properties['nam'] as String).trim();
+    final label = labels.singleWhere((candidate) => candidate['name'] == name);
+    final point = <double>[
+      (label['lon']! as num).toDouble(),
+      (label['lat']! as num).toDouble(),
+    ];
+    if (!point.every((coordinate) => coordinate.isFinite) ||
+        !_geometryContainsPoint(feature['geometry'] as Map, point)) {
+      throw StateError('$name label point is not inside its INDEC geometry');
+    }
+  }
+
+  final output = File(_buenosAiresReferenceMapPath);
+  final original = output.readAsStringSync();
+  final document = jsonDecode(original) as Map<String, dynamic>;
+  final layers = Map<String, Object?>.from(document['layers'] as Map);
+  layers['departmentLabels'] = labels;
+  document['layers'] = layers;
+  document['departmentLabelSource'] =
+      'INDEC WFS geonode:departamentos; cpr=$_buenosAiresIndecCode '
+      'AND gna=Partido; source identity cde; positions derived from each '
+      'EPSG:4326 MultiPolygon; one label per Partido. minZoom is derived '
+      'from spherical area in km2: >=5000:7.0, >=2500:7.7, >=1000:8.6, '
+      'otherwise:9.4.';
+
+  final encoded = jsonEncode(document);
+  stdout.writeln(
+    'Buenos Aires: ${labels.length} INDEC Partido labels; '
+    '${encoded.length} bytes (was ${original.length})',
+  );
+  if (dryRun) {
+    stdout.writeln('--dry-run: $_buenosAiresReferenceMapPath not written');
+    return;
+  }
+  output.writeAsStringSync(encoded);
+  stdout.writeln('wrote $_buenosAiresReferenceMapPath');
+}
+
+/// Adds only department labels to an existing reference-map asset. All other
+/// metadata and layers are copied through unchanged.
+Future<void> _regenerateDepartmentLabelsOnly({
+  required String outputPath,
+  required String indecCode,
+  required int expectedCount,
+  required bool dryRun,
+  required Directory? cacheDir,
+}) async {
+  final outputFile = File(outputPath);
+  final existingRaw = outputFile.readAsStringSync();
+  final document = jsonDecode(existingRaw) as Map<String, dynamic>;
+  final layers = Map<String, Object?>.from(document['layers'] as Map);
+  final departments = await _WfsFetcher(cacheDir: cacheDir).fetch(
+    'departamento_labels_santa_fe',
+    typeName: 'ign:departamento',
+    query: {'CQL_FILTER': "in1 LIKE '$indecCode%'"},
+  );
+  final features = departments['features'] as List? ?? const [];
+  if (features.length != expectedCount) {
+    throw StateError(
+      'Expected $expectedCount IGN departments for code $indecCode, got '
+      '${features.length}',
+    );
+  }
+
+  final labels = _buildDepartmentLabels(departments);
+  final names = labels.map((label) => label['name']! as String).toSet();
+  if (labels.length != expectedCount || names.length != expectedCount) {
+    final sourceNames = features
+        .map(
+          (feature) =>
+              ((((feature as Map)['properties'] as Map)['nam']) as String)
+                  .trim(),
+        )
+        .toSet();
+    throw StateError(
+      'Expected $expectedCount unique department labels, got '
+      '${labels.length} labels / ${names.length} names; '
+      'missing=${sourceNames.difference(names).toList()..sort()}',
+    );
+  }
+
+  for (final feature in features.cast<Map>()) {
+    final name = ((feature['properties'] as Map)['nam'] as String).trim();
+    final label = labels.singleWhere((candidate) => candidate['name'] == name);
+    final point = <double>[
+      (label['lon']! as num).toDouble(),
+      (label['lat']! as num).toDouble(),
+    ];
+    if (!point.every((coordinate) => coordinate.isFinite) ||
+        !_geometryContainsPoint(feature['geometry'] as Map, point)) {
+      throw StateError(
+        '$name label is not a finite point inside its department',
+      );
+    }
+  }
+
+  layers['departmentLabels'] = labels;
+  document['layers'] = layers;
+  final encoded = jsonEncode(document);
+  stdout.writeln(
+    'departmentLabels ${labels.length} labels; '
+    'total ${encoded.length} bytes (was ${existingRaw.length})',
+  );
+  if (dryRun) {
+    stdout.writeln('--dry-run: $outputPath not written');
+    return;
+  }
+  outputFile.writeAsStringSync(encoded);
+  stdout.writeln('wrote $outputPath');
 }
 
 /// Replaces only the four IGN line layers clipped by Córdoba's former
@@ -502,17 +1193,18 @@ Future<void> _regenerateBoundaryOnly(
 Future<Map<String, Object?>> _fetchProvinciaFromArcgisRest(
   ProvinceSpec spec,
 ) async {
-  final uri = Uri.parse(
-    'https://ide.ign.gob.ar/geoservicios/rest/services/servicio_fondos/'
-    'MapServer/0/query',
-  ).replace(
-    queryParameters: {
-      'where': "IN1='${spec.indecCode}'",
-      'outFields': '*',
-      'outSR': '4326',
-      'f': 'geojson',
-    },
-  );
+  final uri =
+      Uri.parse(
+        'https://ide.ign.gob.ar/geoservicios/rest/services/servicio_fondos/'
+        'MapServer/0/query',
+      ).replace(
+        queryParameters: {
+          'where': "IN1='${spec.indecCode}'",
+          'outFields': '*',
+          'outSR': '4326',
+          'f': 'geojson',
+        },
+      );
 
   stdout.writeln('fetch  ign:provincia (ArcGIS REST fallback)');
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 60);
@@ -578,8 +1270,7 @@ List<List<List<double>>> _buildLines(
         final simplified = _simplify(clipped, tolerance);
         if (simplified.length < 2) continue;
         output.add([
-          for (final point in simplified)
-            [_round(point[0]), _round(point[1])],
+          for (final point in simplified) [_round(point[0]), _round(point[1])],
         ]);
       }
     }
@@ -613,10 +1304,7 @@ List<List<List<double>>> _extractLines(Map geometry) {
 
 List<List<double>> _asPoints(List raw) => [
   for (final point in raw)
-    [
-      ((point as List)[0] as num).toDouble(),
-      (point[1] as num).toDouble(),
-    ],
+    [((point as List)[0] as num).toDouble(), (point[1] as num).toDouble()],
 ];
 
 /// Splits a line into the pieces that fall inside [bbox], dropping the rest.
@@ -624,7 +1312,10 @@ List<List<double>> _asPoints(List raw) => [
 /// these tolerances a segment that merely crosses a corner is invisible, and
 /// keeping whole vertices avoids inventing coordinates that are not in the
 /// official source.
-List<List<List<double>>> _clipToBbox(List<List<double>> line, List<double> bbox) {
+List<List<List<double>>> _clipToBbox(
+  List<List<double>> line,
+  List<double> bbox,
+) {
   final pieces = <List<List<double>>>[];
   var current = <List<double>>[];
 
@@ -703,11 +1394,14 @@ double _perpendicularDistance(
   final dy = lineEnd[1] - lineStart[1];
   if (dx == 0 && dy == 0) {
     return math.sqrt(
-      math.pow(point[0] - lineStart[0], 2) + math.pow(point[1] - lineStart[1], 2),
+      math.pow(point[0] - lineStart[0], 2) +
+          math.pow(point[1] - lineStart[1], 2),
     );
   }
   final numerator =
-      ((dy * point[0]) - (dx * point[1]) + (lineEnd[0] * lineStart[1]) -
+      ((dy * point[0]) -
+              (dx * point[1]) +
+              (lineEnd[0] * lineStart[1]) -
               (lineEnd[1] * lineStart[0]))
           .abs();
   return numerator / math.sqrt((dx * dx) + (dy * dy));
@@ -734,11 +1428,10 @@ List<Map<String, Object?>> _buildCities(
     final latitude = double.tryParse('${properties['lat_gd']}');
     final longitude = double.tryParse('${properties['long_gd']}');
     if (latitude == null || longitude == null) continue;
-    byNormalizedName.putIfAbsent(_normalize(name), () => {
-      'name': name,
-      'lat': _round(latitude),
-      'lon': _round(longitude),
-    });
+    byNormalizedName.putIfAbsent(
+      _normalize(name),
+      () => {'name': name, 'lat': _round(latitude), 'lon': _round(longitude)},
+    );
   }
 
   final cities = <Map<String, Object?>>[];
@@ -781,8 +1474,9 @@ List<Map<String, Object?>> _buildCities(
 /// dataset: the geometry IS the source, so there is nothing to fail to
 /// resolve.
 List<Map<String, Object?>> _buildDepartmentLabels(
-  Map<String, Object?> departments,
-) {
+  Map<String, Object?> departments, {
+  double Function(Map geometry)? minZoomForGeometry,
+}) {
   final labels = <Map<String, Object?>>[];
 
   for (final feature in (departments['features'] as List? ?? const [])) {
@@ -792,22 +1486,110 @@ List<Map<String, Object?>> _buildDepartmentLabels(
 
     final geometry = (feature['geometry'] as Map?);
     if (geometry == null) continue;
-    final centroid = _polygonCentroid(geometry);
+    final centroid = _departmentLabelPoint(geometry);
     if (centroid == null) continue;
 
     labels.add({
       'name': name,
       'lat': _round(centroid[1]),
       'lon': _round(centroid[0]),
+      if (minZoomForGeometry != null) 'minZoom': minZoomForGeometry(geometry),
     });
   }
 
   labels.sort(
-    (first, second) => (first['name']! as String).compareTo(
-      second['name']! as String,
-    ),
+    (first, second) =>
+        (first['name']! as String).compareTo(second['name']! as String),
   );
   return labels;
+}
+
+double _buenosAiresPartidoMinZoom(double areaSquareKm) {
+  if (!areaSquareKm.isFinite || areaSquareKm <= 0) {
+    throw StateError('INDEC Partido geometry has no measurable area');
+  }
+  if (areaSquareKm >= 5000) return 7.0;
+  if (areaSquareKm >= 2500) return 7.7;
+  if (areaSquareKm >= 1000) return 8.6;
+  return 9.4;
+}
+
+double _geometryAreaSquareKm(Map geometry) {
+  final type = geometry['type'];
+  final coordinates = geometry['coordinates'];
+  final polygons = switch (type) {
+    'Polygon' => [coordinates as List],
+    'MultiPolygon' => (coordinates as List).cast<List>(),
+    _ => const <List>[],
+  };
+  if (polygons.isEmpty) return 0;
+
+  var totalArea = 0.0;
+  for (final polygon in polygons) {
+    if (polygon.isEmpty) continue;
+    var polygonArea = _sphericalRingAreaSquareKm(polygon.first as List);
+    for (final hole in polygon.skip(1)) {
+      polygonArea -= _sphericalRingAreaSquareKm(hole as List);
+    }
+    totalArea += math.max(0, polygonArea);
+  }
+  return totalArea;
+}
+
+double _sphericalRingAreaSquareKm(List rawRing) {
+  final points = _asPoints(rawRing);
+  if (points.length < 3) return 0;
+
+  var sum = 0.0;
+  for (var index = 0; index < points.length; index++) {
+    final current = points[index];
+    final next = points[(index + 1) % points.length];
+    final longitudeDelta = (next[0] - current[0]) * math.pi / 180;
+    final currentLatitude = current[1] * math.pi / 180;
+    final nextLatitude = next[1] * math.pi / 180;
+    sum +=
+        longitudeDelta *
+        (2 + math.sin(currentLatitude) + math.sin(nextLatitude));
+  }
+  final radiusSquared =
+      _buenosAiresAreaKm2PerSphericalDegree *
+      _buenosAiresAreaKm2PerSphericalDegree;
+  return sum.abs() * radiusSquared / 2;
+}
+
+List<double>? _departmentLabelPoint(Map geometry) {
+  final centroid = _polygonCentroid(geometry);
+  if (centroid != null && _geometryContainsPoint(geometry, centroid)) {
+    return centroid;
+  }
+
+  final polygons =
+      switch (geometry['type']) {
+        'Polygon' => [geometry['coordinates'] as List],
+        'MultiPolygon' => (geometry['coordinates'] as List).cast<List>(),
+        _ => const <List>[],
+      }..sort(
+        (first, second) => _ringArea(
+          second.first as List,
+        ).compareTo(_ringArea(first.first as List)),
+      );
+  for (final polygon in polygons) {
+    final polygonGeometry = <String, Object?>{
+      'type': 'Polygon',
+      'coordinates': polygon,
+    };
+    final polygonCentroid = _polygonCentroid(polygonGeometry);
+    if (polygonCentroid != null &&
+        _geometryContainsPoint(polygonGeometry, polygonCentroid)) {
+      return polygonCentroid;
+    }
+    final interiorPoint = _polygonInteriorPoint(polygon);
+    if (interiorPoint != null &&
+        _geometryContainsPoint(polygonGeometry, interiorPoint)) {
+      return interiorPoint;
+    }
+  }
+  return null;
 }
 
 /// Area-weighted centroid of a `Polygon`/`MultiPolygon`'s exterior ring(s),
@@ -821,8 +1603,9 @@ List<double>? _polygonCentroid(Map geometry) {
   final rings = switch (type) {
     'Polygon' => [(coordinates as List).first as List],
     'MultiPolygon' => [
-        for (final polygon in coordinates as List) (polygon as List).first as List,
-      ],
+      for (final polygon in coordinates as List)
+        (polygon as List).first as List,
+    ],
     _ => const <List>[],
   };
   if (rings.isEmpty) return null;
@@ -860,6 +1643,109 @@ List<double>? _polygonCentroid(Map geometry) {
 
   if (totalArea == 0) return null;
   return [weightedX / totalArea, weightedY / totalArea];
+}
+
+bool _geometryContainsPoint(Map geometry, List<double> point) {
+  bool polygonContainsPoint(List polygon) {
+    if (polygon.isEmpty || !_ringContainsPoint(polygon.first as List, point)) {
+      return false;
+    }
+    return polygon
+        .skip(1)
+        .every((hole) => !_ringContainsPoint(hole as List, point));
+  }
+
+  return switch (geometry['type']) {
+    'Polygon' => polygonContainsPoint(geometry['coordinates'] as List),
+    'MultiPolygon' => (geometry['coordinates'] as List).any(
+      (polygon) => polygonContainsPoint(polygon as List),
+    ),
+    _ => false,
+  };
+}
+
+bool _ringContainsPoint(List ring, List<double> point) {
+  final points = _asPoints(ring);
+  if (points.length < 3) return false;
+  var inside = false;
+  for (
+    var current = 0, previous = points.length - 1;
+    current < points.length;
+    previous = current++
+  ) {
+    final currentPoint = points[current];
+    final previousPoint = points[previous];
+    final crossesLatitude =
+        (currentPoint[1] > point[1]) != (previousPoint[1] > point[1]);
+    if (!crossesLatitude) continue;
+    final crossingLongitude =
+        (previousPoint[0] - currentPoint[0]) *
+            (point[1] - currentPoint[1]) /
+            (previousPoint[1] - currentPoint[1]) +
+        currentPoint[0];
+    if (point[0] < crossingLongitude) inside = !inside;
+  }
+  return inside;
+}
+
+double _ringArea(List ring) {
+  final points = _asPoints(ring);
+  var twiceArea = 0.0;
+  for (var index = 0; index < points.length; index++) {
+    final current = points[index];
+    final next = points[(index + 1) % points.length];
+    twiceArea += current[0] * next[1] - next[0] * current[1];
+  }
+  return twiceArea.abs() / 2;
+}
+
+List<double>? _polygonInteriorPoint(List polygon) {
+  final latitudeBreaks = <double>{
+    for (final ring in polygon)
+      for (final point in _asPoints(ring as List)) point[1],
+  }.toList()..sort();
+  List<double>? bestPoint;
+  var bestWidth = 0.0;
+
+  for (var index = 0; index + 1 < latitudeBreaks.length; index++) {
+    final south = latitudeBreaks[index];
+    final north = latitudeBreaks[index + 1];
+    if (south == north) continue;
+    final latitude = (south + north) / 2;
+    final crossings = <double>[];
+    for (final rawRing in polygon) {
+      final points = _asPoints(rawRing as List);
+      for (
+        var current = 0, previous = points.length - 1;
+        current < points.length;
+        previous = current++
+      ) {
+        final currentPoint = points[current];
+        final previousPoint = points[previous];
+        if ((currentPoint[1] > latitude) == (previousPoint[1] > latitude)) {
+          continue;
+        }
+        crossings.add(
+          (previousPoint[0] - currentPoint[0]) *
+                  (latitude - currentPoint[1]) /
+                  (previousPoint[1] - currentPoint[1]) +
+              currentPoint[0],
+        );
+      }
+    }
+    crossings.sort();
+    for (var crossing = 0; crossing + 1 < crossings.length; crossing += 2) {
+      final width = crossings[crossing + 1] - crossings[crossing];
+      if (width > bestWidth) {
+        bestWidth = width;
+        bestPoint = [
+          (crossings[crossing] + crossings[crossing + 1]) / 2,
+          latitude,
+        ];
+      }
+    }
+  }
+  return bestPoint;
 }
 
 String _normalize(String value) {
@@ -910,7 +1796,8 @@ class _WfsFetcher {
     );
 
     stdout.writeln('fetch  $typeName');
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 60);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 60);
     try {
       final request = await client.getUrl(uri);
       final response = await request.close();

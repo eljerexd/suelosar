@@ -59,7 +59,7 @@ class PmtilesDownloadBytes {
 
   /// `106.4 MB / 158.6 MB`. Rendered here rather than at each call site so
   /// the GIS download card and the provincial maps manager are literally
-  /// showing the same string. MiB, matching every other size in the app.
+  /// showing the same string.
   String get label => '${_megabytes(downloaded)} / ${_megabytes(total)}';
 
   static String _megabytes(int bytes) =>
@@ -121,4 +121,29 @@ abstract class PmtilesDelivery extends ChangeNotifier {
   /// archive — see the matching `install(FILES ...)` in
   /// `windows/CMakeLists.txt`.
   File resolveWindowsArchiveFile();
+}
+
+/// Simulated byte updates for development-only Play Asset Delivery flows.
+/// Production callers remain on Play's real byte counters.
+Future<void> simulateDevelopmentPmtilesDownload({
+  required int totalBytes,
+  required ValueChanged<PmtilesDeliveryStatus> setStatus,
+  required ValueChanged<PmtilesDownloadBytes?> setDownloadBytes,
+  Duration stepDelay = const Duration(milliseconds: 400),
+}) async {
+  if (totalBytes <= 0) {
+    throw ArgumentError.value(totalBytes, 'totalBytes', 'must be positive');
+  }
+
+  setDownloadBytes(null);
+  setStatus(PmtilesDeliveryStatus.downloading);
+  for (final percent in [20, 40, 60, 80, 100]) {
+    await Future<void>.delayed(stepDelay);
+    setDownloadBytes(
+      PmtilesDownloadBytes.fromCounts(totalBytes * percent ~/ 100, totalBytes),
+    );
+  }
+
+  setDownloadBytes(null);
+  setStatus(PmtilesDeliveryStatus.available);
 }

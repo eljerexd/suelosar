@@ -91,12 +91,15 @@ flutter:
     - assets/images/logoapp.png
     - assets/data/soil_maps.json
     - assets/data/soil_metadata.json
+    - assets/data/buenos_aires_feature_metadata.json
     - assets/maps/agronomic_reference_map.json
     - assets/pdfs/
     - assets/data/santa_fe_series_index.json
     - assets/pdfs_santa_fe/
     - assets/maps/agronomic_reference_map_santa_fe.json
     - assets/data/cordoba_series_index.json
+    - assets/data/cordoba_feature_metadata.json
+    - assets/data/cordoba_series_percentage_supplement.json
     - assets/pdfs_cordoba/
     - assets/maps/agronomic_reference_map_cordoba.json
   # assets:

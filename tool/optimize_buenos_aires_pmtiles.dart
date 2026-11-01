@@ -33,11 +33,8 @@ final Set<String> keptAttributes = SuelosArSchema.appAttributes;
 /// Informational only: the optimizer removes whatever is not in
 /// [keptAttributes], discovered from the archive itself.
 const droppedAttributes = {
-  'FASE1',
-  'FASE2',
-  'FASE3',
-  'FASE4',
   'FASE5',
+  'FASE6',
   'OBJECTID_1',
   'POSIC1',
   'POSIC2',

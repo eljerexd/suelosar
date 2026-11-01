@@ -30,14 +30,8 @@ void main() {
       expect(config.pmtilesLayerName, AssetPaths.gisLayerName);
       // Fase 5: Santa Fe now has its own validated reference basemap,
       // separate from Buenos Aires'.
-      expect(
-        config.referenceMapAsset,
-        AssetPaths.santaFeAgronomicReferenceMap,
-      );
-      expect(
-        config.referenceMapAsset,
-        isNot(AssetPaths.agronomicReferenceMap),
-      );
+      expect(config.referenceMapAsset, AssetPaths.santaFeAgronomicReferenceMap);
+      expect(config.referenceMapAsset, isNot(AssetPaths.agronomicReferenceMap));
     });
 
     test('Buenos Aires config is untouched', () {
@@ -49,7 +43,7 @@ void main() {
     });
   });
 
-  group('Santa Fe reference basemap (Fase 5) — schema matches Buenos Aires', () {
+  group('province reference basemap jurisdiction labels', () {
     late Map<String, dynamic> sfJson;
     late Map<String, dynamic> baJson;
 
@@ -67,28 +61,152 @@ void main() {
       expect(sfJson['crs'], baJson['crs']);
     });
 
-    test('has exactly the same layer keys as Buenos Aires', () {
+    test('all three province basemaps use the shared layer schema', () {
       final sfLayers = (sfJson['layers'] as Map).keys.toSet();
       final baLayers = (baJson['layers'] as Map).keys.toSet();
+      final cordobaJson =
+          jsonDecode(
+                File(
+                  AssetPaths.cordobaAgronomicReferenceMap,
+                ).readAsStringSync(),
+              )
+              as Map<String, dynamic>;
+      final cordobaLayers = (cordobaJson['layers'] as Map).keys.toSet();
       expect(sfLayers, baLayers);
+      expect(cordobaLayers, baLayers);
+    });
+
+    test('Buenos Aires has 135 official Partido labels inside its extent', () {
+      final labels = baJson['layers']['departmentLabels'] as List;
+      final names = labels.map((raw) => (raw as Map)['name']).toSet();
+      final bbox = (baJson['bbox'] as List)
+          .map((value) => (value as num).toDouble())
+          .toList();
+
+      expect(labels, hasLength(135));
+      expect(names, hasLength(135));
+      expect(names, containsAll(['La Plata', 'Tandil', 'Morón']));
+      expect(baJson['departmentLabelSource'], contains('INDEC WFS'));
+      expect(baJson['departmentLabelSource'], contains('cpr=06'));
+      expect(baJson['departmentLabelSource'], contains('gna=Partido'));
+      final visibleCountsByZoom = <double, int>{
+        for (final zoom in [7.0, 7.7, 8.6, 9.4])
+          zoom: labels
+              .where((raw) => ((raw as Map)['minZoom'] as num) <= zoom)
+              .length,
+      };
+      expect(visibleCountsByZoom, {7.0: 15, 7.7: 47, 8.6: 88, 9.4: 135});
+      expect(
+        baJson['departmentLabelSource'],
+        contains('spherical area in km2'),
+      );
+      for (final raw in labels) {
+        final label = raw as Map;
+        expect(label.keys.toSet(), {'name', 'lat', 'lon', 'minZoom'});
+        expect(label['minZoom'], anyOf(7.0, 7.7, 8.6, 9.4));
+        final lat = (label['lat'] as num).toDouble();
+        final lon = (label['lon'] as num).toDouble();
+        expect(
+          lat.isFinite && lon.isFinite,
+          isTrue,
+          reason: '${label['name']}',
+        );
+        expect(
+          lat,
+          inInclusiveRange(bbox[1], bbox[3]),
+          reason: '${label['name']}',
+        );
+        expect(
+          lon,
+          inInclusiveRange(bbox[0], bbox[2]),
+          reason: '${label['name']}',
+        );
+      }
+    });
+
+    test('Buenos Aires administrative boundaries reuse official line data', () {
+      final boundaries = baJson['layers']['departmentBoundaries'] as List;
+
+      expect(baJson['source'], contains('Instituto Geografico Nacional'));
+      expect(boundaries, isNotEmpty);
+      for (final boundary in boundaries) {
+        expect(boundary, isA<List>());
+        expect((boundary as List).length, greaterThanOrEqualTo(2));
+      }
+    });
+
+    test('has the 19 unique official Santa Fe department labels', () {
+      const expectedNames = {
+        '9 de Julio',
+        'Belgrano',
+        'Caseros',
+        'Castellanos',
+        'Constitución',
+        'Garay',
+        'General López',
+        'General Obligado',
+        'Iriondo',
+        'La Capital',
+        'Las Colonias',
+        'Rosario',
+        'San Cristóbal',
+        'San Javier',
+        'San Jerónimo',
+        'San Justo',
+        'San Lorenzo',
+        'San Martín',
+        'Vera',
+      };
+      final labels = sfJson['layers']['departmentLabels'] as List;
+      final names = labels.map((label) => (label as Map)['name']).toSet();
+
+      expect(labels, hasLength(19));
+      expect(names, expectedNames);
+      for (final label in labels.cast<Map>()) {
+        expect(label.keys.toSet(), {'name', 'lat', 'lon'});
+        expect((label['lat'] as num).toDouble().isFinite, isTrue);
+        expect((label['lon'] as num).toDouble().isFinite, isTrue);
+      }
     });
 
     test('majorCities entries have the same shape as Buenos Aires', () {
-      final city =
-          (sfJson['layers']['majorCities'] as List).first as Map;
-      expect(city.keys.toSet(), {'name', 'lat', 'lon', 'importance'});
+      final city = (sfJson['layers']['majorCities'] as List).first as Map;
+      expect(city.keys, containsAll({'name', 'lat', 'lon', 'importance'}));
       expect(city['importance'], anyOf('primary', 'secondary'));
     });
 
-    test('does not reuse Buenos Aires\' actual data', () {
+    test('Bahía Blanca, La Plata and Mar del Plata remain primary cities', () {
+      final primaryCities = {
+        for (final raw in (baJson['layers']['majorCities'] as List).cast<Map>())
+          if (raw['importance'] == 'primary') raw['name'] as String,
+      };
+
+      expect(
+        primaryCities,
+        containsAll({'Bahía Blanca', 'La Plata', 'Mar del Plata'}),
+      );
+    });
+
+    test('shared locality names retain province-specific official points', () {
       expect(sfJson['bbox'], isNot(baJson['bbox']));
-      final sfCityNames = (sfJson['layers']['majorCities'] as List)
-          .map((c) => (c as Map)['name'])
-          .toSet();
-      final baCityNames = (baJson['layers']['majorCities'] as List)
-          .map((c) => (c as Map)['name'])
-          .toSet();
-      expect(sfCityNames.intersection(baCityNames), isEmpty);
+      final sfCities = (sfJson['layers']['majorCities'] as List).cast<Map>();
+      final baCities = (baJson['layers']['majorCities'] as List).cast<Map>();
+      final sharedNames = {'Avellaneda', 'Las Toscas', 'San Justo'};
+      for (final name in sharedNames) {
+        final santaFeCity = sfCities.firstWhere((city) => city['name'] == name);
+        final buenosAiresCity = baCities.firstWhere(
+          (city) => city['name'] == name,
+        );
+        expect(buenosAiresCity['provinceCode'], '06');
+        final distance =
+            (((santaFeCity['lat'] as num).toDouble() -
+                    (buenosAiresCity['lat'] as num).toDouble())
+                .abs() +
+            ((santaFeCity['lon'] as num).toDouble() -
+                    (buenosAiresCity['lon'] as num).toDouble())
+                .abs());
+        expect(distance, greaterThan(1));
+      }
     });
   });
 
@@ -136,7 +254,11 @@ void main() {
         }
       }
 
-      expect(found, isNotNull, reason: 'expected at least one z4 tile with features');
+      expect(
+        found,
+        isNotNull,
+        reason: 'expected at least one z4 tile with features',
+      );
       // CAP_USO is real INTA data (the `gat` field) for the large majority
       // of Santa Fe features — see Fase 3 report section A.
       final capUso = found!.properties['CAP_USO'];
@@ -166,7 +288,10 @@ void main() {
         isNotNull,
         reason: '$rawSeriesValue should resolve via the real index',
       );
-      expect(location!.assetPath, 'assets/pdfs_santa_fe/mapa_suelos_santa_fe.pdf');
+      expect(
+        location!.assetPath,
+        'assets/pdfs_santa_fe/mapa_suelos_santa_fe.pdf',
+      );
       expect(location.startPage, expectedStartPage);
       expect(location.endPage, expectedEndPage);
     }

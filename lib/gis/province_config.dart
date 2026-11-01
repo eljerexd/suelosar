@@ -7,6 +7,18 @@ import '../repositories/santa_fe_series_repository.dart';
 import 'gis_layer.dart';
 import 'series_resolver.dart';
 
+class ProvinceDownloadMetadata {
+  const ProvinceDownloadMetadata({
+    required this.description,
+    required this.coverage,
+    required this.sourceLines,
+  });
+
+  final String description;
+  final String coverage;
+  final List<String> sourceLines;
+}
+
 /// Everything about a province's soil map that genuinely differs from
 /// Buenos Aires — derived from the Fase 4A audit of `GisMapScreen`, not
 /// assumed upfront. Deliberately does *not* include a `bbox`/pan-limit
@@ -24,6 +36,7 @@ class ProvinceConfig {
     required this.seriesResolver,
     required this.seriesNameResolver,
     this.showPolygonUnitSymbols = true,
+    required this.downloadMetadata,
     this.referenceMapAsset,
     this.preloadSeriesNames,
     this.downloadBannerAnchor,
@@ -63,6 +76,7 @@ class ProvinceConfig {
   /// soil polygons. The main-branch integration intentionally leaves this
   /// off for Córdoba while retaining `SIMBC` in feature data and detail UI.
   final bool showPolygonUnitSymbols;
+  final ProvinceDownloadMetadata downloadMetadata;
 
   /// Awaited once during `GisMapScreen`'s existing async init sequence, if
   /// non-null, before the first frame that could show a soil-series name —
@@ -109,6 +123,11 @@ class ProvinceConfig {
     referenceMapAsset: AssetPaths.agronomicReferenceMap,
     seriesResolver: BuenosAiresSeriesResolver(PdfSeriesRepository()),
     seriesNameResolver: const IdentitySeriesNameResolver(),
+    downloadMetadata: ProvinceDownloadMetadata(
+      description: 'Cartografía de suelos y polígonos',
+      coverage: 'Cobertura: Provincia de Buenos Aires',
+      sourceLines: const ['Escala de origen: 1:50.000'],
+    ),
     // Bolívar — a real, well-known town sitting close to the geographic
     // middle of the province, the same reasoning Santa Fe's anchor uses
     // below (Fase 12A: Buenos Aires becomes on-demand too).
@@ -149,6 +168,11 @@ class ProvinceConfig {
       seriesResolver: SantaFeSeriesResolver(repository),
       seriesNameResolver: nameResolver,
       preloadSeriesNames: nameResolver.preload,
+      downloadMetadata: ProvinceDownloadMetadata(
+        description: 'Cartografía de suelos y polígonos',
+        coverage: 'Cobertura: Provincia de Santa Fe',
+        sourceLines: const ['Fuente: INTA (GeoJSON)'],
+      ),
       // Rafaela — a well-known city that sits close to the geographic
       // middle of the province (roughly equidistant from the northern
       // Chaco border and the southern Rosario/Buenos Aires border), rather
@@ -195,6 +219,14 @@ class ProvinceConfig {
       // preload needed, exactly like Buenos Aires.
       seriesNameResolver: const IdentitySeriesNameResolver(),
       showPolygonUnitSymbols: false,
+      downloadMetadata: ProvinceDownloadMetadata(
+        description: 'Cartografía de suelos y polígonos',
+        coverage: 'Cobertura: Provincia de Córdoba',
+        sourceLines: const [
+          'Escalas: 1:50.000 · 1:100.000',
+          'Cobertura residual: 1:500.000',
+        ],
+      ),
       // Villa María — a well-known city close to the geographic middle of
       // the province, the same reasoning the other two anchors use, rather
       // than the archive's data-derived center.

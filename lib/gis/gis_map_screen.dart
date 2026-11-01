@@ -53,17 +53,22 @@ import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_location_service.dart';
 import 'gis_map_occlusion_observer.dart';
+import 'cordoba_feature_metadata_repository.dart';
+import 'cordoba_series_percentage_repository.dart';
+import 'buenos_aires_feature_metadata_repository.dart';
 import 'measurement_math.dart';
 import 'offline_reference_map_layer.dart';
 import 'gis_render_metrics.dart';
 import 'gis_repository.dart';
 import 'gis_soil_series.dart';
+import 'gis_soil_taxonomy.dart';
 import 'map_coverage.dart';
 import 'multi_coverage_repository.dart';
 import 'pmtiles_delivery.dart';
 import 'province_config.dart';
 import 'series_resolver.dart';
 import 'widgets/expandable_tools_fab.dart';
+import 'widgets/province_download_map_overlay.dart';
 
 /// Interactive offline viewer for the spatial layers available in SuelosAR.
 class GisMapScreen extends StatefulWidget {
@@ -77,6 +82,7 @@ class GisMapScreen extends StatefulWidget {
     this.engine,
     this.provinceConfig,
     this.seriesResolver,
+    this.cardAssetBundle,
     this.coverages,
     this.focusPersonalMarkerId,
   });
@@ -106,6 +112,10 @@ class GisMapScreen extends StatefulWidget {
   /// this screen always has (so existing tests that only inject
   /// `pdfSeriesRepository` keep working unmodified).
   final SeriesResolver? seriesResolver;
+
+  /// Optional bundle for Córdoba card metadata assets. Production uses the
+  /// bundled assets; tests can provide the same source JSON synchronously.
+  final AssetBundle? cardAssetBundle;
 
   /// Fase 6: the set of provincial map sources shown together as one
   /// seamless map, selected by geographic position rather than a picker.
@@ -176,6 +186,11 @@ class _GisMapScreenState extends State<GisMapScreen>
   late final List<MapCoverage> _coverages;
   late final MapCoverage _defaultCoverage;
   late final SeriesResolver _seriesResolver;
+  late final BuenosAiresFeatureMetadataRepository
+  _buenosAiresFeatureMetadataRepository;
+  late final CordobaFeatureMetadataRepository _cordobaFeatureMetadataRepository;
+  late final CordobaSeriesPercentageRepository
+  _cordobaSeriesPercentageRepository;
   late final GisRenderMetrics _renderMetrics;
   late final DesktopWindowService _desktopWindowService;
   late final bool _ownsRenderMetrics;
@@ -208,6 +223,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       ValueNotifier<GisFeature?>(null);
   final ValueNotifier<_DesktopPanelSection?> _desktopPanelSectionState =
       ValueNotifier<_DesktopPanelSection?>(null);
+
   /// Polygons cleared to draw their `SIMBC` right now, decided for the whole
   /// viewport by [_recomputeUnitSymbolLabels] rather than per tile.
   final ValueNotifier<Set<_RenderedGisPolygon>> _acceptedUnitSymbols =
@@ -354,9 +370,38 @@ class _GisMapScreenState extends State<GisMapScreen>
   @visibleForTesting
   bool get showReferenceBasemap => _showReferenceBasemap;
 
+  @visibleForTesting
+  List<Map<String, Object>> get acceptedUnitSymbolLabels {
+    final livePolygons = <_RenderedGisPolygon>{
+      for (final tile in _visibleTiles.values) ...tile.polygons,
+    };
+    return List<Map<String, Object>>.unmodifiable(
+      _acceptedUnitSymbols.value
+          .where(livePolygons.contains)
+          .map(
+            (polygon) => <String, Object>{
+              'featureId': polygon.feature.id,
+              'unitSymbolKey': polygon.unitSymbolKey,
+              'symbol': polygon.unitSymbol!,
+              'anchor': polygon.labelAnchor,
+              'fragmentIdentity': identityHashCode(polygon),
+            },
+          ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
+    final cardAssetBundle = widget.cardAssetBundle;
+    _buenosAiresFeatureMetadataRepository =
+        BuenosAiresFeatureMetadataRepository(assetBundle: cardAssetBundle);
+    _cordobaFeatureMetadataRepository = CordobaFeatureMetadataRepository(
+      assetBundle: cardAssetBundle,
+    );
+    _cordobaSeriesPercentageRepository = CordobaSeriesPercentageRepository(
+      assetBundle: cardAssetBundle,
+    );
     unawaited(AnalyticsService.instance.logMapOpened());
     _mapEngine = widget.engine ?? FlutterMapEngine();
     _ownsRenderMetrics = widget.renderMetrics == null;
@@ -1153,7 +1198,13 @@ class _GisMapScreenState extends State<GisMapScreen>
           child: SuelosArFloatingInformationPanel(
             child: _DesktopMapInformationPanel(
               feature: feature,
-              seriesNameResolverForFeature: _seriesNameResolverForFeature,
+              featureDetailTitle: (value) => _featureDetailTitle(
+                value,
+                series: _resolveSeriesDisplayNames(
+                  value,
+                  GisSoilSeries.fromProperties(value.properties),
+                ),
+              ),
               measurement: feature == null ? selectedMeasurement : null,
               marker: feature == null && selectedMeasurement == null
                   ? _desktopSelectedMarker
@@ -1336,9 +1387,15 @@ class _GisMapScreenState extends State<GisMapScreen>
             12,
             0,
           ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [titleCard, const Spacer(), positionedActionCard],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [titleCard, const Spacer(), positionedActionCard],
+              ),
+            ],
           ),
         );
       },
@@ -1494,6 +1551,39 @@ class _GisMapScreenState extends State<GisMapScreen>
     return _defaultCoverage;
   }
 
+  bool get _hasVisibleBuenosAiresPolygons {
+    return _visiblePolygonProvinceIds.contains(ProvinceConfig.buenosAires.id);
+  }
+
+  Set<String> get _visiblePolygonProvinceIds {
+    return {
+      for (final tile in _visibleTiles.values)
+        for (final polygon in tile.polygons)
+          _coverageForFeature(polygon.feature).id,
+    };
+  }
+
+  Set<String> get _enhancedAdministrativeBoundaryProvinceIds {
+    if (!_showSoilPolygons ||
+        _disableGisTilePipelineForDiagnostic ||
+        !_isMapReady ||
+        _mapVisualsPaused) {
+      return const <String>{};
+    }
+    final visibleProvinceIds = _visiblePolygonProvinceIds;
+    return {
+      for (final coverage in _coverages)
+        if (coverage.onDemandDelivery != null &&
+            shouldUseEnhancedAdministrativeBoundaryStyle(
+              deliveryStatus: coverage.onDemandDelivery!.status,
+              soilPolygonsVisible: true,
+              mapReady: true,
+              hasVisiblePolygons: visibleProvinceIds.contains(coverage.id),
+            ))
+          coverage.id,
+    };
+  }
+
   SeriesNameResolver _seriesNameResolverForFeature(GisFeature feature) {
     return _coverageForFeature(feature).config.seriesNameResolver;
   }
@@ -1549,6 +1639,22 @@ class _GisMapScreenState extends State<GisMapScreen>
               measurement.isVisible,
         )
         .firstOrNull;
+    final onDemandCoverages = _coverages
+        .where(
+          (coverage) =>
+              coverage.onDemandDelivery != null &&
+              coverage.config.downloadBannerAnchor != null,
+        )
+        .toList(growable: false);
+    final buenosAiresCoverage = _coverages
+        .where((coverage) => coverage.id == ProvinceConfig.buenosAires.id)
+        .firstOrNull;
+    final buenosAiresDelivery = buenosAiresCoverage?.onDemandDelivery;
+    final boundaryStyleListenable = Listenable.merge([
+      _visibleTileSnapshot,
+      for (final coverage in _coverages)
+        if (coverage.onDemandDelivery != null) coverage.onDemandDelivery!,
+    ]);
     final showsMeasurementEditor = switch (measurementMode) {
       _MeasurementMode.distance => _distanceMeasurementPoints.isNotEmpty,
       _MeasurementMode.area => _areaMeasurementPoints.length >= 3,
@@ -1631,8 +1737,13 @@ class _GisMapScreenState extends State<GisMapScreen>
           children: [
             if (!_mapVisualsPaused && _showReferenceBasemap)
               Positioned.fill(
-                child: OfflineReferenceMapLayer(
-                  assetPaths: _referenceMapAssetPaths,
+                child: AnimatedBuilder(
+                  animation: boundaryStyleListenable,
+                  builder: (context, _) => OfflineReferenceMapLayer(
+                    enhancedAdministrativeBoundaryProvinceIds:
+                        _enhancedAdministrativeBoundaryProvinceIds,
+                    assetPaths: _referenceMapAssetPaths,
+                  ),
                 ),
               ),
             if (!_disableGisTilePipelineForDiagnostic &&
@@ -1646,13 +1757,34 @@ class _GisMapScreenState extends State<GisMapScreen>
               ),
             if (!_mapVisualsPaused && _showReferenceBasemap)
               Positioned.fill(
-                child: OfflineReferenceMapLayer(
-                  foreground: true,
-                  assetPaths: _referenceMapAssetPaths,
+                child: AnimatedBuilder(
+                  animation: boundaryStyleListenable,
+                  builder: (context, _) {
+                    final enhancedProvinceIds =
+                        _enhancedAdministrativeBoundaryProvinceIds;
+                    final enhanceBuenosAiresBoundaries =
+                        buenosAiresDelivery != null &&
+                        shouldUseEnhancedBuenosAiresBoundaryStyle(
+                          deliveryStatus: buenosAiresDelivery.status,
+                          soilPolygonsVisible:
+                              _showSoilPolygons &&
+                              !_disableGisTilePipelineForDiagnostic,
+                          mapReady: _isMapReady && !_mapVisualsPaused,
+                          hasVisibleBuenosAiresPolygons:
+                              _hasVisibleBuenosAiresPolygons,
+                        );
+                    return OfflineReferenceMapLayer(
+                      foreground: true,
+                      enhancedBuenosAiresBoundaries:
+                          enhanceBuenosAiresBoundaries,
+                      enhancedAdministrativeBoundaryProvinceIds:
+                          enhancedProvinceIds,
+                      assetPaths: _referenceMapAssetPaths,
+                    );
+                  },
                 ),
               ),
-            if (!_disableGisTilePipelineForDiagnostic &&
-                !_mapVisualsPaused)
+            if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused)
               if (_currentLocation case final location?)
                 AnimatedBuilder(
                   animation: SettingsService.instance,
@@ -1724,16 +1856,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                               child: SizedBox.square(
                                 dimension: 36,
                                 child: Icon(
-                                  personalMarkerCategoryIcon(
-                                    marker.category,
-                                  ),
+                                  personalMarkerCategoryIcon(marker.category),
                                   size: 22,
-                                  color: const Color.fromARGB(
-                                    255,
-                                    209,
-                                    19,
-                                    19,
-                                  ),
+                                  color: const Color.fromARGB(255, 209, 19, 19),
                                 ),
                               ),
                             ),
@@ -1774,33 +1899,42 @@ class _GisMapScreenState extends State<GisMapScreen>
               ),
           ],
         ),
-        // Provincial cards keep their geographic screen position. Controls
-        // follow them in this Stack so they paint and receive taps above a
-        // card whenever their bounds overlap.
-        for (final undownloadedCoverage in _coverages.where(
-          (coverage) =>
-              coverage.onDemandDelivery != null &&
-              coverage.config.downloadBannerAnchor != null,
-        ))
-          _ProvincePmtilesBanner(
-            key: ValueKey('province-pmtiles-banner-${undownloadedCoverage.id}'),
-            coverageId: undownloadedCoverage.id,
-            delivery: undownloadedCoverage.onDemandDelivery!,
-            anchorPoint: undownloadedCoverage.config.downloadBannerAnchor!,
-            provinceBounds: undownloadedCoverage.bounds,
-            provinceName: _provinceDisplayName(undownloadedCoverage.id),
-            referenceMapAssetPath:
-                undownloadedCoverage.config.referenceMapAsset,
+        // Paint provincial shading and download indicators before the
+        // controls, preserving main's overlay stacking and hit priority.
+        for (final coverage in onDemandCoverages)
+          _ProvincePmtilesHighlight(
+            key: ValueKey('province-pmtiles-highlight-${coverage.id}'),
+            delivery: coverage.onDemandDelivery!,
+            provinceBounds: coverage.bounds,
+            referenceMapAssetPath: coverage.config.referenceMapAsset,
             viewStateListenable: _mapViewportState,
             resolveCamera: () =>
                 (_mapEngine as FlutterMapEngine).controller.camera,
-            onDownload: () =>
-                unawaited(undownloadedCoverage.onDemandDelivery!.download()),
-            downloadSizeBytes:
-                undownloadedCoverage.config.pmtilesDownloadSizeBytes,
-            onDismissedFirstTime: () => _showDownloadLaterHint(
-              _provinceDisplayName(undownloadedCoverage.id),
-            ),
+          ),
+        if (!_mapVisualsPaused && onDemandCoverages.isNotEmpty)
+          ProvinceDownloadMapOverlay(
+            key: const ValueKey('province-download-map-overlay'),
+            cameraChanges: _mapViewportState,
+            onDismiss: (id, status) =>
+                unawaited(_dismissProvinceNotice(id, status)),
+            items: [
+              for (final coverage in onDemandCoverages)
+                ProvinceDownloadMapItem(
+                  id: coverage.id,
+                  name: _provinceDisplayName(coverage.id),
+                  sizeBytes: coverage.config.pmtilesDownloadSizeBytes,
+                  metadata: coverage.config.downloadMetadata,
+                  delivery: coverage.onDemandDelivery!,
+                  resolveScreenPosition: () => (_mapEngine as FlutterMapEngine)
+                      .controller
+                      .camera
+                      .latLngToScreenOffset(
+                        coverage.config.downloadBannerAnchor!,
+                      ),
+                  onDownload: () =>
+                      unawaited(coverage.onDemandDelivery!.download()),
+                ),
+            ],
           ),
         if (!_mapVisualsPaused)
           _buildRightControlRail(
@@ -1878,8 +2012,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                           // explains that. Showing this generic red error on
                           // top of it would describe the same situation as
                           // if it were a bug.
-                          final camera =
-                              (_mapEngine as FlutterMapEngine).controller.camera;
+                          final camera = (_mapEngine as FlutterMapEngine)
+                              .controller
+                              .camera;
                           final screenSize = MediaQuery.sizeOf(context);
                           final suppressedForOnDemandCoverage = _coverages.any((
                             coverage,
@@ -1891,7 +2026,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                             }
                             return delivery.status !=
                                     PmtilesDeliveryStatus.available &&
-                                _ProvincePmtilesBanner.isCoverageVisible(
+                                _isProvinceAnchorVisible(
                                   camera,
                                   screenSize,
                                   anchor,
@@ -1930,6 +2065,17 @@ class _GisMapScreenState extends State<GisMapScreen>
     );
   }
 
+  Future<void> _dismissProvinceNotice(
+    String coverageId,
+    PmtilesDeliveryStatus status,
+  ) async {
+    final previousStatus = await _ProvinceNoticeDismissal.read(coverageId);
+    await _ProvinceNoticeDismissal.write(coverageId, status.name);
+    if (previousStatus == null && mounted) {
+      _showDownloadLaterHint(_provinceDisplayName(coverageId));
+    }
+  }
+
   Widget _buildRightControlRail({
     required double topInset,
     bool showLayers = true,
@@ -1937,6 +2083,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     bool desktopStyle = false,
   }) {
     return Positioned.fill(
+      key: const ValueKey('gis-right-control-rail'),
       child: SafeArea(
         minimum: EdgeInsets.fromLTRB(
           alignLeft ? 16 : 0,
@@ -1973,6 +2120,7 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   Widget _buildBottomRightControls() {
     return Positioned.fill(
+      key: const ValueKey('gis-bottom-right-controls'),
       child: SafeArea(
         minimum: const EdgeInsets.fromLTRB(0, 16, 16, 16),
         child: Align(
@@ -3657,8 +3805,7 @@ class _GisMapScreenState extends State<GisMapScreen>
           if (!mounted) return;
           // `downloading` counts as not-available here, which is what it is:
           // the archive is not readable yet and nothing should query it.
-          final available =
-              delivery.status == PmtilesDeliveryStatus.available;
+          final available = delivery.status == PmtilesDeliveryStatus.available;
           final changed = available
               ? await repository.markCoverageAvailable(coverageId)
               : await repository.markCoverageUnavailable(coverageId);
@@ -3880,7 +4027,8 @@ class _GisMapScreenState extends State<GisMapScreen>
     while (rawZoom >= bucket + 1) {
       bucket++;
     }
-    while (bucket > flooredZoom && rawZoom < bucket - _unitSymbolZoomHysteresis) {
+    while (bucket > flooredZoom &&
+        rawZoom < bucket - _unitSymbolZoomHysteresis) {
       bucket--;
     }
     return _unitSymbolZoomBucket = bucket;
@@ -3940,12 +4088,22 @@ class _GisMapScreenState extends State<GisMapScreen>
     final viewport = Offset.zero & camera.size;
     final visibleBounds = camera.visibleBounds;
 
-    final fullRebuild =
-        zoom != _acceptedUnitSymbolsZoomBucket ||
+    final zoomChanged = zoom != _acceptedUnitSymbolsZoomBucket;
+    final selectionChanged =
         _selectedFeatureId != _acceptedUnitSymbolsSelectedFeatureId;
-    final kept = fullRebuild
-        ? const <_RenderedGisPolygon>{}
-        : _acceptedUnitSymbols.value;
+    final fullRebuild = zoomChanged || selectionChanged;
+    final previousAccepted = _acceptedUnitSymbols.value;
+    final kept = fullRebuild ? const <_RenderedGisPolygon>{} : previousAccepted;
+    // A selection-only rebuild must recalculate collisions, but it must not
+    // replace an otherwise eligible tile fragment and move that label.
+    final preferredRepresentatives = <String, List<_RenderedGisPolygon>>{};
+    if (selectionChanged && !zoomChanged) {
+      for (final polygon in previousAccepted) {
+        preferredRepresentatives
+            .putIfAbsent(polygon.unitSymbolKey, () => <_RenderedGisPolygon>[])
+            .add(polygon);
+      }
+    }
 
     // Kept labels seed both the accepted set and the occupied-space list —
     // new candidates compete only for what's left. Off-screen kept labels
@@ -4011,11 +4169,11 @@ class _GisMapScreenState extends State<GisMapScreen>
     // while nothing is actually drawn for it.
     final keptKeys = keptOnScreenKeys;
 
-    // One entry per *feature*, so a unit split across tiles competes once —
-    // keeping whichever piece shows more of itself on screen. Already-kept
-    // features whose fragment is currently visible are skipped: they don't
-    // re-enter the competition.
-    final byFeature = <String, _UnitSymbolCandidate>{};
+    // One bucket per *feature*, so a unit split across tiles competes once —
+    // keeping its fragments ordered by how much they show on screen.
+    // Already-kept features whose fragment is currently visible are skipped:
+    // they don't re-enter the competition.
+    final byFeature = <String, List<_UnitSymbolCandidate>>{};
     for (final tile in _visibleTiles.values) {
       for (final polygon in tile.polygons) {
         if (polygon.unitSymbol == null) continue;
@@ -4039,65 +4197,83 @@ class _GisMapScreenState extends State<GisMapScreen>
         if (visibleArea < minimumVisibleArea) continue;
 
         final isSelected = polygon.feature.id == _selectedFeatureId;
-        // Ranking only decides who gets asked first; it must not amount to a
-        // veto on small units. The square root compresses the scale so a unit
-        // ten times smaller ranks ~3x lower rather than 10x, and the
-        // fully-visible bonus is a nudge (1.08), not a tier. The selected
-        // unit still outranks everything.
-        final priority = isSelected
-            ? double.infinity
-            : math.sqrt(visibleArea) * (visible == onScreen ? 1.08 : 1);
+        // Fragment ranking is purely geometric. Selection is deliberately
+        // kept separate so every fragment of one selected OBJECTID does not
+        // tie at infinity and leave the first tile-clipped piece in charge
+        // of the label anchor.
+        final fragmentPriority =
+            math.sqrt(visibleArea) * (visible == onScreen ? 1.08 : 1);
 
-        final existing = byFeature[polygon.unitSymbolKey];
-        if (existing == null || priority > existing.priority) {
-          byFeature[polygon.unitSymbolKey] = _UnitSymbolCandidate(
-            polygon: polygon,
-            priority: priority,
-            onScreen: onScreen,
-          );
-        }
+        byFeature
+            .putIfAbsent(polygon.unitSymbolKey, () => <_UnitSymbolCandidate>[])
+            .add(
+              _UnitSymbolCandidate(
+                polygon: polygon,
+                fragmentPriority: fragmentPriority,
+                isSelected: isSelected,
+              ),
+            );
       }
     }
 
-    final candidates = byFeature.values.toList(growable: false)
-      ..sort((first, second) => second.priority.compareTo(first.priority));
+    // Pick one representative per feature. If its best visible fragment
+    // cannot contain the measured label, try the next eligible fragment of
+    // that same feature instead of dropping the feature altogether.
+    final candidates = <_UnitSymbolCandidate>[];
+    for (final fragments in byFeature.values) {
+      fragments.sort(
+        (first, second) =>
+            second.fragmentPriority.compareTo(first.fragmentPriority),
+      );
+      final preferred =
+          preferredRepresentatives[fragments.first.polygon.unitSymbolKey];
+      var retainedPreferred = false;
+      if (preferred != null) {
+        for (final previous in preferred) {
+          for (final fragment in fragments) {
+            if (identical(fragment.polygon, previous) &&
+                _unitSymbolLabelRect(fragment.polygon, camera, viewport) !=
+                    null) {
+              candidates.add(fragment);
+              retainedPreferred = true;
+              break;
+            }
+          }
+          if (retainedPreferred) break;
+        }
+      }
+      if (retainedPreferred) continue;
+      for (final fragment in fragments) {
+        if (_unitSymbolLabelRect(fragment.polygon, camera, viewport) != null) {
+          candidates.add(fragment);
+          break;
+        }
+      }
+    }
+    candidates.sort((first, second) {
+      if (first.isSelected != second.isSelected) {
+        return first.isSelected ? -1 : 1;
+      }
+      return second.fragmentPriority.compareTo(first.fragmentPriority);
+    });
 
     for (final candidate in candidates) {
-      if (accepted.length >= _unitSymbolCeiling &&
-          !candidate.priority.isInfinite) {
+      if (accepted.length >= _unitSymbolCeiling && !candidate.isSelected) {
         break;
       }
 
-      // Real measured glyphs, not an estimate: the same cached TextPainter
-      // the painter will draw with, so the box collided against here is
-      // exactly the ink that lands on the canvas.
-      final size = _unitSymbolTextPainter(candidate.polygon.unitSymbol!).size;
-
-      final anchor = camera.latLngToScreenOffset(candidate.polygon.labelAnchor);
-      if (!_isFiniteOffset(anchor)) continue;
-      final labelRect = Rect.fromCenter(
-        center: anchor,
-        width: size.width,
-        height: size.height,
+      final labelRect = _unitSymbolLabelRect(
+        candidate.polygon,
+        camera,
+        viewport,
       );
-      if (!labelRect.overlaps(viewport)) continue;
-
-      // Parte 33: fits against the real polygon geometry (outer ring minus
-      // holes, projected to screen), not a proxy — see
-      // [_RenderedGisPolygon.labelFitsInsidePolygon].
-      if (!candidate.polygon.labelFitsInsidePolygon(
-        camera: camera,
-        textSize: size,
-        padding: _unitSymbolFitPadding,
-      )) {
-        continue;
-      }
+      if (labelRect == null) continue;
 
       // The selected unit always gets to show its symbol, and still reserves
       // its box so nothing is drawn on top of it. Existing kept labels are
       // never evicted here — they were seeded into [occupied] above, so a
       // new candidate simply loses the collision instead of displacing one.
-      if (!candidate.priority.isInfinite &&
+      if (!candidate.isSelected &&
           occupied.any(
             (bounds) => _overlapsSignificantly(
               bounds.inflate(_unitSymbolLabelPadding),
@@ -4117,12 +4293,45 @@ class _GisMapScreenState extends State<GisMapScreen>
     _setAcceptedUnitSymbols(accepted);
   }
 
+  Rect? _unitSymbolLabelRect(
+    _RenderedGisPolygon polygon,
+    MapCamera camera,
+    Rect viewport,
+  ) {
+    // Real measured glyphs, not an estimate: the same cached TextPainter
+    // the painter will draw with, so the box collided against here is
+    // exactly the ink that lands on the canvas.
+    final size = _unitSymbolTextPainter(polygon.unitSymbol!).size;
+    final anchor = camera.latLngToScreenOffset(polygon.labelAnchor);
+    if (!_isFiniteOffset(anchor)) return null;
+    final labelRect = Rect.fromCenter(
+      center: anchor,
+      width: size.width,
+      height: size.height,
+    );
+    if (!labelRect.overlaps(viewport)) return null;
+
+    // Parte 33: fits against the real polygon geometry (outer ring minus
+    // holes, projected to screen), not a proxy — see
+    // [_RenderedGisPolygon.labelFitsInsidePolygon].
+    if (!polygon.labelFitsInsidePolygon(
+      camera: camera,
+      textSize: size,
+      padding: _unitSymbolFitPadding,
+    )) {
+      return null;
+    }
+    return labelRect;
+  }
+
   void _setAcceptedUnitSymbols(Set<_RenderedGisPolygon> accepted) {
     final current = _acceptedUnitSymbols.value;
     if (current.length == accepted.length && current.containsAll(accepted)) {
       return;
     }
-    _acceptedUnitSymbols.value = Set<_RenderedGisPolygon>.unmodifiable(accepted);
+    _acceptedUnitSymbols.value = Set<_RenderedGisPolygon>.unmodifiable(
+      accepted,
+    );
   }
 
   /// Skips the *scheduling* while the camera has barely moved: without this
@@ -5004,6 +5213,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       feature: feature,
       outerRing: outerRing,
       holes: holes,
+      isCordoba: _coverageForFeature(feature).id == ProvinceConfig.cordoba.id,
       unitSymbol: _unitSymbolLabel(feature),
     );
   }
@@ -5592,12 +5802,56 @@ class _GisMapScreenState extends State<GisMapScreen>
     _recomputeUnitSymbolLabels();
   }
 
-  Future<void> _showFeatureAttributes(GisFeature feature) {
+  Future<void> _showFeatureAttributes(GisFeature feature) async {
     _selectionPreview.value = null;
+    final provinceId = _coverageForFeature(feature).id;
+    final isCordoba = provinceId == ProvinceConfig.cordoba.id;
+    final isBuenosAires = provinceId == ProvinceConfig.buenosAires.id;
+    var seriesComposition = CordobaSeriesCompositionResult(
+      GisSoilSeries.fromProperties(feature.properties),
+    );
+    if (isCordoba &&
+        _cordobaSeriesPercentageRepository.mayHaveSupplement(feature)) {
+      final originalFeature = feature;
+      feature = await _cordobaFeatureMetadataRepository
+          .enrichCardFeature(originalFeature)
+          .catchError((Object error) {
+            debugPrint('Córdoba card metadata unavailable: $error');
+            return originalFeature;
+          });
+      if (!mounted) return;
+
+      final sourceSeries = GisSoilSeries.fromProperties(feature.properties);
+      seriesComposition = await _cordobaSeriesPercentageRepository
+          .enrichCardSeries(feature: feature, sourceSeries: sourceSeries)
+          .catchError((Object error) {
+            debugPrint('Córdoba series percentages unavailable: $error');
+            return CordobaSeriesCompositionResult(sourceSeries);
+          });
+      if (!mounted) return;
+    } else if (isCordoba) {
+      try {
+        feature = await _cordobaFeatureMetadataRepository.enrichCardFeature(
+          feature,
+        );
+      } catch (error) {
+        debugPrint('Córdoba card metadata unavailable: $error');
+      }
+      if (!mounted) return;
+    } else if (isBuenosAires) {
+      try {
+        feature = await _buenosAiresFeatureMetadataRepository.enrichCardFeature(
+          feature,
+        );
+      } catch (error) {
+        debugPrint('Buenos Aires card metadata unavailable: $error');
+      }
+      if (!mounted) return;
+    }
     // PDF resolution needs the raw SERIE* value (e.g. "RSA cc") — Santa
     // Fe's SantaFeSeriesResolver extracts the series *code* from it.
     // `series` below is a separate, display-only copy with names already
-    // resolved ("Río Salado") for the title/labels/favorites; resolving
+    // resolved ("Río Salado") for the series labels/favorites; resolving
     // PDFs from that renamed copy instead of `rawSeries` was Fase 6B's
     // bug: extractSeriesCode("Río Salado") reads "Río" as the code, which
     // isn't in the index, so the PDF lookup silently came back null ("no
@@ -5606,18 +5860,32 @@ class _GisMapScreenState extends State<GisMapScreen>
     // element-by-element), so `matches[index]` still lines up with
     // `series[index]` wherever they're both used below.
     final rawSeries = GisSoilSeries.fromProperties(feature.properties);
-    final series = _resolveSeriesDisplayNames(feature, rawSeries);
+    final series = _resolveSeriesDisplayNames(
+      feature,
+      seriesComposition.applyTo(rawSeries),
+    );
     final matchesFuture = _findSeriesPdfs(feature, rawSeries);
+    final title = _featureDetailTitle(feature, series: series);
+    final unitDescription = isCordoba
+        ? _optionalAttribute(feature, 'Nombre_UC')
+        : null;
+    final landscape = _optionalAttribute(feature, 'PAISAJE');
+    final taxonomy = GisSoilTaxonomy.fromProperties(feature.properties);
 
     return _showMapBottomSheet<void>(
       isScrollControlled: true,
       builder: (bottomSheetContext) {
-        final title = _readAttribute(feature, 'Nombre_UC');
-        final capability = _readAttribute(feature, 'CAP_USO');
-        final type = _readAttribute(feature, 'TIPO');
+        final capability = _optionalAttribute(feature, 'CAP_USO');
+        final type = _optionalAttribute(feature, 'TIPO');
         final seriesCount = series.length == 1
             ? '1 serie'
             : '${series.length} series';
+        final summaryParts = <String>[
+          if (capability case final value?) 'Capacidad $value',
+          seriesCount,
+          ?type,
+        ];
+        final symbol = _optionalAttribute(feature, 'SIMBC');
 
         return SafeArea(
           child: FractionallySizedBox(
@@ -5626,9 +5894,21 @@ class _GisMapScreenState extends State<GisMapScreen>
               padding: const EdgeInsets.only(bottom: 24),
               children: [
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 2),
                   child: Text(
-                    title == 'Sin datos' ? 'Unidad cartográfica' : title,
+                    'Unidad cartográfica',
+                    style: Theme.of(bottomSheetContext).textTheme.labelMedium
+                        ?.copyWith(
+                          color: Theme.of(
+                            bottomSheetContext,
+                          ).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 2),
+                  child: Text(
+                    title,
                     style: Theme.of(bottomSheetContext).textTheme.titleLarge
                         ?.copyWith(fontWeight: FontWeight.w600),
                   ),
@@ -5636,7 +5916,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Text(
-                    'Capacidad $capability • $seriesCount • $type',
+                    summaryParts.join(' • '),
                     style: Theme.of(bottomSheetContext).textTheme.bodySmall
                         ?.copyWith(
                           color: Theme.of(
@@ -5667,38 +5947,79 @@ class _GisMapScreenState extends State<GisMapScreen>
                     );
                   },
                 ),
-                _BottomSheetSection(
-                  title: 'Información general',
-                  children: [
-                    _InfoRow(
-                      label: 'Símbolo',
-                      value: _readAttribute(feature, 'SIMBC'),
-                    ),
-                    _InfoRow(
-                      label: 'Tipo',
-                      value: _readAttribute(feature, 'TIPO'),
-                    ),
-                    _InfoRow(
-                      label: 'Capacidad de uso',
-                      value: _readAttribute(feature, 'CAP_USO'),
-                    ),
-                  ],
-                ),
-                _BottomSheetSection(
-                  title: 'Paisaje',
-                  children: [
-                    _LandscapeDescription(
-                      value: _readAttribute(feature, 'PAISAJE'),
-                    ),
-                  ],
-                ),
+                if (symbol != null || type != null || capability != null)
+                  _BottomSheetSection(
+                    title: 'Información general',
+                    children: [
+                      if (symbol != null)
+                        _InfoRow(label: 'Símbolo', value: symbol),
+                      if (type != null) _InfoRow(label: 'Tipo', value: type),
+                      if (capability != null)
+                        _InfoRow(label: 'Capacidad de uso', value: capability),
+                    ],
+                  ),
+                if (unitDescription != null && unitDescription != title)
+                  _BottomSheetSection(
+                    title: 'Descripción de la unidad',
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text(
+                          unitDescription,
+                          style: Theme.of(
+                            bottomSheetContext,
+                          ).textTheme.bodyLarge,
+                        ),
+                      ),
+                    ],
+                  ),
+                if (landscape != null)
+                  _BottomSheetSection(
+                    title: 'Paisaje',
+                    children: [_LandscapeDescription(value: landscape)],
+                  ),
+                if (!taxonomy.isEmpty)
+                  _BottomSheetSection(
+                    title: 'Clasificación del suelo y taxonomía',
+                    children: [
+                      if (taxonomy.soilClass != null)
+                        _InfoRow(label: 'Clase', value: taxonomy.soilClass!),
+                      if (taxonomy.subclass != null)
+                        _InfoRow(label: 'Subclase', value: taxonomy.subclass!),
+                      if (taxonomy.productivityIndex != null)
+                        _InfoRow(
+                          label: 'Índice de productividad (IP)',
+                          value: taxonomy.productivityIndex!,
+                        ),
+                      for (final classification
+                          in taxonomy.sourceClassifications)
+                        _InfoRow(
+                          label: classification.label,
+                          value: classification.value,
+                        ),
+                      for (final component in taxonomy.components) ...[
+                        if (component.subgroup != null)
+                          _InfoRow(
+                            label: 'Subgrupo ${component.index}',
+                            value: component.subgroup!,
+                          ),
+                        if (component.position != null)
+                          _InfoRow(
+                            label: 'Posición ${component.index}',
+                            value: component.position!,
+                          ),
+                      ],
+                    ],
+                  ),
                 _BottomSheetSection(
                   title: 'Series de suelo',
                   children: [
                     if (series.isEmpty)
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: 8),
-                        child: Text('No hay series disponibles.'),
+                        child: Text(
+                          'No hay series registradas en esta unidad.',
+                        ),
                       ),
                     if (series.isNotEmpty)
                       for (var index = 0; index < series.length; index++)
@@ -5706,6 +6027,14 @@ class _GisMapScreenState extends State<GisMapScreen>
                           series: series[index],
                           isDominant: index == 0,
                         ),
+                    for (final aggregate
+                        in seriesComposition.aggregateCompositions)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: _AggregateSeriesCompositionNote(
+                          text: aggregate.displayText,
+                        ),
+                      ),
                   ],
                 ),
                 _BottomSheetSection(
@@ -5714,7 +6043,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                     if (series.isEmpty)
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: 8),
-                        child: Text('No hay series disponibles.'),
+                        child: Text(
+                          'No hay memorias asociadas a las series registradas.',
+                        ),
                       ),
                     if (series.isNotEmpty)
                       FutureBuilder<List<SeriesPdfLocation?>>(
@@ -5725,6 +6056,15 @@ class _GisMapScreenState extends State<GisMapScreen>
                             return const Padding(
                               padding: EdgeInsets.all(24),
                               child: Center(child: CircularProgressIndicator()),
+                            );
+                          }
+
+                          if (snapshot.hasError) {
+                            return const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 8),
+                              child: Text(
+                                'No se pudieron cargar las memorias descriptivas.',
+                              ),
                             );
                           }
 
@@ -5817,8 +6157,51 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   String _readAttribute(GisFeature feature, String key) {
+    return _optionalAttribute(feature, key) ?? 'Sin datos';
+  }
+
+  String? _optionalAttribute(GisFeature feature, String key) {
     final value = feature.properties[key]?.toString().trim() ?? '';
-    return value.isEmpty ? 'Sin datos' : value;
+    return value.isEmpty ? null : value;
+  }
+
+  String _featureDetailTitle(
+    GisFeature feature, {
+    required List<GisSoilSeries> series,
+  }) {
+    GisSoilSeries? leadingSeries;
+    double? highestPercentage;
+    for (final item in series) {
+      final rawPercentage = item.percentage.endsWith('%')
+          ? item.percentage.substring(0, item.percentage.length - 1)
+          : item.percentage;
+      final percentage = double.tryParse(rawPercentage.replaceAll(',', '.'));
+      if (percentage != null &&
+          (highestPercentage == null || percentage > highestPercentage)) {
+        leadingSeries = item;
+        highestPercentage = percentage;
+      }
+    }
+    leadingSeries ??= series.firstOrNull;
+    if (leadingSeries != null) {
+      return _titleCaseSoilSeries(leadingSeries.name);
+    }
+
+    return _optionalAttribute(feature, 'SIMBC') ?? 'Unidad cartográfica';
+  }
+
+  String _titleCaseSoilSeries(String name) {
+    final words = name.toLowerCase().split(RegExp(r'\s+'));
+    const lowercaseWords = {'a', 'al', 'de', 'del', 'la', 'las', 'los', 'y'};
+    return words.indexed
+        .map((entry) {
+          final word = entry.$2;
+          if (entry.$1 > 0 && lowercaseWords.contains(word)) return word;
+          return word.isEmpty
+              ? word
+              : '${word[0].toUpperCase()}${word.substring(1)}';
+        })
+        .join(' ');
   }
 
   /// Applies [feature]'s coverage's [ProvinceConfig.seriesNameResolver] to
@@ -6077,7 +6460,14 @@ class _SoilSeriesSummaryTile extends StatelessWidget {
             ? textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)
             : textTheme.titleSmall,
       ),
-      subtitle: Text(percentage),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (series.phase.isNotEmpty) Text(series.phase),
+          if (series.position.isNotEmpty) Text('Posición: ${series.position}'),
+          Text(percentage),
+        ],
+      ),
       trailing: isDominant
           ? Chip(
               label: const Text('Principal'),
@@ -6087,6 +6477,27 @@ class _SoilSeriesSummaryTile extends StatelessWidget {
           : null,
     );
   }
+}
+
+class _AggregateSeriesCompositionNote extends StatelessWidget {
+  const _AggregateSeriesCompositionNote({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        'Composición agregada (no individual)',
+        style: Theme.of(
+          context,
+        ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+      ),
+      const SizedBox(height: 4),
+      Text(text, style: Theme.of(context).textTheme.bodyMedium),
+    ],
+  );
 }
 
 class _ParcelAnalysisMetric extends StatelessWidget {
@@ -8087,6 +8498,8 @@ List<GisSoilSeries> _applySeriesNameResolver(
         (soilSeries) => GisSoilSeries(
           name: resolver.resolve(soilSeries.name),
           percentage: soilSeries.percentage,
+          phase: soilSeries.phase,
+          position: soilSeries.position,
         ),
       )
       .toList(growable: false);
@@ -8148,7 +8561,7 @@ class _GisFavoriteStarButton extends StatelessWidget {
 class _DesktopMapInformationPanel extends StatelessWidget {
   const _DesktopMapInformationPanel({
     required this.feature,
-    required this.seriesNameResolverForFeature,
+    required this.featureDetailTitle,
     required this.measurement,
     required this.marker,
     required this.onOpenFeatureDetails,
@@ -8168,8 +8581,7 @@ class _DesktopMapInformationPanel extends StatelessWidget {
   });
 
   final GisFeature? feature;
-  final SeriesNameResolver Function(GisFeature feature)
-  seriesNameResolverForFeature;
+  final String Function(GisFeature feature) featureDetailTitle;
   final SavedMeasurement? measurement;
   final PersonalMarker? marker;
   final VoidCallback? onOpenFeatureDetails;
@@ -8192,12 +8604,7 @@ class _DesktopMapInformationPanel extends StatelessWidget {
     final theme = Theme.of(context);
     final unitSymbol = feature?.properties['SIMBC']?.toString().trim();
     final title = switch ((feature, measurement, marker)) {
-      (final GisFeature value, _, _) =>
-        _applySeriesNameResolver(
-              GisSoilSeries.fromProperties(value.properties),
-              seriesNameResolverForFeature(value),
-            ).firstOrNull?.name ??
-            _featureValue(value, 'Nombre_UC'),
+      (final GisFeature value, _, _) => featureDetailTitle(value),
       (_, final SavedMeasurement value, _) => value.name,
       (_, _, final PersonalMarker value) => value.name,
       _ => '',
@@ -8445,8 +8852,9 @@ class _MapToolHintOverlay extends StatelessWidget {
         : type == null
         ? const SizedBox.shrink(key: ValueKey('tool-hint-empty'))
         : _MapToolHintCard(key: ValueKey(type), type: type!);
+    final safeTop = MediaQuery.paddingOf(context).top;
     return Positioned(
-      top: top,
+      top: math.max(top, safeTop + 24),
       left: 16,
       right: 16,
       child: IgnorePointer(
@@ -8657,9 +9065,7 @@ class _MapHintProgressBar extends StatelessWidget {
       ),
       child: SizedBox(
         height: _MapHintPill._progressHeight,
-        child: ColoredBox(
-          color: colorScheme.primary.withValues(alpha: 0.75),
-        ),
+        child: ColoredBox(color: colorScheme.primary.withValues(alpha: 0.75)),
       ),
     );
   }
@@ -10510,9 +10916,7 @@ class _MapCompassControlState extends State<_MapCompassControl> {
     final mapEngine = widget.mapEngine;
     if (mapEngine == null) return;
     final currentRotation = mapEngine.camera.rotation;
-    mapEngine.rotate(
-      currentRotation + details.delta.dx * _dragDegreesPerPixel,
-    );
+    mapEngine.rotate(currentRotation + details.delta.dx * _dragDegreesPerPixel);
   }
 
   void _handleDragEnd(DragEndDetails details) {
@@ -10756,8 +11160,22 @@ String _provinceDisplayName(String coverageId) {
   return switch (coverageId) {
     'santa_fe' => 'Santa Fe',
     'buenos_aires' => 'Buenos Aires',
+    'cordoba' => 'Córdoba',
     _ => coverageId,
   };
+}
+
+bool _isProvinceAnchorVisible(
+  MapCamera? camera,
+  Size screenSize,
+  LatLng anchor,
+) {
+  if (camera == null || screenSize.isEmpty) return false;
+  final offset = camera.latLngToScreenOffset(anchor);
+  return offset.dx >= 0 &&
+      offset.dx <= screenSize.width &&
+      offset.dy >= 0 &&
+      offset.dy <= screenSize.height;
 }
 
 /// Persists, per on-demand coverage, which delivery-status the user has
@@ -10817,134 +11235,26 @@ abstract final class _ProvinceBoundaryLoader {
   }
 }
 
-/// Fase 11C/12A: fixed map annotation for a coverage whose soil-polygon
-/// PMTiles isn't available yet — anchored to [anchorPoint] via
-/// [MapCamera.latLngToScreenOffset], the same way a map marker's info
-/// window would be. Deliberately has no "keep on screen" or "avoid the
-/// controls" logic: its position is only ever a function of that fixed
-/// coordinate and the current camera, nothing else — panning moves it
-/// exactly as it moves the province, and it simply isn't repositioned if
-/// that puts it partly off-screen or under a control. On Windows — always
-/// bundled, see `windows/CMakeLists.txt` — [delivery]'s status is always
-/// `available` and this never renders.
-///
-/// Shared by every on-demand province (Santa Fe, then Buenos Aires — Fase
-/// 12A extracted this from a Santa-Fe-only widget once a second province
-/// needed the exact same banner, contour, dismissal and download flow).
-///
-/// Visible exactly when [anchorPoint] itself is inside the viewport — no
-/// zoom threshold, no grace period once it's left the screen. Its on-screen
-/// SIZE never changes either: [_ProvincePmtilesBannerState._cardMaxWidth]
-/// is a fixed logical-pixel width regardless of zoom, so this behaves like
-/// a marker overlay, not a scaled map layer.
-class _ProvincePmtilesBanner extends StatefulWidget {
-  const _ProvincePmtilesBanner({
+/// The geographic shading for one unavailable on-demand province. These
+/// widgets are inserted as one paint pass before every download card, so no
+/// province's fill can cover another province's card.
+class _ProvincePmtilesHighlight extends StatefulWidget {
+  const _ProvincePmtilesHighlight({
     super.key,
-    required this.coverageId,
     required this.delivery,
-    required this.anchorPoint,
     required this.provinceBounds,
-    required this.provinceName,
     required this.referenceMapAssetPath,
     required this.viewStateListenable,
     required this.resolveCamera,
-    required this.onDownload,
-    required this.onDismissedFirstTime,
-    this.downloadSizeBytes,
   });
 
-  /// Which coverage this banner is for — namespaces the persisted
-  /// dismissal (see [_ProvinceNoticeDismissal]) so Santa Fe and Buenos
-  /// Aires each keep their own independent "closed" state. Also used as
-  /// this widget's [Key] at the call site, so its identity (and the
-  /// in-flight boundary/dismissal loads in its [State]) survives sibling
-  /// widgets appearing/disappearing elsewhere in the same [Stack] —
-  /// without a key, a keyless list item can be torn down and recreated
-  /// purely because an unrelated sibling's presence changed, restarting
-  /// this widget's async loads before they ever get to render anything.
-  final String coverageId;
-
-  /// This province's on-demand delivery object — the single source of
-  /// truth for [PmtilesDeliveryStatus] this banner reads and drives. Gates
-  /// both the download CARD and the boundary/shadow (see [build]): once
-  /// [PmtilesDeliveryStatus.available], the real polygons are the
-  /// province's representation, so neither renders any more, regardless of
-  /// spatial visibility or card-dismissal state.
   final PmtilesDelivery delivery;
-
-  /// A real point inside the province — see [ProvinceConfig.
-  /// downloadBannerAnchor] for why a real, roughly-central town is used
-  /// instead of the archive's data-derived center or the boundary
-  /// polygon's centroid. Only used to position/gate the download CARD.
-  final LatLng anchorPoint;
-
-  /// The province's real geographic extent — used only for the spatial half
-  /// of the boundary/shadow's visibility (does it overlap the current
-  /// viewport at all), completely independent of [anchorPoint] and
-  /// dismissal state. The other half is [delivery]'s availability — see
-  /// [_isProvinceBoundsVisible] and [build].
   final GeoBounds provinceBounds;
-
-  final String provinceName;
-
-  /// Same asset [_ProvinceBoundaryLoader] reads the real outline from —
-  /// passed in rather than looked up here so this widget doesn't need a
-  /// [MapCoverage] of its own, just like [ProvinceConfig].referenceMapAsset
-  /// already flows into `OfflineReferenceMapLayer` elsewhere on this screen.
   final String? referenceMapAssetPath;
   final ValueListenable<_MapViewportState> viewStateListenable;
-
-  /// Live camera accessor (not a snapshot) — null when the active engine
-  /// isn't [FlutterMapEngine] and so exposes no equivalent projection here
-  /// (e.g. a test fake); the annotation simply doesn't render rather than
-  /// crashing or guessing a position.
   final MapCamera? Function() resolveCamera;
-  final VoidCallback onDownload;
 
-  /// Fires the very first time the user closes this notice with the `×` —
-  /// never again after that, even across app restarts (see
-  /// [_ProvincePmtilesBannerState._dismiss]). Fase 11D UX: lets the screen
-  /// show a one-off temporary hint explaining where to find the download
-  /// later, without this widget needing to know anything about how that
-  /// hint is displayed.
-  final VoidCallback onDismissedFirstTime;
-
-  /// Real size of this province's archive, straight from
-  /// [ProvinceConfig.pmtilesDownloadSizeBytes]. Null means the size is
-  /// unknown for this coverage, and the card omits the line entirely
-  /// rather than showing a placeholder or a guessed number.
-  final int? downloadSizeBytes;
-
-  /// Whether [anchor] currently projects inside the visible screen — the
-  /// only thing that decides the download CARD's visibility (never the
-  /// boundary/shadow — see [_isProvinceBoundsVisible]). No zoom threshold:
-  /// at any zoom level, once this point scrolls off-screen the card
-  /// disappears, and it reappears the moment it's back in view.
-  static bool isCoverageVisible(
-    MapCamera? camera,
-    Size screenSize,
-    LatLng anchor,
-  ) {
-    if (camera == null || screenSize.isEmpty) return false;
-    final offset = camera.latLngToScreenOffset(anchor);
-    return offset.dx >= 0 &&
-        offset.dx <= screenSize.width &&
-        offset.dy >= 0 &&
-        offset.dy <= screenSize.height;
-  }
-
-  /// Whether the province's real extent ([provinceBounds]) overlaps the
-  /// camera's current visible geographic area at all — the spatial half of
-  /// the boundary/shadow's visibility (see [build] for the other half,
-  /// [delivery]'s availability). Deliberately not based on any single point
-  /// (unlike [isCoverageVisible]): a large province can have its center
-  /// off-screen while still being partially visible, and this must still
-  /// show the boundary in that case. [MapCamera.visibleBounds] already
-  /// accounts for zoom, pan and rotation, so this has no explicit zoom
-  /// threshold of its own — zooming out only ever grows the visible area,
-  /// so a province that was visible stays visible until it's genuinely
-  /// entirely off-screen.
-  static bool _isProvinceBoundsVisible(
+  static bool isProvinceBoundsVisible(
     MapCamera? camera,
     GeoBounds provinceBounds,
   ) {
@@ -10959,326 +11269,61 @@ class _ProvincePmtilesBanner extends StatefulWidget {
   }
 
   @override
-  State<_ProvincePmtilesBanner> createState() => _ProvincePmtilesBannerState();
+  State<_ProvincePmtilesHighlight> createState() =>
+      _ProvincePmtilesHighlightState();
 }
 
-/// How the download card is currently leaving the screen, if at all.
-///
-/// Purely presentational: it never affects [PmtilesDeliveryStatus], the
-/// download, the persisted dismissal, or the boundary/shadow — its only job
-/// is to keep the card mounted long enough to animate instead of vanishing
-/// the frame its underlying condition flips.
-enum _CardExit {
-  /// Not leaving — the card's visibility is decided solely by the existing
-  /// availability/dismissal/anchor rules.
-  none,
-
-  /// The download just completed: the action shows its success confirmation
-  /// while the card holds still.
-  success,
-
-  /// The card is fading/lifting out, after which it is dropped from the
-  /// tree and the underlying rules take over again.
-  leaving,
-}
-
-class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
-  static const double _cardMaxWidth = 198;
-
-  /// How long the success confirmation stays put before the card starts to
-  /// leave, and how long each kind of exit takes. Success gets a slightly
-  /// longer, softer exit than a manual close, which should feel immediate.
-  static const Duration _successHold = Duration(milliseconds: 620);
-  static const Duration _successLeaveDuration = Duration(milliseconds: 320);
-  static const Duration _dismissLeaveDuration = Duration(milliseconds: 180);
-
-  // Persisted (SharedPreferences) rather than kept only in memory — the
-  // close must survive panning away and back, and closing/reopening the
-  // map — for as long as this province's delivery status stays the same as
-  // it was when the user dismissed it.
-  String? _dismissedStatusName;
-
-  // The province's real boundary ring(s) in plain LatLng — reprojected to
-  // screen space fresh on every build (camera can rotate/zoom/pan), never
-  // recomputed from anything but the camera itself.
-  List<List<LatLng>>? _boundaryRings;
-
-  _CardExit _exit = _CardExit.none;
-  Duration _leaveDuration = _successLeaveDuration;
-  Timer? _exitTimer;
-
-  /// Whether the card rendered on the previous build, per the unchanged
-  /// visibility rules. Read only by [_handleDeliveryChanged], so a download
-  /// that completes while the card is off-screen (or already dismissed)
-  /// stays silent instead of animating something the user cannot see.
-  bool _cardWasVisible = false;
-
-  /// Whether the action is showing its completed state. Separate from
-  /// [_exit] because a manual close also passes through
-  /// [_CardExit.leaving] and must NOT flash the success confirmation on
-  /// its way out — only a finished download does.
-  bool _showSuccessAction = false;
-
-  @override
-  void initState() {
-    super.initState();
-    widget.delivery.addListener(_handleDeliveryChanged);
-    unawaited(_loadDismissal());
-    unawaited(_loadBoundary());
-  }
-
-  @override
-  void dispose() {
-    _exitTimer?.cancel();
-    widget.delivery.removeListener(_handleDeliveryChanged);
-    super.dispose();
-  }
-
-  void _handleDeliveryChanged() {
-    if (!mounted) return;
-    // The card this widget was offering just finished downloading, while it
-    // was actually on screen: confirm it in place, then let it leave. The
-    // status itself is not read or written here beyond this check — the
-    // rules in [build] still decide everything once the exit finishes.
-    if (widget.delivery.status == PmtilesDeliveryStatus.available &&
-        _cardWasVisible &&
-        _exit == _CardExit.none) {
-      _startSuccessExit();
-      return;
-    }
-    setState(() {});
-  }
-
-  void _startSuccessExit() {
-    setState(() {
-      _exit = _CardExit.success;
-      _showSuccessAction = true;
-      _leaveDuration = _successLeaveDuration;
-    });
-    _exitTimer?.cancel();
-    _exitTimer = Timer(_successHold, () {
-      if (!mounted) return;
-      setState(() => _exit = _CardExit.leaving);
-      _exitTimer = Timer(_successLeaveDuration, _finishExit);
-    });
-  }
-
-  /// Manual close. The persisted dismissal still happens exactly as before
-  /// (including [_ProvincePmtilesBanner.onDismissedFirstTime]) — it is only
-  /// deferred by the length of the leave animation, so the card has
-  /// something to animate instead of being torn out of the tree instantly.
-  void _startDismissExit(PmtilesDeliveryStatus status) {
-    if (_exit != _CardExit.none) return;
-    setState(() {
-      _exit = _CardExit.leaving;
-      _leaveDuration = _dismissLeaveDuration;
-    });
-    _exitTimer?.cancel();
-    _exitTimer = Timer(_dismissLeaveDuration, () {
-      if (!mounted) return;
-      _finishExit();
-      _dismiss(status);
-    });
-  }
-
-  void _finishExit() {
-    if (!mounted) return;
-    setState(() {
-      _exit = _CardExit.none;
-      _cardWasVisible = false;
-      _showSuccessAction = false;
-    });
-  }
-
-  Future<void> _loadDismissal() async {
-    final dismissed = await _ProvinceNoticeDismissal.read(widget.coverageId);
-    if (mounted && dismissed != _dismissedStatusName) {
-      setState(() => _dismissedStatusName = dismissed);
-    }
-  }
-
-  Future<void> _loadBoundary() async {
-    final rings = await _ProvinceBoundaryLoader.load(
-      widget.referenceMapAssetPath,
-    );
-    if (mounted && rings != null) {
-      setState(() => _boundaryRings = rings);
-    }
-  }
-
-  void _dismiss(PmtilesDeliveryStatus status) {
-    final isFirstEverDismissal = _dismissedStatusName == null;
-    setState(() => _dismissedStatusName = status.name);
-    unawaited(_ProvinceNoticeDismissal.write(widget.coverageId, status.name));
-    if (isFirstEverDismissal) widget.onDismissedFirstTime();
-  }
+class _ProvincePmtilesHighlightState extends State<_ProvincePmtilesHighlight> {
+  late final Future<List<List<LatLng>>?> _boundaryRings =
+      _ProvinceBoundaryLoader.load(widget.referenceMapAssetPath);
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<_MapViewportState>(
-      valueListenable: widget.viewStateListenable,
-      builder: (context, viewState, child) {
-        // No camera to project against — nothing to anchor to, so render
-        // nothing rather than guess a screen position. Both the boundary
-        // and the card need a camera, so this is the one gate they still
-        // share.
-        final camera = widget.resolveCamera();
-        if (camera == null) return const SizedBox.shrink();
-        final screenSize = MediaQuery.sizeOf(context);
-
-        // Four independent facts, kept separate on purpose (see class docs):
-        // 1. PMTiles availability — the only thing that should ever hide
-        //    the boundary/shadow outright, regardless of geography.
-        // 2. Spatial visibility — does the province's real extent overlap
-        //    the viewport at all (unrelated to availability or dismissal).
-        // 3. Card dismissal — only ever gates the download card.
-        // 4. The real soil polygons themselves — rendered elsewhere
-        //    (the tile pipeline), entirely untouched by this widget.
-        final status = widget.delivery.status;
-        final isAvailable = status == PmtilesDeliveryStatus.available;
-
-        // Boundary/shadow visibility: available PMTiles hides it outright —
-        // the real polygons are the province's representation once they're
-        // there. Otherwise, purely spatial: does its real extent overlap
-        // the viewport, independent of the download card's dismissal state.
-        // Deliberately not affected by the card's exit animation.
-        final showBoundary =
-            !isAvailable &&
-            _boundaryRings != null &&
-            _ProvincePmtilesBanner._isProvinceBoundsVisible(
-              camera,
-              widget.provinceBounds,
-            );
-
-        // Download card visibility: unchanged from before — only while
-        // not yet available, not dismissed for the current status, and
-        // its own anchor point is on screen.
-        final showCard =
-            !isAvailable &&
-            _dismissedStatusName != status.name &&
-            _ProvincePmtilesBanner.isCoverageVisible(
-              camera,
-              screenSize,
-              widget.anchorPoint,
-            );
-        _cardWasVisible = showCard;
-
-        // The one addition to those rules: while an exit is playing, the
-        // card stays mounted so it can animate. It still has to be anchored
-        // on screen to be worth drawing at all.
-        final isExiting = _exit != _CardExit.none;
-        final renderCard =
-            showCard ||
-            (isExiting &&
-                _ProvincePmtilesBanner.isCoverageVisible(
+    return FutureBuilder<List<List<LatLng>>?>(
+      future: _boundaryRings,
+      builder: (context, snapshot) {
+        final rings = snapshot.data;
+        if (rings == null) return const SizedBox.shrink();
+        return AnimatedBuilder(
+          animation: widget.delivery,
+          builder: (context, child) {
+            if (widget.delivery.status == PmtilesDeliveryStatus.available) {
+              return const SizedBox.shrink();
+            }
+            return ValueListenableBuilder<_MapViewportState>(
+              valueListenable: widget.viewStateListenable,
+              builder: (context, viewState, child) {
+                final camera = widget.resolveCamera();
+                if (!_ProvincePmtilesHighlight.isProvinceBoundsVisible(
                   camera,
-                  screenSize,
-                  widget.anchorPoint,
-                ));
-
-        if (!showBoundary && !renderCard) {
-          return const SizedBox.shrink();
-        }
-
-        return Stack(
-          children: [
-            // Subtle outline + darkening tracing the province's real
-            // boundary — see _ProvinceBoundaryLoader. Nothing is drawn if
-            // that data isn't available; a rectangle is never substituted
-            // for it.
-            if (showBoundary)
-              IgnorePointer(
-                child: CustomPaint(
-                  size: screenSize,
-                  painter: _ProvinceHighlightPainter(
-                    rings: _boundaryRings!
-                        .map(
-                          (ring) => ring
-                              .map(camera.latLngToScreenOffset)
-                              .toList(growable: false),
-                        )
-                        .toList(growable: false),
-                    fillColor: Theme.of(
-                      context,
-                    ).colorScheme.scrim.withValues(alpha: 0.18),
-                    borderColor: Theme.of(
-                      context,
-                    ).colorScheme.primary.withValues(alpha: 0.45),
-                  ),
-                ),
-              ),
-            if (renderCard)
-              Builder(
-                builder: (context) {
-                  // A fixed, real point inside the province (see
-                  // widget.anchorPoint), reprojected against the live
-                  // camera on every build — exactly the same relationship
-                  // a map marker has to its own position. No clamping, no
-                  // "keep on screen": if this lands under a control or
-                  // off-screen, it stays there, because the geography —
-                  // not screen tidiness — decides where it goes. That
-                  // holds while it is leaving too, so the exit stays
-                  // pinned to the map rather than drifting free of it.
-                  final anchor = camera.latLngToScreenOffset(
-                    widget.anchorPoint,
-                  );
-                  final leaving = _exit == _CardExit.leaving;
-                  final sizeBytes = widget.downloadSizeBytes;
-                  return Positioned(
-                    left: anchor.dx - _cardMaxWidth / 2,
-                    // Fase 7: lifted 10px off the anchor (was +8) so the card
-                    // clears the anchor point itself; the anchor is still
-                    // the projected LatLng, unchanged.
-                    top: anchor.dy - 2,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        maxWidth: _cardMaxWidth,
-                      ),
-                      // Lifts a little toward its anchor while fading and
-                      // easing down in scale, so it reads as settling back
-                      // into the map rather than as a panel being closed.
-                      child: AnimatedSlide(
-                        offset: leaving ? const Offset(0, -0.10) : Offset.zero,
-                        duration: _leaveDuration,
-                        curve: Curves.easeInCubic,
-                        child: AnimatedOpacity(
-                          opacity: leaving ? 0 : 1,
-                          duration: _leaveDuration,
-                          curve: Curves.easeInCubic,
-                          child: AnimatedScale(
-                            scale: leaving ? 0.96 : 1,
-                            duration: _leaveDuration,
-                            curve: Curves.easeInCubic,
-                            child: _ProvincePmtilesBannerCard(
-                              key: ValueKey(
-                                'province-download-card-${widget.coverageId}',
-                              ),
-                              provinceName: widget.provinceName,
-                              sizeLabel: sizeBytes == null
-                                  ? null
-                                  : _formatProvinceDownloadSize(sizeBytes),
-                              isDownloading:
-                                  status == PmtilesDeliveryStatus.downloading,
-                              // Straight off the same delivery object the
-                              // provincial maps manager reads, so the two
-                              // cannot report different figures for the same
-                              // download — right down to sharing the rendered
-                              // "106.4 MB / 158.6 MB" string.
-                              progress: widget.delivery.downloadBytes,
-                              showSuccess: _showSuccessAction,
-                              onDownload: widget.onDownload,
-                              onClose: () => _startDismissExit(status),
-                              glassBlurStrength: leaving ? 0 : 1,
-                              motionDuration: _leaveDuration,
-                            ),
-                          ),
-                        ),
-                      ),
+                  widget.provinceBounds,
+                )) {
+                  return const SizedBox.shrink();
+                }
+                final screenSize = MediaQuery.sizeOf(context);
+                return IgnorePointer(
+                  child: CustomPaint(
+                    size: screenSize,
+                    painter: _ProvinceHighlightPainter(
+                      rings: rings
+                          .map(
+                            (ring) => ring
+                                .map(camera!.latLngToScreenOffset)
+                                .toList(growable: false),
+                          )
+                          .toList(growable: false),
+                      fillColor: Theme.of(
+                        context,
+                      ).colorScheme.scrim.withValues(alpha: 0.18),
+                      borderColor: Theme.of(
+                        context,
+                      ).colorScheme.primary.withValues(alpha: 0.45),
                     ),
-                  );
-                },
-              ),
-          ],
+                  ),
+                );
+              },
+            );
+          },
         );
       },
     );
@@ -11325,12 +11370,15 @@ class _ProvinceHighlightPainter extends CustomPainter {
   }
 }
 
+/// Retained as the pre-overlay card implementation for easy comparison with
+/// the shared province download overlay during this migration.
 /// Formats a province archive's real byte size for [_ProvincePmtilesBannerCard].
 ///
 /// Mirrors Configuración's own cache-size wording (whole megabytes, `<1 MB`
 /// below that) so the same archive reads the same in both places — the
 /// number itself always comes from [ProvinceConfig.pmtilesDownloadSizeBytes],
 /// never from an estimate.
+// ignore: unused_element
 String _formatProvinceDownloadSize(int bytes) {
   if (bytes <= 0) return '';
   final megabytes = bytes / (1024 * 1024);
@@ -11344,8 +11392,10 @@ String _formatProvinceDownloadSize(int bytes) {
 /// values passed in ([provinceName], [sizeLabel]), so Buenos Aires, Santa Fe
 /// and any province added later render through this exact same widget, with
 /// the same layout, states and motion.
+// ignore: unused_element
 class _ProvincePmtilesBannerCard extends StatelessWidget {
   const _ProvincePmtilesBannerCard({
+    // ignore: unused_element_parameter
     super.key,
     required this.provinceName,
     required this.sizeLabel,
@@ -11503,9 +11553,7 @@ class _ProvincePmtilesBannerCard extends StatelessWidget {
                               if (isDownloading || sizeLabel != null) ...[
                                 const SizedBox(height: 1),
                                 Text(
-                                  isDownloading
-                                      ? 'Descargando…'
-                                      : sizeLabel!,
+                                  isDownloading ? 'Descargando…' : sizeLabel!,
                                   style: textTheme.bodySmall?.copyWith(
                                     fontSize: 12.5,
                                     height: 1.2,
@@ -11560,15 +11608,13 @@ class _ProvincePmtilesBannerCard extends StatelessWidget {
                                     // A restrained settle, not a bounce: the
                                     // check grows the last 8% into place and
                                     // stops there.
-                                    scale: Tween<double>(
-                                      begin: 0.92,
-                                      end: 1,
-                                    ).animate(
-                                      CurvedAnimation(
-                                        parent: animation,
-                                        curve: Curves.easeOutCubic,
-                                      ),
-                                    ),
+                                    scale: Tween<double>(begin: 0.92, end: 1)
+                                        .animate(
+                                          CurvedAnimation(
+                                            parent: animation,
+                                            curve: Curves.easeOutCubic,
+                                          ),
+                                        ),
                                     child: child,
                                   ),
                                 ),
@@ -12015,6 +12061,9 @@ class _RenderedGisTile {
   final GisTileCoordinates coordinates;
   final List<_RenderedGisPolygon> polygons;
   final GisRenderMetrics renderMetrics;
+  late final bool hasCordobaPolygons = polygons.any(
+    (polygon) => polygon.isCordoba,
+  );
 
   /// The screen's viewport-wide decision about which polygons may show their
   /// symbol — read, never written, by this tile's layer.
@@ -12065,6 +12114,7 @@ class _RenderedGisPolygon {
     required this.feature,
     required this.outerRing,
     required this.holes,
+    required this.isCordoba,
     this.unitSymbol,
   }) : bounds = _GisBounds.fromPoints(outerRing);
 
@@ -12072,6 +12122,22 @@ class _RenderedGisPolygon {
   final List<LatLng> outerRing;
   final List<List<LatLng>> holes;
   final _GisBounds bounds;
+  final bool isCordoba;
+
+  // Match flutter_map's geographic polygon culling before it projects the
+  // ring. Out-of-range buffered coordinates retain the previous paint path.
+  late final LatLngBounds? paintBounds =
+      bounds.south >= -90 &&
+          bounds.north <= 90 &&
+          bounds.west >= -180 &&
+          bounds.east <= 180
+      ? LatLngBounds.unsafe(
+          south: bounds.south,
+          north: bounds.north,
+          west: bounds.west,
+          east: bounds.east,
+        )
+      : null;
 
   /// This unit's `SIMBC`, already validated by `_unitSymbolLabel`, or null
   /// when the polygon must stay unlabelled. Resolved once when the tile is
@@ -12116,14 +12182,11 @@ class _RenderedGisPolygon {
   LatLng get labelAnchor => _labelAnchor ??= _computeLabelAnchor();
 
   LatLng _computeLabelAnchor() {
-    final result = dart_polylabel2.polylabel(
-      [
-        [for (final p in outerRing) (x: p.latitude, y: p.longitude)],
-        for (final hole in holes)
-          [for (final p in hole) (x: p.latitude, y: p.longitude)],
-      ],
-      precision: _labelPlacementPrecision,
-    );
+    final result = dart_polylabel2.polylabel([
+      [for (final p in outerRing) (x: p.latitude, y: p.longitude)],
+      for (final hole in holes)
+        [for (final p in hole) (x: p.latitude, y: p.longitude)],
+    ], precision: _labelPlacementPrecision);
     return LatLng(result.point.x, result.point.y);
   }
 
@@ -12247,7 +12310,8 @@ class _RenderedGisPolygon {
       final b = ring[previous];
       final crosses = (a.dy > point.dy) != (b.dy > point.dy);
       if (!crosses) continue;
-      final crossingX = (b.dx - a.dx) * (point.dy - a.dy) / (b.dy - a.dy) + a.dx;
+      final crossingX =
+          (b.dx - a.dx) * (point.dy - a.dy) / (b.dy - a.dy) + a.dx;
       if (point.dx < crossingX) inside = !inside;
     }
     return inside;
@@ -12338,7 +12402,7 @@ class _RenderedGisPolygon {
       holePointsList: holes.isEmpty ? null : holes,
       color: isSelected ? style.selectedFill : style.normalFill,
       borderColor: isSelected ? style.selectedBorder : style.normalBorder,
-      borderStrokeWidth: isSelected ? 4 : 2,
+      borderStrokeWidth: isSelected ? 4 : (unitSymbol == null ? 2 : 1.5),
       // No `label` here: the symbols are drawn by [_UnitSymbolPainter] at
       // [labelAnchor] (polylabel, so they land inside the unit even in the
       // crescent/ring shapes soil units often have). flutter_map's own label
@@ -12743,19 +12807,15 @@ class _GisPolygonStyle {
       // contrast on the glyphs, and a halo strong enough to carry them over a
       // pale fill, a selected polygon's stronger fill, and the reference
       // basemap's own lines — no box or bubble, which would fight the
-      // polygon it belongs to. Stacked shadows: a tight opaque one for the
-      // edge, a wider soft one to lift the symbol off busy backgrounds.
+      // polygon it belongs to. A tight white shadow provides a thin halo
+      // without the broad glow of a UI elevation effect.
       unitSymbolLabel: TextStyle(
         fontSize: _unitSymbolFontSize,
         height: 1,
         fontWeight: FontWeight.w700,
         letterSpacing: 0.1,
         color: colorScheme.onSurface,
-        shadows: const [
-          Shadow(color: Color(0xFFFFFFFF), blurRadius: 1.5),
-          Shadow(color: Color(0xF2FFFFFF), blurRadius: 3.5),
-          Shadow(color: Color(0xB3FFFFFF), blurRadius: 7),
-        ],
+        shadows: const [Shadow(color: Color(0xFFFFFFFF), blurRadius: 2)],
       ),
     );
   }
@@ -12866,6 +12926,8 @@ class _GisTilePolygonLayerState extends State<_GisTilePolygonLayer> {
   int? _cachedZoom;
   String? _cachedSelection;
   _GisPolygonStyle? _cachedStyle;
+  _RenderedGisTile? _cachedTile;
+  List<_RenderedGisPolygon>? _cachedPaintPolygons;
   Widget? _cachedPolygonLayer;
 
   @override
@@ -12897,6 +12959,7 @@ class _GisTilePolygonLayerState extends State<_GisTilePolygonLayer> {
 
               final polygonLayer = _buildPolygonLayer(
                 zoom: zoom,
+                visibleBounds: camera.visibleBounds,
                 style: style,
                 selectedFeatureId: selectedFeatureId,
                 renderMetrics: renderMetrics,
@@ -12926,28 +12989,40 @@ class _GisTilePolygonLayerState extends State<_GisTilePolygonLayer> {
 
   Widget _buildPolygonLayer({
     required int zoom,
+    required LatLngBounds visibleBounds,
     required _GisPolygonStyle style,
     required String? selectedFeatureId,
     required GisRenderMetrics renderMetrics,
   }) {
-    // Unchanged from before the symbols existed: labels are painted
-    // separately now, so the polygon layer's cache no longer depends on
-    // them and survives every camera move again.
+    final paintPolygons = widget.tile.hasCordobaPolygons
+        ? widget.tile.polygons
+              .where(
+                (polygon) =>
+                    !polygon.isCordoba ||
+                    polygon.paintBounds == null ||
+                    polygon.paintBounds!.isOverlapping(visibleBounds),
+              )
+              .toList(growable: false)
+        : widget.tile.polygons;
     final cachedLayer = _cachedPolygonLayer;
     if (cachedLayer != null &&
+        identical(_cachedTile, widget.tile) &&
         _cachedZoom == zoom &&
         _cachedSelection == selectedFeatureId &&
-        _cachedStyle == style) {
+        _cachedStyle == style &&
+        (!widget.tile.hasCordobaPolygons ||
+            listEquals(_cachedPaintPolygons, paintPolygons))) {
       renderMetrics.projectedGeometryCacheHitCount++;
       return cachedLayer;
     }
 
-    final polygons = widget.tile.polygons
+    final polygons = paintPolygons
         .map(
-          (polygon) => polygon.toPolygon(style, selectedFeatureId, renderMetrics),
+          (polygon) =>
+              polygon.toPolygon(style, selectedFeatureId, renderMetrics),
         )
         .toList(growable: false);
-    final vertexCount = widget.tile.polygons.fold<int>(
+    final vertexCount = paintPolygons.fold<int>(
       0,
       (count, polygon) => count + polygon.vertexCount,
     );
@@ -12972,6 +13047,8 @@ class _GisTilePolygonLayerState extends State<_GisTilePolygonLayer> {
     _cachedZoom = zoom;
     _cachedSelection = selectedFeatureId;
     _cachedStyle = style;
+    _cachedTile = widget.tile;
+    _cachedPaintPolygons = paintPolygons;
     return _cachedPolygonLayer = profiledLayer;
   }
 }
@@ -13019,7 +13096,7 @@ bool _overlapsSignificantly(Rect first, Rect second) {
 
 /// Font size of a map-unit symbol. Shared by the drawn [TextStyle] and by
 /// the decluttering pass' box estimate, so the two can never drift apart.
-const double _unitSymbolFontSize = 12;
+const double _unitSymbolFontSize = 13;
 
 /// Same labelled polygons as last build? Cheap identity comparison — both
 /// sets hold the very same [_RenderedGisPolygon] instances, so nothing deeper
@@ -13088,18 +13165,20 @@ class _UnitSymbolPainter extends CustomPainter {
 class _UnitSymbolCandidate {
   const _UnitSymbolCandidate({
     required this.polygon,
-    required this.priority,
-    required this.onScreen,
+    required this.fragmentPriority,
+    required this.isSelected,
   });
 
   final _RenderedGisPolygon polygon;
 
-  /// Visible on-screen area, boosted when the unit is fully in view, and
-  /// infinite for the selected unit.
-  final double priority;
+  /// Visible on-screen area, boosted when the fragment is fully in view.
+  /// This never includes selection state, so one feature's representative
+  /// remains stable when that feature is selected.
+  final double fragmentPriority;
 
-  /// The unit's bounding box in screen pixels.
-  final Rect onScreen;
+  /// Whether this feature gets collision priority after its representative
+  /// fragment has been chosen.
+  final bool isSelected;
 }
 
 class _GisPaintProfiler extends SingleChildRenderObjectWidget {

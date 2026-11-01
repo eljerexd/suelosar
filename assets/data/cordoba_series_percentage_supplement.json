@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "province": "cordoba",
+  "identityField": "OBJECTID",
+  "records": {
+    "617": {
+      "SIMBC": "SEl3",
+      "scale": "1:50000",
+      "individualPercentages": [
+        {
+          "series": "SANTA ELENA",
+          "phase": "",
+          "percentage": "40",
+          "classification": "EXACT_INDIVIDUAL",
+          "sourceUrl": "https://obs-idecor-mapas-docs.obs.myhuaweicloud.com/cartas_suelos/PDF_Unidades_50mil_100mil/SEl3.pdf",
+          "sourceSha256": "14479ec56934ce114b664927dcb021cb0c8e3e1a02539555489724f088bee21d",
+          "page": 1,
+          "evidence": "El texto oficial dice que el 80% restante corresponde a Santa Elena 40% y Achalay 40%."
+        },
+        {
+          "series": "FLORA",
+          "phase": "",
+          "percentage": "20",
+          "classification": "EXACT_INDIVIDUAL",
+          "sourceUrl": "https://obs-idecor-mapas-docs.obs.myhuaweicloud.com/cartas_suelos/PDF_Unidades_50mil_100mil/SEl3.pdf",
+          "sourceSha256": "14479ec56934ce114b664927dcb021cb0c8e3e1a02539555489724f088bee21d",
+          "page": 1,
+          "evidence": "El texto oficial identifica explícitamente suelos de la serie Flora 20%."
+        },
+        {
+          "series": "ACHALAY",
+          "phase": "",
+          "percentage": "40",
+          "classification": "EXACT_INDIVIDUAL",
+          "sourceUrl": "https://obs-idecor-mapas-docs.obs.myhuaweicloud.com/cartas_suelos/PDF_Unidades_50mil_100mil/SEl3.pdf",
+          "sourceSha256": "14479ec56934ce114b664927dcb021cb0c8e3e1a02539555489724f088bee21d",
+          "page": 1,
+          "evidence": "El texto oficial dice que el 80% restante corresponde a Santa Elena 40% y Achalay 40%."
+        }
+      ],
+      "aggregateCompositions": []
+    },
+    "1281": {
+      "SIMBC": "Ota5",
+      "scale": "1:50000",
+      "individualPercentages": [
+        {
+          "series": "OLAETA",
+          "phase": "",
+          "percentage": "40",
+          "classification": "EXACT_INDIVIDUAL",
+          "sourceUrl": "https://suelos.cba.gov.ar/PASCANAS/assets/Hoja_3363-21_Pascanas.pdf",
+          "sourceSha256": "450697da69d5fff1522023e86d9829d26dd2ea7d4aa4278cfaf0ef6f7aca72a0",
+          "page": 61,
+          "evidence": "El encabezado 3.3.38 de Ota5 dice: OLAETA 40%; LA VICTORIA 30% y OLAETA moderadamente alcalina en profundidad 30%."
+        },
+        {
+          "series": "LA VICTORIA",
+          "phase": "",
+          "percentage": "30",
+          "classification": "EXACT_INDIVIDUAL",
+          "sourceUrl": "https://suelos.cba.gov.ar/PASCANAS/assets/Hoja_3363-21_Pascanas.pdf",
+          "sourceSha256": "450697da69d5fff1522023e86d9829d26dd2ea7d4aa4278cfaf0ef6f7aca72a0",
+          "page": 61,
+          "evidence": "El encabezado 3.3.38 de Ota5 dice: OLAETA 40%; LA VICTORIA 30% y OLAETA moderadamente alcalina en profundidad 30%."
+        },
+        {
+          "series": "OLAETA",
+          "phase": "en fase moderadamente alcalina en profundidad",
+          "percentage": "30",
+          "classification": "EXACT_INDIVIDUAL",
+          "sourceUrl": "https://suelos.cba.gov.ar/PASCANAS/assets/Hoja_3363-21_Pascanas.pdf",
+          "sourceSha256": "450697da69d5fff1522023e86d9829d26dd2ea7d4aa4278cfaf0ef6f7aca72a0",
+          "page": 61,
+          "evidence": "El encabezado 3.3.38 de Ota5 dice: OLAETA 40%; LA VICTORIA 30% y OLAETA moderadamente alcalina en profundidad 30%."
+        }
+      ],
+      "aggregateCompositions": []
+    },
+    "1371": {
+      "SIMBC": "BYc3",
+      "scale": "1:50000",
+      "individualPercentages": [],
+      "aggregateCompositions": [
+        {
+          "series": ["BARRANCA YACO", "LA EMILIA"],
+          "percentage": "60",
+          "qualifier": "approximately",
+          "classification": "AGGREGATE_ONLY",
+          "sourceUrl": "https://obs-idecor-mapas-docs.obs.myhuaweicloud.com/cartas_suelos/PDF_Unidades_50mil_100mil/BYc3.pdf",
+          "sourceSha256": "f280bae5182e73fcba805e4d44f36440c08dae427d8f9c9fddeab0cb27c1ae28",
+          "page": 1,
+          "evidence": "La fuente dice que Barranca Yaco y La Emilia comprenden aproximadamente un 60% del complejo; no separa sus participaciones individuales."
+        }
+      ]
+    }
+  }
+}

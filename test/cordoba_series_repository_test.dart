@@ -37,15 +37,18 @@ void main() {
       expect(await repository.loadAllSeries(), hasLength(409));
     });
 
-    test('includes series documented from the 1:100.000 carta (Parte 10-11)', () async {
-      final achalaI = await repository.findByName('ACHALA I');
-      expect(achalaI, isNotNull);
-      expect(achalaI!.startPage, lessThanOrEqualTo(achalaI.endPage));
+    test(
+      'includes series documented from the 1:100.000 carta (Parte 10-11)',
+      () async {
+        final achalaI = await repository.findByName('ACHALA I');
+        expect(achalaI, isNotNull);
+        expect(achalaI!.startPage, lessThanOrEqualTo(achalaI.endPage));
 
-      final sanJose = await repository.findByName('San José de las Salinas');
-      expect(sanJose, isNotNull);
-      expect(sanJose!.name, 'SAN JOSÉ DE LAS SALINAS');
-    });
+        final sanJose = await repository.findByName('San José de las Salinas');
+        expect(sanJose, isNotNull);
+        expect(sanJose!.name, 'SAN JOSÉ DE LAS SALINAS');
+      },
+    );
 
     // Page ranges spot-checked against the consolidated PDF's own text
     // during index generation ("Serie <name>" starts each startPage).
@@ -137,10 +140,7 @@ void main() {
       expect(config.pmtilesAsset, isNot(AssetPaths.santaFeGisPmTiles));
       expect(config.seriesResolver, isA<CordobaSeriesResolver>());
       expect(config.showPolygonUnitSymbols, isFalse);
-      expect(
-        config.referenceMapAsset,
-        AssetPaths.cordobaAgronomicReferenceMap,
-      );
+      expect(config.referenceMapAsset, AssetPaths.cordobaAgronomicReferenceMap);
       expect(config.referenceMapAsset, isNot(AssetPaths.agronomicReferenceMap));
       expect(
         config.referenceMapAsset,
@@ -167,53 +167,100 @@ void main() {
       );
     });
 
-    test('Córdoba coverage bounds contain the province, not its neighbours', () {
-      final bounds = MapCoverage.cordoba.bounds;
-      // Córdoba capital.
-      expect(bounds.containsPoint(-31.4201, -64.1888), isTrue);
-      // Rosario (Santa Fe) must NOT fall inside Córdoba's archive extent.
-      expect(bounds.containsPoint(-32.9442, -60.6505), isFalse);
-    });
-  });
-
-  group('Córdoba reference basemap (real asset, built by tool/build_reference_map.dart)', () {
-    late Map<String, dynamic> cordobaJson;
-    late Map<String, dynamic> buenosAiresJson;
-
-    setUpAll(() {
-      // Read off disk, like the Santa Fe basemap test: no rootBundle needed
-      // to prove the file's own shape.
-      cordobaJson =
-          jsonDecode(
-                File(AssetPaths.cordobaAgronomicReferenceMap).readAsStringSync(),
-              )
-              as Map<String, dynamic>;
-      buenosAiresJson =
-          jsonDecode(File(AssetPaths.agronomicReferenceMap).readAsStringSync())
-              as Map<String, dynamic>;
-    });
-
-    test('the asset exists and is EPSG:4326, as the loader demands', () {
-      expect(File(AssetPaths.cordobaAgronomicReferenceMap).existsSync(), isTrue);
-      expect(cordobaJson['crs'], 'EPSG:4326');
-      expect(cordobaJson['schema'], buenosAiresJson['schema']);
-    });
-
     test(
-      'has every layer key Buenos Aires has, plus its own departmentLabels '
-      '(Parte 6)',
+      'Córdoba coverage bounds contain the province, not its neighbours',
       () {
-        final cordobaKeys = (cordobaJson['layers'] as Map).keys.toSet();
-        final buenosAiresKeys = (buenosAiresJson['layers'] as Map).keys.toSet();
-        expect(cordobaKeys.containsAll(buenosAiresKeys), isTrue);
-        expect(cordobaKeys.difference(buenosAiresKeys), {'departmentLabels'});
+        final bounds = MapCoverage.cordoba.bounds;
+        // Córdoba capital.
+        expect(bounds.containsPoint(-31.4201, -64.1888), isTrue);
+        // Rosario (Santa Fe) must NOT fall inside Córdoba's archive extent.
+        expect(bounds.containsPoint(-32.9442, -60.6505), isFalse);
       },
     );
 
-    test(
-      'departmentLabels covers all 26 real departments, each inside the '
-      'coverage',
-      () {
+    test('Córdoba coverage encompasses the published PMTiles extent', () {
+      final metadata =
+          jsonDecode(
+                File(
+                  'data/provinces/cordoba/output/pmtiles_metadata.json',
+                ).readAsStringSync(),
+              )
+              as Map<String, dynamic>;
+      final metadataBounds = metadata['bounds'] as Map<String, dynamic>;
+      final bounds = MapCoverage.cordoba.bounds;
+
+      expect(
+        bounds.minLatitude,
+        lessThanOrEqualTo(metadataBounds['minLatitude'] as num),
+      );
+      expect(
+        bounds.maxLatitude,
+        greaterThanOrEqualTo(metadataBounds['maxLatitude'] as num),
+      );
+      expect(
+        bounds.minLongitude,
+        lessThanOrEqualTo(metadataBounds['minLongitude'] as num),
+      );
+      expect(
+        bounds.maxLongitude,
+        greaterThanOrEqualTo(metadataBounds['maxLongitude'] as num),
+      );
+    });
+  });
+
+  group(
+    'Córdoba reference basemap (real asset, built by tool/build_reference_map.dart)',
+    () {
+      late Map<String, dynamic> cordobaJson;
+      late Map<String, dynamic> buenosAiresJson;
+
+      setUpAll(() {
+        // Read off disk, like the Santa Fe basemap test: no rootBundle needed
+        // to prove the file's own shape.
+        cordobaJson =
+            jsonDecode(
+                  File(
+                    AssetPaths.cordobaAgronomicReferenceMap,
+                  ).readAsStringSync(),
+                )
+                as Map<String, dynamic>;
+        buenosAiresJson =
+            jsonDecode(
+                  File(AssetPaths.agronomicReferenceMap).readAsStringSync(),
+                )
+                as Map<String, dynamic>;
+      });
+
+      test('the asset exists and is EPSG:4326, as the loader demands', () {
+        expect(
+          File(AssetPaths.cordobaAgronomicReferenceMap).existsSync(),
+          isTrue,
+        );
+        expect(cordobaJson['crs'], 'EPSG:4326');
+        expect(cordobaJson['schema'], buenosAiresJson['schema']);
+      });
+
+      test(
+        'shares the reference layer schema with Buenos Aires and Santa Fe',
+        () {
+          final cordobaKeys = (cordobaJson['layers'] as Map).keys.toSet();
+          final buenosAiresKeys = (buenosAiresJson['layers'] as Map).keys
+              .toSet();
+          final santaFeJson =
+              jsonDecode(
+                    File(
+                      AssetPaths.santaFeAgronomicReferenceMap,
+                    ).readAsStringSync(),
+                  )
+                  as Map<String, dynamic>;
+          final santaFeKeys = (santaFeJson['layers'] as Map).keys.toSet();
+          expect(cordobaKeys, buenosAiresKeys);
+          expect(cordobaKeys, santaFeKeys);
+        },
+      );
+
+      test('departmentLabels covers all 26 real departments, each inside the '
+          'coverage', () {
         final labels = cordobaJson['layers']['departmentLabels'] as List;
         expect(labels, hasLength(26));
         final names = labels.map((raw) => (raw as Map)['name']).toSet();
@@ -226,7 +273,11 @@ void main() {
           final label = raw as Map;
           final lat = (label['lat'] as num).toDouble();
           final lon = (label['lon'] as num).toDouble();
-          expect(lat.isFinite && lon.isFinite, isTrue, reason: '${label['name']}');
+          expect(
+            lat.isFinite && lon.isFinite,
+            isTrue,
+            reason: '${label['name']}',
+          );
           // The centroid comes straight from IGN's own department polygon,
           // never clipped to the working bbox (unlike the line layers) — a
           // department whose true geometry pokes past the PMTiles-derived
@@ -244,95 +295,107 @@ void main() {
             reason: '${label['name']}',
           );
         }
-      },
-    );
+      });
 
-    test('majorCities entries have the same shape as Buenos Aires', () {
-      final cities = cordobaJson['layers']['majorCities'] as List;
-      expect(cities, isNotEmpty);
-      for (final raw in cities) {
-        final city = raw as Map;
-        expect(city.keys.toSet(), {'name', 'lat', 'lon', 'importance'});
-        expect(city['importance'], anyOf('primary', 'secondary'));
-      }
-    });
-
-    test('is Córdoba\'s own data, not another province\'s', () {
-      expect(cordobaJson['bbox'], isNot(buenosAiresJson['bbox']));
-      expect(
-        (cordobaJson['layers']['majorCities'] as List)
-            .map((city) => (city as Map)['name']),
-        contains('Córdoba'),
-      );
-    });
-
-    test('every line vertex is finite and near the provincial boundary', () {
-      // Guards the same int-vs-double decoding the Santa Fe boundary test
-      // covers. Córdoba's soil archive bbox does not include the province's
-      // northern edge, so reference linework is checked against the complete
-      // stored provincial boundary instead.
-      final boundary =
-          (cordobaJson['layers']['provincialBoundaries'] as List).first as List;
-      final boundaryLongitudes = boundary
-          .map((point) => ((point as List)[0] as num).toDouble())
-          .toList();
-      final boundaryLatitudes = boundary
-          .map((point) => ((point as List)[1] as num).toDouble())
-          .toList();
-      final west = boundaryLongitudes.reduce(math.min);
-      final east = boundaryLongitudes.reduce(math.max);
-      final south = boundaryLatitudes.reduce(math.min);
-      final north = boundaryLatitudes.reduce(math.max);
-      var vertices = 0;
-      for (final entry in (cordobaJson['layers'] as Map).entries) {
-        if (entry.key == 'majorCities' || entry.key == 'departmentLabels') {
-          continue;
-        }
-        for (final line in entry.value as List) {
-          for (final point in line as List) {
-            final coordinates = point as List;
-            final longitude = (coordinates[0] as num).toDouble();
-            final latitude = (coordinates[1] as num).toDouble();
-            expect(longitude.isFinite && latitude.isFinite, isTrue);
-            // Reference layers use a 0.2-degree context margin and clipping
-            // retains the first outside source vertex, so allow 0.3 degrees.
-            expect(longitude, inInclusiveRange(west - 0.3, east + 0.3));
-            expect(latitude, inInclusiveRange(south - 0.3, north + 0.3));
-            vertices++;
+      test('majorCities entries have the same shape as Buenos Aires', () {
+        final cities = cordobaJson['layers']['majorCities'] as List;
+        expect(cities, isNotEmpty);
+        final sourceIds = <String>{};
+        for (final raw in cities) {
+          final city = raw as Map;
+          expect(city.keys, containsAll({'name', 'lat', 'lon', 'importance'}));
+          if (city['officialSupplement'] == true) {
+            expect(city['provinceCode'], '14');
+            expect(city['sourceId'], isA<String>());
+            expect(sourceIds.add(city['sourceId'] as String), isTrue);
+            expect(city['departmentId'], isA<String>());
+            expect(city['departmentName'], isA<String>());
+            expect(city['markerRadius'], 2.3);
+          } else {
+            expect(city['importance'], anyOf('primary', 'secondary'));
           }
         }
-      }
-      expect(vertices, greaterThan(1000));
-    });
+      });
 
-    test('all clipped reference layers cover northern Córdoba', () {
-      const formerlyClippedNorth = -30.10;
-      for (final layerName in const [
-        'departmentBoundaries',
-        'majorRivers',
-        'nationalRoads',
-        'provincialRoads',
-      ]) {
-        final lines = cordobaJson['layers'][layerName] as List;
-        final northernmost = lines
-            .expand((line) => line as List)
-            .map((point) => ((point as List)[1] as num).toDouble())
-            .reduce(math.max);
+      test('is Córdoba\'s own data, not another province\'s', () {
+        expect(cordobaJson['bbox'], isNot(buenosAiresJson['bbox']));
         expect(
-          northernmost,
-          greaterThan(formerlyClippedNorth),
-          reason: '$layerName must not stop at the former working bbox',
+          (cordobaJson['layers']['majorCities'] as List).map(
+            (city) => (city as Map)['name'],
+          ),
+          contains('Córdoba'),
         );
-      }
-    });
+      });
 
-    test('provincial boundary is present, so the download banner can outline '
-        'Córdoba before its PMTiles is installed', () {
-      final rings = cordobaJson['layers']['provincialBoundaries'] as List;
-      expect(rings, isNotEmpty);
-      expect((rings.first as List).length, greaterThan(50));
-    });
-  });
+      test('every line vertex is finite and near the provincial boundary', () {
+        // Guards the same int-vs-double decoding the Santa Fe boundary test
+        // covers. Córdoba's soil archive bbox does not include the province's
+        // northern edge, so reference linework is checked against the complete
+        // stored provincial boundary instead.
+        final boundary =
+            (cordobaJson['layers']['provincialBoundaries'] as List).first
+                as List;
+        final boundaryLongitudes = boundary
+            .map((point) => ((point as List)[0] as num).toDouble())
+            .toList();
+        final boundaryLatitudes = boundary
+            .map((point) => ((point as List)[1] as num).toDouble())
+            .toList();
+        final west = boundaryLongitudes.reduce(math.min);
+        final east = boundaryLongitudes.reduce(math.max);
+        final south = boundaryLatitudes.reduce(math.min);
+        final north = boundaryLatitudes.reduce(math.max);
+        var vertices = 0;
+        for (final entry in (cordobaJson['layers'] as Map).entries) {
+          if (entry.key == 'majorCities' || entry.key == 'departmentLabels') {
+            continue;
+          }
+          for (final line in entry.value as List) {
+            for (final point in line as List) {
+              final coordinates = point as List;
+              final longitude = (coordinates[0] as num).toDouble();
+              final latitude = (coordinates[1] as num).toDouble();
+              expect(longitude.isFinite && latitude.isFinite, isTrue);
+              // Reference layers use a 0.2-degree context margin and clipping
+              // retains the first outside source vertex, so allow 0.3 degrees.
+              expect(longitude, inInclusiveRange(west - 0.3, east + 0.3));
+              expect(latitude, inInclusiveRange(south - 0.3, north + 0.3));
+              vertices++;
+            }
+          }
+        }
+        expect(vertices, greaterThan(1000));
+      });
+
+      test('all clipped reference layers cover northern Córdoba', () {
+        const formerlyClippedNorth = -30.10;
+        for (final layerName in const [
+          'departmentBoundaries',
+          'majorRivers',
+          'nationalRoads',
+          'provincialRoads',
+        ]) {
+          final lines = cordobaJson['layers'][layerName] as List;
+          final northernmost = lines
+              .expand((line) => line as List)
+              .map((point) => ((point as List)[1] as num).toDouble())
+              .reduce(math.max);
+          expect(
+            northernmost,
+            greaterThan(formerlyClippedNorth),
+            reason: '$layerName must not stop at the former working bbox',
+          );
+        }
+      });
+
+      test('provincial boundary is present, so the download banner can outline '
+          'Córdoba before its PMTiles is installed', () {
+        final rings = cordobaJson['layers']['provincialBoundaries'] as List;
+        expect(rings, isNotEmpty);
+        expect((rings.first as List).length, greaterThan(50));
+      });
+    },
+  );
 
   group('SoilCard.cordoba', () {
     setUp(CordobaSeriesRepository.resetCacheForTesting);

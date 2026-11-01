@@ -339,13 +339,12 @@ class CordobaPmtilesDelivery extends PmtilesDelivery {
   /// duplicated or special-cased for this. In-memory only, so it always
   /// resets to `notInstalled` on the next hot restart or app relaunch.
   Future<void> _simulateDevDownload() async {
-    _setStatus(CordobaPmtilesStatus.downloading);
-    await Future<void>.delayed(const Duration(seconds: 2));
-    // Deliberately leaves the byte counters null throughout, so the debug
-    // build shows an indeterminate spinner. Play is what produces those
-    // numbers; inventing a plausible-looking ramp here would make a fake
-    // percentage indistinguishable from a real one.
-    _setStatus(CordobaPmtilesStatus.available);
+    await simulateDevelopmentPmtilesDownload(
+      totalBytes: 77400595,
+      setStatus: _setStatus,
+      setDownloadBytes: _setDownloadBytes,
+    );
+    // Debug-only simulated totals match ProvinceConfig; Release uses Play byte counts.
   }
 
   /// Where Windows keeps its always-bundled copy — see the matching

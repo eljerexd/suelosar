@@ -19,15 +19,13 @@ void main() {
   group('SuelosArSchema matches every place that lists the fields', () {
     final required = SuelosArSchema.requiredFields.toSet();
 
-    test(
-      '17 required + OBJECTID + SERIE7/SERIE8 (Parte 12B) + '
-      'SUBGRUPO1-5/POSICION1-5/IP (Parte 20, all optional) = the 31 '
-      'attributes the app can read',
-      () {
-        expect(required, hasLength(17));
-        expect(SuelosArSchema.appAttributes, hasLength(31));
-      },
-    );
+    test('17 required + OBJECTID + SERIE7/SERIE8 (Parte 12B) + '
+        'SUBGRUPO1-5/POSICION1-5/IP, CLASE/SUBCLASE and FASE1-4 '
+        '(all optional) = the 37 '
+        'attributes the app can read', () {
+      expect(required, hasLength(17));
+      expect(SuelosArSchema.appAttributes, hasLength(37));
+    });
 
     test('docker/build_map.sh', () {
       final source = File('docker/build_map.sh').readAsStringSync();
@@ -71,7 +69,7 @@ void main() {
       final source = File('lib/gis/gis_map_screen.dart').readAsStringSync();
       final read = {
         for (final m in RegExp(
-          r"(?:_readAttribute|_featureValue|_propertyValue)\(\s*\w+\s*,\s*'([^']+)'\s*\)"
+          r"(?:_readAttribute|_optionalAttribute|_featureValue|_propertyValue)\(\s*\w+\s*,\s*'([^']+)'\s*\)"
           r"|properties\['([^']+)'\]",
         ).allMatches(source))
           (m.group(1) ?? m.group(2))!,

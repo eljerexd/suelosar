@@ -3,6 +3,8 @@ class AssetPaths {
 
   static const String soilMapsCatalog = 'assets/data/soil_maps.json';
   static const String soilMapsPdfDirectory = 'assets/pdfs';
+  static const String buenosAiresFeatureMetadata =
+      'assets/data/buenos_aires_feature_metadata.json';
   static const String gisPmTiles = 'assets/maps/soil_polygons.pmtiles';
   static const String gisPmTilesVersion =
       'assets/maps/soil_polygons.pmtiles.sha256';
@@ -41,6 +43,10 @@ class AssetPaths {
   // inside [cordobaSeriesPdf]; see CordobaSeriesRepository.
   static const String cordobaSeriesIndex =
       'assets/data/cordoba_series_index.json';
+  static const String cordobaFeatureMetadata =
+      'assets/data/cordoba_feature_metadata.json';
+  static const String cordobaSeriesPercentageSupplement =
+      'assets/data/cordoba_series_percentage_supplement.json';
 
   // Córdoba — the single 734-page PDF built from IDECOR's own per-series
   // descriptions (357) plus Monte Oscuridad's, taken from INTA Santa Fe's

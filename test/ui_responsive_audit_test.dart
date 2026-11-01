@@ -416,7 +416,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('GIS controls paint above the anchored information card', (
+  testWidgets('GIS controls paint above province download indicators', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
@@ -437,6 +437,7 @@ void main() {
         defaultArchiveInfo: baseConfig.defaultArchiveInfo,
         seriesResolver: baseConfig.seriesResolver,
         seriesNameResolver: baseConfig.seriesNameResolver,
+        downloadMetadata: baseConfig.downloadMetadata,
         // At zoom 7 this projects into the phone's bottom-right controls.
         downloadBannerAnchor: const LatLng(-38.25, -58.62),
         pmtilesDownloadSizeBytes: 1024,
@@ -459,13 +460,28 @@ void main() {
 
     final card = find.byKey(const ValueKey('province-download-card-santa_fe'));
     expect(card, findsOneWidget);
-    final cardRect = tester.getRect(card);
     final tools = find.byTooltip('Herramientas');
     expect(tools, findsOneWidget);
+    final overlayStack = tester
+        .widgetList<Stack>(find.byType(Stack))
+        .singleWhere(
+          (stack) => stack.children.any(
+            (child) =>
+                child.key == const ValueKey('province-download-map-overlay'),
+          ),
+        );
+    final childKeys = overlayStack.children.map((child) => child.key).toList();
+    final downloadOverlayIndex = childKeys.indexOf(
+      const ValueKey('province-download-map-overlay'),
+    );
+    expect(downloadOverlayIndex, greaterThanOrEqualTo(0));
     expect(
-      cardRect.overlaps(tester.getRect(tools)),
-      isTrue,
-      reason: 'The geographically anchored card must not move away.',
+      childKeys.indexOf(const ValueKey('gis-right-control-rail')),
+      greaterThan(downloadOverlayIndex),
+    );
+    expect(
+      childKeys.indexOf(const ValueKey('gis-bottom-right-controls')),
+      greaterThan(downloadOverlayIndex),
     );
     expect(tester.takeException(), isNull);
 
@@ -1091,7 +1107,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Símbolo'), findsOneWidget);
-    expect(find.text('AC6'), findsOneWidget);
+    // The symbol is the descriptive title fallback here and also remains in
+    // its dedicated general-information row.
+    expect(find.text('AC6'), findsNWidgets(2));
     expect(find.text('Carta de suelo'), findsNothing);
     expect(tester.takeException(), isNull);
   });
