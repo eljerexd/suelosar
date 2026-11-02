@@ -176,6 +176,8 @@ flutter build appbundle --release --flavor prod --dart-define-from-file=.vscode/
 
 flutter run -d windows
 
+PARA VER Q HAY ACTUALIZACION: flutter run -d windows --dart-define=SUelosAR_UPDATE_PREVIEW=true
+
 🔴  *PARA WINDOWS* = flutter build windows --release --dart-define-from-file=.vscode/supabase.env.json
 
 🏅 *GOOGLE PLAY* = flutter build appbundle --release --flavor prod --dart-define-from-file=.vscode/supabase.env.json

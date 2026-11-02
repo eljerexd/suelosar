@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app/app_routes.dart';
@@ -11,21 +12,28 @@ import '../services/connectivity_service.dart';
 import '../services/device_pairing_service.dart';
 import '../services/desktop_window_service.dart';
 import '../services/synchronization_service.dart';
+import '../services/windows_update_indicator_controller.dart';
+import '../services/windows_update_models.dart';
+import '../services/windows_update_preview_mode.dart';
 import '../sync/sync_status.dart';
 import '../utils/app_motion.dart';
 import '../widgets/desktop_fullscreen_state_builder.dart';
 import '../widgets/responsive_desktop_shell.dart';
+import '../widgets/windows_update_availability_dialog.dart';
+import '../widgets/windows_update_status_indicator.dart';
 import 'personal_markers_screen.dart';
 import 'synchronization_screen.dart';
 
 typedef DeviceLinkedStatusLoader = Future<bool> Function();
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({
     this.deviceLinkedStatusLoader,
     this.synchronizationService,
     this.devicePairingService,
     this.desktopWindowService,
+    this.windowsUpdateController,
+    this.windowsUpdateIndicatorLink,
     super.key,
   });
 
@@ -33,11 +41,112 @@ class HomeScreen extends StatelessWidget {
   final SynchronizationService? synchronizationService;
   final DevicePairingService? devicePairingService;
   final DesktopWindowService? desktopWindowService;
+  final WindowsUpdateIndicatorController? windowsUpdateController;
+  final LayerLink? windowsUpdateIndicatorLink;
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  StreamSubscription<WindowsReleaseInfo>? _updateSelectionSubscription;
+  bool _updateDialogOpen = false;
+
+  @override
+  void dispose() {
+    unawaited(_updateSelectionSubscription?.cancel());
+    super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _bindUpdateController(widget.windowsUpdateController);
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.windowsUpdateController != widget.windowsUpdateController) {
+      unawaited(_updateSelectionSubscription?.cancel());
+      _bindUpdateController(widget.windowsUpdateController);
+    }
+  }
+
+  void _bindUpdateController(WindowsUpdateIndicatorController? controller) {
+    if (controller == null) return;
+    _updateSelectionSubscription = controller.onUpdateAvailableSelected.listen(
+      (release) => unawaited(_showUpdateDialog(controller, release)),
+    );
+    unawaited(_showStartupPrompt(controller));
+  }
+
+  Future<void> _showStartupPrompt(
+    WindowsUpdateIndicatorController controller,
+  ) async {
+    try {
+      final release = await controller.takeStartupPrompt();
+      if (release != null && mounted) {
+        await _showUpdateDialog(controller, release);
+      }
+    } catch (_) {
+      // A prompt failure must not block or interrupt the Home screen.
+    }
+  }
+
+  Future<void> _showUpdateDialog(
+    WindowsUpdateIndicatorController controller,
+    WindowsReleaseInfo release,
+  ) async {
+    if (!mounted || _updateDialogOpen) return;
+    _updateDialogOpen = true;
+    try {
+      String? installedVersion;
+      try {
+        installedVersion = await controller.installedVersion;
+      } catch (_) {
+        installedVersion = null;
+      }
+      if (!mounted) return;
+      final check = controller.verifiedCheckFor(release);
+      final preview =
+          updatePreviewModeEnabled && controller.isDevelopmentPreview;
+      final result = await showWindowsUpdateAvailabilityDialog(
+        context,
+        release: release,
+        installedVersion: installedVersion,
+        verifiedCheck: check,
+        isPreview: preview,
+        downloadUnavailableReason: check == null
+            ? 'El instalador no cuenta con una verificación vigente.'
+            : null,
+      );
+      if (result == WindowsUpdateDialogAction.later &&
+          !controller.isDevelopmentPreview) {
+        await controller.markUpdateDismissedForLater(
+          release.version.toString(),
+        );
+      } else if (result == WindowsUpdateDialogAction.download) {
+        unawaited(controller.startDownload(check: preview ? null : check));
+      }
+    } finally {
+      _updateDialogOpen = false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final deviceLinkedStatusLoader = widget.deviceLinkedStatusLoader;
+    final synchronizationService = widget.synchronizationService;
+    final devicePairingService = widget.devicePairingService;
+    final desktopWindowService = widget.desktopWindowService;
+    final windowsUpdateController = widget.windowsUpdateController;
     final colorScheme = Theme.of(context).colorScheme;
     final desktopLayout = isSuelosArDesktopPlatform(context);
+    final showWindowsUpdateIndicator =
+        !kIsWeb &&
+        Theme.of(context).platform == TargetPlatform.windows &&
+        windowsUpdateController != null;
     final synchronizationStatus = RepaintBoundary(
       child: _HomeSynchronizationStatus(
         key: const ValueKey('home-synchronization-status'),
@@ -194,6 +303,22 @@ class HomeScreen extends StatelessWidget {
                     )
                   : synchronizationStatus,
             ),
+            if (showWindowsUpdateIndicator)
+              Positioned(
+                top: 8,
+                left: 20,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: (MediaQuery.sizeOf(context).width - 360)
+                        .clamp(56, 320)
+                        .toDouble(),
+                  ),
+                  child: WindowsUpdateStatusIndicator(
+                    controller: windowsUpdateController,
+                    layerLink: widget.windowsUpdateIndicatorLink,
+                  ),
+                ),
+              ),
           ],
         ),
       ),
