@@ -44,6 +44,8 @@ dependencies:
   shared_preferences: ^2.5.5
   share_plus: ^13.2.0
   package_info_plus: ^10.2.0
+  http: ^1.6.0
+  crypto: ^3.0.7
   device_info_plus: ^13.2.0
   url_launcher: ^6.3.2
   supabase_flutter: 2.17.2
@@ -64,7 +66,6 @@ dev_dependencies:
   # SuelosAR Data Pipeline (tool/suelosar_data.dart) — already resolved
   # transitively; declared so the tool may import them directly.
   args: ^2.7.0
-  crypto: ^3.0.7
   path: ^1.9.1
   yaml: ^3.1.4
 
