@@ -255,6 +255,12 @@ void main() {
         helper.indexOf('if (!version_matches) return 1;'),
         lessThan(helper.indexOf('WriteSuccessConfirmation(confirmation_token')),
       );
+      expect(
+        helper.indexOf('WriteSuccessConfirmation(confirmation_token'),
+        lessThan(
+          helper.indexOf('if (!DeleteUpdateDirectory(update_directory))'),
+        ),
+      );
       expect(helper, contains('vcruntime-restart-required.flag'));
       expect(helper, contains('return 3010;'));
       expect(helper, contains('DeleteUpdateDirectory(update_directory)'));

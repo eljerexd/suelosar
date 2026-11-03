@@ -597,15 +597,17 @@ int Run(const std::vector<std::wstring>& args) {
     return 1;
   }
   if (!version_matches) return 1;
-  if (!DeleteUpdateDirectory(update_directory)) {
-    ShowFailure(L"SuelosAR se actualizó correctamente, pero no se pudo borrar "
-                L"la carpeta temporal del instalador.");
-    return 1;
-  }
   if (confirmation_token.empty() ||
       !WriteSuccessConfirmation(confirmation_token, expected_version)) {
     ShowFailure(L"SuelosAR se instaló y reinició, pero no se pudo guardar "
                 L"la confirmación. No se mostrará un aviso de éxito falso.");
+    return 1;
+  }
+  // The restarted app polls for this marker. Write it before deleting the
+  // potentially large installer so cleanup cannot race the app's timeout.
+  if (!DeleteUpdateDirectory(update_directory)) {
+    ShowFailure(L"SuelosAR se actualizó correctamente, pero no se pudo borrar "
+                L"la carpeta temporal del instalador.");
     return 1;
   }
   return 0;
