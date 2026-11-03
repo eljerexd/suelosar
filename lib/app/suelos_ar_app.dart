@@ -14,6 +14,7 @@ import '../screens/synchronization_screen.dart';
 import '../services/desktop_window_service.dart';
 import '../services/settings_service.dart';
 import '../services/windows_update_indicator_controller.dart';
+import '../services/windows_update_success_confirmation.dart';
 import '../widgets/desktop_window_shortcut_scope.dart';
 import '../widgets/windows_update_status_popover.dart';
 import 'app_routes.dart';
@@ -24,11 +25,15 @@ class SuelosARApp extends StatefulWidget {
   const SuelosARApp({
     this.desktopWindowService,
     this.windowsUpdateController,
+    this.windowsUpdateStartupMessage,
+    this.windowsUpdateSuccessConfirmation,
     super.key,
   });
 
   final DesktopWindowService? desktopWindowService;
   final WindowsUpdateIndicatorController? windowsUpdateController;
+  final String? windowsUpdateStartupMessage;
+  final WindowsUpdateSuccessConfirmation? windowsUpdateSuccessConfirmation;
 
   @override
   State<SuelosARApp> createState() => _SuelosARAppState();
@@ -94,6 +99,9 @@ class _SuelosARAppState extends State<SuelosARApp> {
         desktopWindowService: _desktopWindowService,
         windowsUpdateController: widget.windowsUpdateController,
         windowsUpdateIndicatorLink: _windowsUpdateIndicatorLink,
+        windowsUpdateStartupMessage: widget.windowsUpdateStartupMessage,
+        windowsUpdateSuccessConfirmation:
+            widget.windowsUpdateSuccessConfirmation,
       ),
       onGenerateRoute: (routeSettings) {
         final Widget? page = switch (routeSettings.name) {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/windows_update_indicator_controller.dart';
@@ -13,6 +15,9 @@ enum WindowsUpdatePopoverState {
   downloadCompleted,
   downloadCancelled,
   downloadFailed,
+  preparingInstall,
+  waitingForApplicationShutdown,
+  installationFailed,
 }
 
 class WindowsUpdateStatusPopover extends StatelessWidget {
@@ -30,6 +35,8 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
     this.isPreviewDownload = false,
     this.onCancelDownload,
     this.onDismissDownload,
+    this.onInstallUpdate,
+    this.installEnabled = false,
     this.autofocus = true,
   });
 
@@ -45,6 +52,8 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
   final bool isPreviewDownload;
   final VoidCallback? onCancelDownload;
   final VoidCallback? onDismissDownload;
+  final VoidCallback? onInstallUpdate;
+  final bool installEnabled;
   final bool autofocus;
 
   @override
@@ -180,7 +189,7 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  installedVersion ?? '—',
+                  formatWindowsUpdateVersion(installedVersion ?? '—'),
                   key: const ValueKey('update-installed-version'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: const Color(0xFF41443B),
@@ -241,12 +250,21 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
     WindowsUpdatePopoverState.downloadCompleted ||
     WindowsUpdatePopoverState.downloadCancelled ||
     WindowsUpdatePopoverState.downloadFailed => true,
+    WindowsUpdatePopoverState.preparingInstall ||
+    WindowsUpdatePopoverState.waitingForApplicationShutdown ||
+    WindowsUpdatePopoverState.installationFailed => true,
     _ => false,
   };
 
   Widget _downloadContent(ThemeData theme) {
     final isActive = state == WindowsUpdatePopoverState.downloading;
     final isCancelling = state == WindowsUpdatePopoverState.cancellingDownload;
+    final isPreparingInstall =
+        state == WindowsUpdatePopoverState.preparingInstall;
+    final isWaitingForShutdown =
+        state == WindowsUpdatePopoverState.waitingForApplicationShutdown;
+    final isInstallationFailed =
+        state == WindowsUpdatePopoverState.installationFailed;
     final fraction = downloadProgress?.fraction;
     final progressText = fraction == null
         ? 'Preparando descarga...'
@@ -261,6 +279,11 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
       WindowsUpdatePopoverState.downloadCompleted => 'Descarga completada',
       WindowsUpdatePopoverState.downloadCancelled => 'Descarga cancelada',
       WindowsUpdatePopoverState.downloadFailed => 'Falló la descarga',
+      WindowsUpdatePopoverState.preparingInstall => 'Preparando actualización',
+      WindowsUpdatePopoverState.waitingForApplicationShutdown =>
+        'Cerrando SuelosAR',
+      WindowsUpdatePopoverState.installationFailed =>
+        'No se pudo iniciar la instalación',
       _ => '',
     };
     final subtitle = switch (state) {
@@ -273,6 +296,12 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
       WindowsUpdatePopoverState.downloadCancelled => 'No se instaló nada.',
       WindowsUpdatePopoverState.downloadFailed =>
         downloadErrorMessage ?? 'No se pudo completar la descarga.',
+      WindowsUpdatePopoverState.preparingInstall =>
+        'Verificando el instalador y preparando Windows...',
+      WindowsUpdatePopoverState.waitingForApplicationShutdown =>
+        'SuelosAR se cerrará para continuar con el instalador.',
+      WindowsUpdatePopoverState.installationFailed =>
+        downloadErrorMessage ?? 'La actualización no se inició.',
       _ => null,
     };
 
@@ -295,6 +324,8 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
               child: Icon(
                 state == WindowsUpdatePopoverState.downloadCompleted
                     ? Icons.check_rounded
+                    : isPreparingInstall || isWaitingForShutdown
+                    ? Icons.hourglass_top_rounded
                     : state == WindowsUpdatePopoverState.downloadFailed
                     ? Icons.error_outline_rounded
                     : Icons.download_rounded,
@@ -316,7 +347,7 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
                   ),
                   if (downloadVersion != null)
                     Text(
-                      'Versión ${downloadVersion!}',
+                      'Versión ${formatWindowsUpdateVersion(downloadVersion!)}',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: const Color(0xFF66685E),
                       ),
@@ -326,7 +357,21 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
             ),
           ],
         ),
-        if (isActive || isCancelling) ...[
+        if (isPreparingInstall || isWaitingForShutdown) ...[
+          const SizedBox(height: 14),
+          Text(
+            subtitle!,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF5A5B52),
+            ),
+          ),
+          const SizedBox(height: 9),
+          const LinearProgressIndicator(
+            minHeight: 7,
+            backgroundColor: Color(0xFFE6E7DE),
+            color: Color(0xFF71835B),
+          ),
+        ] else if (isActive || isCancelling) ...[
           const SizedBox(height: 14),
           Text(
             subtitle!,
@@ -359,11 +404,17 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
               ),
               if (downloadSpeedBytesPerSecond != null &&
                   downloadSpeedBytesPerSecond! > 0)
-                Text(
-                  '${_formatMb(downloadSpeedBytesPerSecond!)} MB/s',
-                  key: const ValueKey('windows-update-download-speed'),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFF66685E),
+                SizedBox(
+                  width: 88,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      '${_formatMb(downloadSpeedBytesPerSecond!)} MB/s',
+                      key: const ValueKey('windows-update-download-speed'),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF66685E),
+                      ),
+                    ),
                   ),
                 ),
             ],
@@ -400,14 +451,68 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
               color: const Color(0xFF66685E),
             ),
           ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              key: const ValueKey('windows-update-download-dismiss'),
-              onPressed: onDismissDownload,
-              child: const Text('Cerrar'),
+          if (state == WindowsUpdatePopoverState.downloadCompleted &&
+              !isPreviewDownload) ...[
+            if (!installEnabled)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'La instalación automática está pendiente de validación en Windows.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF777B6F),
+                  ),
+                ),
+              ),
+            const SizedBox(height: 8),
+            Wrap(
+              alignment: WrapAlignment.end,
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                TextButton(
+                  key: const ValueKey('windows-update-download-dismiss'),
+                  onPressed: onDismissDownload,
+                  child: const Text('Cerrar'),
+                ),
+                FilledButton.icon(
+                  key: const ValueKey('windows-update-install'),
+                  onPressed: installEnabled ? onInstallUpdate : null,
+                  icon: const Icon(Icons.restart_alt_rounded, size: 17),
+                  label: const Text('Actualizar y reiniciar'),
+                ),
+              ],
             ),
-          ),
+          ] else if (isInstallationFailed) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              alignment: WrapAlignment.end,
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                TextButton(
+                  key: const ValueKey('windows-update-download-dismiss'),
+                  onPressed: onDismissDownload,
+                  child: const Text('Cerrar'),
+                ),
+                if (installEnabled && onInstallUpdate != null) ...[
+                  FilledButton.icon(
+                    key: const ValueKey('windows-update-install-retry'),
+                    onPressed: onInstallUpdate,
+                    icon: const Icon(Icons.refresh_rounded, size: 17),
+                    label: const Text('Reintentar'),
+                  ),
+                ],
+              ],
+            ),
+          ] else
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                key: const ValueKey('windows-update-download-dismiss'),
+                onPressed: onDismissDownload,
+                child: const Text('Cerrar'),
+              ),
+            ),
         ],
       ],
     );
@@ -475,6 +580,25 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
       accent: Color(0xFF777B6F),
       iconSurface: Color(0xFFE9E8E1),
     ),
+    WindowsUpdatePopoverState.preparingInstall => const _PopoverPresentation(
+      title: 'Preparando actualización',
+      icon: Icons.hourglass_top_rounded,
+      accent: Color(0xFF547A3A),
+      iconSurface: Color(0xFFE2EBDD),
+    ),
+    WindowsUpdatePopoverState.waitingForApplicationShutdown =>
+      const _PopoverPresentation(
+        title: 'Cerrando SuelosAR',
+        icon: Icons.hourglass_top_rounded,
+        accent: Color(0xFF547A3A),
+        iconSurface: Color(0xFFE2EBDD),
+      ),
+    WindowsUpdatePopoverState.installationFailed => const _PopoverPresentation(
+      title: 'No se pudo iniciar la instalación',
+      icon: Icons.error_outline_rounded,
+      accent: Color(0xFF777B6F),
+      iconSurface: Color(0xFFE9E8E1),
+    ),
   };
 }
 
@@ -509,6 +633,12 @@ class WindowsUpdateDownloadPopupHost extends StatelessWidget {
           WindowsUpdatePopoverState.downloadCancelled,
         WindowsUpdateDownloadState.failed =>
           WindowsUpdatePopoverState.downloadFailed,
+        WindowsUpdateDownloadState.preparingInstall =>
+          WindowsUpdatePopoverState.preparingInstall,
+        WindowsUpdateDownloadState.waitingForApplicationShutdown =>
+          WindowsUpdatePopoverState.waitingForApplicationShutdown,
+        WindowsUpdateDownloadState.installationFailed =>
+          WindowsUpdatePopoverState.installationFailed,
         WindowsUpdateDownloadState.idle => WindowsUpdatePopoverState.checking,
       };
       final viewport = MediaQuery.sizeOf(context);
@@ -552,6 +682,9 @@ class WindowsUpdateDownloadPopupHost extends StatelessWidget {
                         isPreviewDownload: controller.isDevelopmentPreview,
                         onCancelDownload: controller.cancelDownload,
                         onDismissDownload: controller.dismissDownloadPopup,
+                        onInstallUpdate: () =>
+                            unawaited(controller.installAndRestart()),
+                        installEnabled: controller.canInstallCurrentUpdate,
                         autofocus: false,
                       ),
                     ),

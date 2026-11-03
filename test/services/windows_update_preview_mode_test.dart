@@ -2,8 +2,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:suelosar/services/windows_update_preview_mode.dart';
 
 void main() {
-  test('preview is disabled by default', () {
-    expect(updatePreviewModeEnabled, isFalse);
+  test('preview follows the explicit build-time configuration', () {
+    const requested = bool.fromEnvironment(
+      'SUelosAR_UPDATE_PREVIEW',
+      defaultValue: false,
+    );
+    expect(updatePreviewModeEnabled, requested);
   });
 
   test('preview is permitted only when explicitly requested in debug', () {

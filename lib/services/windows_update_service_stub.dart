@@ -5,14 +5,18 @@ class WindowsUpdateService {
     Object? client,
     InstalledVersionReader? installedVersionReader,
     InstallerStarter? installerStarter,
+    InstallerLifecycleStarter? installerLifecycleStarter,
+    Object? installerHelperResolver,
+    Object? applicationExecutableResolver,
     Object? temporaryDirectory,
     bool? isWindows,
     this.requestTimeout = const Duration(seconds: 20),
   });
 
   static const latestReleaseUrl =
-      'https://api.github.com/repos/eljerexd/suelosar/releases/latest';
+      'https://api.github.com/repos/eljerexd/Web-SuelosAR/releases/latest';
   final Duration requestTimeout;
+  bool get canLaunchInstaller => false;
 
   Future<WindowsUpdateCheckResult> checkForUpdates() async =>
       const WindowsUpdateCheckResult(
@@ -34,6 +38,12 @@ class WindowsUpdateService {
   ) async => const WindowsUpdateOperationResult(
     status: WindowsUpdateOperationStatus.unsupportedPlatform,
   );
+
+  Future<bool> restoreDownloadedInstaller({
+    required String path,
+    required String expectedSha256,
+    required String version,
+  }) async => false;
 
   Future<WindowsUpdateOperationResult> launchInstaller(String path) async =>
       const WindowsUpdateOperationResult(

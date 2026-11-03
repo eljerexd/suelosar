@@ -366,6 +366,31 @@ Launch the Windows application only when changes affect:
 
 This policy reduces development time and unnecessary resource usage.
 
+## Windows Release Build
+
+Every SuelosAR Windows Release build MUST include:
+
+`--dart-define-from-file=.vscode/supabase.env.json`
+
+Mandatory rules:
+
+- Prefer the official `tool/build_windows_release.ps1` script for every
+  Windows Release build.
+- Never run a Windows Release build without the required
+  `--dart-define-from-file` argument.
+- Run build commands from the repository root. The official script resolves
+  and enters the root itself, regardless of the caller's current directory.
+- Before compiling, verify that `.vscode/supabase.env.json` exists. If it is
+  missing, stop and explain the problem; never produce an incomplete build as
+  a fallback.
+- Never modify this environment file automatically. Never print, copy into
+  logs, or disclose its contents.
+- Do not include this file in commits, releases, or installers as a separate
+  file, and never replace its real values with placeholders.
+- Generate the Flutter Windows Release build with the required define file
+  before creating an Inno Setup installer. Do not package a Windows Release
+  build produced without this configuration.
+
 ---
 
 # Feature Development Order

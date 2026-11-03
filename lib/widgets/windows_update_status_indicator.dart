@@ -51,7 +51,8 @@ class _WindowsUpdateStatusIndicatorState
 
   Future<void> _activate(BuildContext context) async {
     final controller = widget.controller;
-    if (controller.state == WindowsUpdateIndicatorState.updateAvailable) {
+    if (controller.isDevelopmentPreview &&
+        controller.state == WindowsUpdateIndicatorState.updateAvailable) {
       controller.selectAvailableUpdate();
       return;
     }
@@ -321,9 +322,9 @@ class _WindowsUpdateStatusIndicatorState
         border: Color(0xFFD3DFCA),
       ),
       WindowsUpdateIndicatorState.updateAvailable => _WindowsUpdatePresentation(
-        label: 'Nueva versión ${release?.version ?? ''}',
+        label: 'Nueva versión ${release?.version.toDisplayString() ?? ''}',
         semanticLabel:
-            'Nueva versión ${release?.version ?? 'disponible'}. Ver detalles.',
+            'Nueva versión ${release?.version.toDisplayString() ?? 'disponible'}. Ver detalles.',
         icon: AppIcons.downloadArrow,
         background: const Color(0xFF687654),
         foreground: Colors.white,

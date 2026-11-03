@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../app/app_routes.dart';
 import '../app/instant_pop_material_page_route.dart';
@@ -15,12 +16,14 @@ import '../services/synchronization_service.dart';
 import '../services/windows_update_indicator_controller.dart';
 import '../services/windows_update_models.dart';
 import '../services/windows_update_preview_mode.dart';
+import '../services/windows_update_success_confirmation.dart';
 import '../sync/sync_status.dart';
 import '../utils/app_motion.dart';
 import '../widgets/desktop_fullscreen_state_builder.dart';
 import '../widgets/responsive_desktop_shell.dart';
 import '../widgets/windows_update_availability_dialog.dart';
 import '../widgets/windows_update_status_indicator.dart';
+import '../widgets/windows_update_success_dialog.dart';
 import 'personal_markers_screen.dart';
 import 'synchronization_screen.dart';
 
@@ -34,6 +37,9 @@ class HomeScreen extends StatefulWidget {
     this.desktopWindowService,
     this.windowsUpdateController,
     this.windowsUpdateIndicatorLink,
+    this.windowsUpdateStartupMessage,
+    this.windowsUpdateSuccessConfirmation,
+    this.installedVersionReader,
     super.key,
   });
 
@@ -43,6 +49,9 @@ class HomeScreen extends StatefulWidget {
   final DesktopWindowService? desktopWindowService;
   final WindowsUpdateIndicatorController? windowsUpdateController;
   final LayerLink? windowsUpdateIndicatorLink;
+  final String? windowsUpdateStartupMessage;
+  final WindowsUpdateSuccessConfirmation? windowsUpdateSuccessConfirmation;
+  final Future<String> Function()? installedVersionReader;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -51,6 +60,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<WindowsReleaseInfo>? _updateSelectionSubscription;
   bool _updateDialogOpen = false;
+  bool _updateSuccessDialogOpen = false;
 
   @override
   void dispose() {
@@ -62,6 +72,42 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _bindUpdateController(widget.windowsUpdateController);
+    if (widget.windowsUpdateSuccessConfirmation != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_showUpdateSuccessDialog());
+      });
+    }
+    final startupMessage = widget.windowsUpdateStartupMessage;
+    if (startupMessage != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(startupMessage),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      });
+    }
+  }
+
+  Future<void> _showUpdateSuccessDialog() async {
+    if (_updateSuccessDialogOpen || !mounted) return;
+    final confirmation = widget.windowsUpdateSuccessConfirmation;
+    if (confirmation == null) return;
+    final installedVersion = await confirmation.consume(
+      installedVersionReader:
+          widget.installedVersionReader ??
+          () async => (await PackageInfo.fromPlatform()).version,
+    );
+    if (installedVersion == null || !mounted || _updateSuccessDialogOpen) {
+      return;
+    }
+    _updateSuccessDialogOpen = true;
+    await showWindowsUpdateSuccessDialog(
+      context,
+      installedVersion: installedVersion,
+    );
   }
 
   @override
@@ -120,6 +166,9 @@ class _HomeScreenState extends State<HomeScreen> {
         downloadUnavailableReason: check == null
             ? 'El instalador no cuenta con una verificación vigente.'
             : null,
+        releaseUpdates: controller,
+        latestRelease: () => controller.lastStableRelease,
+        releaseNotesAreFromCache: () => controller.releaseNotesAreFromCache,
       );
       if (result == WindowsUpdateDialogAction.later &&
           !controller.isDevelopmentPreview) {

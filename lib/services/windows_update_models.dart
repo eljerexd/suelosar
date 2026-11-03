@@ -1,5 +1,12 @@
 typedef InstalledVersionReader = Future<String> Function();
 typedef InstallerStarter = Future<void> Function(String path);
+typedef InstallerLifecycleStarter =
+    Future<void> Function(
+      String installerPath,
+      String sha256,
+      String version,
+      String updateDirectory,
+    );
 
 class SemanticVersion implements Comparable<SemanticVersion> {
   const SemanticVersion({
@@ -53,6 +60,10 @@ class SemanticVersion implements Comparable<SemanticVersion> {
 
   bool get isStable => preRelease == null;
 
+  String toDisplayString() =>
+      '$major.$minor.$patch'
+      '${preRelease == null ? '' : '-$preRelease'}';
+
   @override
   int compareTo(SemanticVersion other) {
     final core = major.compareTo(other.major);
@@ -87,6 +98,9 @@ class SemanticVersion implements Comparable<SemanticVersion> {
       '${preRelease == null ? '' : '-$preRelease'}'
       '${buildMetadata == null ? '' : '+$buildMetadata'}';
 }
+
+String formatWindowsUpdateVersion(String value) =>
+    SemanticVersion.tryParse(value)?.toDisplayString() ?? value;
 
 enum WindowsUpdateStatus {
   updateAvailable,

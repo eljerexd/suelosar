@@ -12,15 +12,38 @@ Future<WindowsUpdateDialogAction?> showWindowsUpdateAvailabilityDialog(
   required WindowsUpdateCheckResult? verifiedCheck,
   required bool isPreview,
   required String? downloadUnavailableReason,
+  Listenable? releaseUpdates,
+  WindowsReleaseInfo? Function()? latestRelease,
+  bool Function()? releaseNotesAreFromCache,
 }) => showDialog<WindowsUpdateDialogAction>(
   context: context,
-  builder: (_) => WindowsUpdateAvailabilityDialog(
-    release: release,
-    installedVersion: installedVersion,
-    verifiedCheck: verifiedCheck,
-    isPreview: isPreview,
-    downloadUnavailableReason: downloadUnavailableReason,
-  ),
+  builder: (_) {
+    Widget buildDialog(WindowsReleaseInfo displayedRelease, bool fromCache) =>
+        WindowsUpdateAvailabilityDialog(
+          release: displayedRelease,
+          installedVersion: installedVersion,
+          verifiedCheck: verifiedCheck,
+          isPreview: isPreview,
+          downloadUnavailableReason: downloadUnavailableReason,
+          releaseNotesAreFromCache: fromCache,
+        );
+
+    if (releaseUpdates == null) return buildDialog(release, false);
+    return AnimatedBuilder(
+      animation: releaseUpdates,
+      builder: (context, _) {
+        final latest = latestRelease?.call();
+        final displayedRelease =
+            latest != null && latest.version.compareTo(release.version) == 0
+            ? latest
+            : release;
+        return buildDialog(
+          displayedRelease,
+          releaseNotesAreFromCache?.call() ?? false,
+        );
+      },
+    );
+  },
   animationStyle: MediaQuery.disableAnimationsOf(context)
       ? AnimationStyle.noAnimation
       : null,
@@ -33,6 +56,7 @@ class WindowsUpdateAvailabilityDialog extends StatelessWidget {
     required this.verifiedCheck,
     required this.isPreview,
     required this.downloadUnavailableReason,
+    this.releaseNotesAreFromCache = false,
     super.key,
   });
 
@@ -41,6 +65,7 @@ class WindowsUpdateAvailabilityDialog extends StatelessWidget {
   final WindowsUpdateCheckResult? verifiedCheck;
   final bool isPreview;
   final String? downloadUnavailableReason;
+  final bool releaseNotesAreFromCache;
 
   bool get _previewEnabled => isPreview && updatePreviewModeEnabled;
 
@@ -98,18 +123,20 @@ class WindowsUpdateAvailabilityDialog extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    _VersionBadge(version: release.version.toString()),
+                    _VersionBadge(version: release.version.toDisplayString()),
                   ],
                 ),
                 const SizedBox(height: 20),
                 _VersionLine(
                   label: 'Versión instalada',
-                  version: installedVersion ?? 'No disponible',
+                  version: formatWindowsUpdateVersion(
+                    installedVersion ?? 'No disponible',
+                  ),
                 ),
                 const SizedBox(height: 8),
                 _VersionLine(
                   label: 'Nueva versión',
-                  version: release.version.toString(),
+                  version: release.version.toDisplayString(),
                 ),
                 const SizedBox(height: 16),
                 if (notes.isEmpty)
@@ -123,6 +150,29 @@ class WindowsUpdateAvailabilityDialog extends StatelessWidget {
                   )
                 else
                   _ReleaseNotes(text: notes),
+                if (releaseNotesAreFromCache) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    key: const ValueKey('update-dialog-cached-release-note'),
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(
+                        Icons.history_rounded,
+                        size: 16,
+                        color: Color(0xFF777B6F),
+                      ),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          'Información previamente obtenida; se actualizará al conectarse.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: const Color(0xFF686B5D),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 22),
                 Wrap(
                   alignment: WrapAlignment.end,

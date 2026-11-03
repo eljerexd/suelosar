@@ -14,31 +14,68 @@ class WindowsUpdateService {
     http.Client? client,
     InstalledVersionReader? installedVersionReader,
     InstallerStarter? installerStarter,
+    InstallerLifecycleStarter? installerLifecycleStarter,
+    File Function()? installerHelperResolver,
+    File Function()? applicationExecutableResolver,
     this.temporaryDirectory,
     bool? isWindows,
     this.requestTimeout = const Duration(seconds: 20),
   }) : _client = client ?? http.Client(),
        _installedVersionReader =
            installedVersionReader ?? _readInstalledVersion,
-       _installerStarter = installerStarter ?? _startInstaller,
-       _isWindows = isWindows ?? Platform.isWindows;
+       _installerHelperResolver =
+           installerHelperResolver ?? _resolveBundledInstallerHelper,
+       _applicationExecutableResolver =
+           applicationExecutableResolver ??
+           (() => File(Platform.resolvedExecutable)),
+       _isWindows = isWindows ?? Platform.isWindows {
+    _installerLifecycleStarter =
+        installerLifecycleStarter ??
+        (installerStarter == null
+            ? _startInstallerLifecycle
+            : (path, _, _, _) => installerStarter(path));
+  }
 
   static const repositoryOwner = 'eljerexd';
-  static const repositoryName = 'suelosar';
+  static const repositoryName = 'Web-SuelosAR';
   static const latestReleaseUrl =
       'https://api.github.com/repos/$repositoryOwner/$repositoryName/releases/latest';
   static const _userAgent = 'SuelosAR-Windows-Updater';
-  static const _installerLifecycleValidated = false;
+  bool get canLaunchInstaller {
+    if (!_isWindows) {
+      return false;
+    }
+    try {
+      if (_applicationExecutableResolver().uri.pathSegments.last
+              .toLowerCase() !=
+          'suelosar.exe') {
+        return false;
+      }
+      final helper = _installerHelperResolver();
+      if (!helper.existsSync() || helper.lengthSync() < 2) return false;
+      final header = helper.openSync();
+      try {
+        final bytes = header.readSync(2);
+        return bytes.length == 2 && bytes[0] == 0x4d && bytes[1] == 0x5a;
+      } finally {
+        header.closeSync();
+      }
+    } on FileSystemException {
+      return false;
+    }
+  }
 
   final http.Client _client;
   final InstalledVersionReader _installedVersionReader;
-  final InstallerStarter _installerStarter;
+  late final InstallerLifecycleStarter _installerLifecycleStarter;
+  final File Function() _installerHelperResolver;
+  final File Function() _applicationExecutableResolver;
   final Directory? temporaryDirectory;
   final bool _isWindows;
   final Duration requestTimeout;
   Completer<void>? _abortDownload;
   bool _downloading = false;
-  final Map<String, String> _verifiedInstallers = {};
+  final Map<String, _VerifiedInstaller> _verifiedInstallers = {};
   final Set<WindowsUpdateCheckResult> _issuedDownloadChecks =
       HashSet.identity();
 
@@ -60,7 +97,10 @@ class WindowsUpdateService {
           'No se pudo interpretar la versión instalada.',
         );
       }
-      final response = await _get(Uri.parse(latestReleaseUrl));
+      final response = await _get(
+        Uri.parse(latestReleaseUrl),
+        headers: const {'Cache-Control': 'no-cache'},
+      );
       if (response.statusCode == 404) {
         return const WindowsUpdateCheckResult(
           status: WindowsUpdateStatus.noStableRelease,
@@ -232,9 +272,10 @@ class WindowsUpdateService {
     File? partial;
     var completed = false;
     try {
-      directory = await (temporaryDirectory ?? Directory.systemTemp).createTemp(
-        'suelosar-update-',
-      );
+      final storageDirectory =
+          temporaryDirectory ?? _resolvePersistentUpdateDirectory();
+      await storageDirectory.create(recursive: true);
+      directory = await storageDirectory.createTemp('suelosar-update-');
       final filename = _safeInstallerName(check.installer!.name);
       partial = File(
         '${directory.path}${Platform.pathSeparator}$filename.part',
@@ -298,7 +339,10 @@ class WindowsUpdateService {
       }
       await partial.rename(installerFile.path);
       completed = true;
-      _verifiedInstallers[installerFile.path] = check.sha256!;
+      _verifiedInstallers[installerFile.path] = _VerifiedInstaller(
+        sha256: check.sha256!,
+        version: check.release!.version.toString(),
+      );
       onProgress?.call(
         WindowsUpdateProgress(
           downloadedBytes: actualLength,
@@ -354,6 +398,67 @@ class WindowsUpdateService {
     }
   }
 
+  /// Revalidates a previously downloaded installer after an application restart.
+  /// The path must remain inside SuelosAR's per-user update directory.
+  Future<bool> restoreDownloadedInstaller({
+    required String path,
+    required String expectedSha256,
+    required String version,
+  }) async {
+    if (!_isWindows || !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(expectedSha256)) {
+      return false;
+    }
+    final parsedVersion = SemanticVersion.tryParse(version);
+    if (parsedVersion == null || !parsedVersion.isStable) return false;
+
+    try {
+      final file = File(path).absolute;
+      final updateRoot =
+          temporaryDirectory ?? _resolvePersistentUpdateDirectory();
+      final normalizedRoot = _normalizeWindowsPath(
+        await updateRoot.resolveSymbolicLinks(),
+      );
+      final normalizedPath = _normalizeWindowsPath(
+        await file.resolveSymbolicLinks(),
+      );
+      if (!normalizedPath.startsWith('$normalizedRoot\\') ||
+          file.uri.pathSegments.last.toLowerCase() !=
+              'suelosar-setup-${parsedVersion.toString()}.exe' ||
+          !await file.exists()) {
+        return false;
+      }
+
+      final verification = await _verifyFile(
+        file.path,
+        expectedSha256,
+        requireExeExtension: true,
+        deleteMismatch: false,
+      );
+      if (!verification.succeeded) return false;
+      _verifiedInstallers[file.path] = _VerifiedInstaller(
+        sha256: expectedSha256.toLowerCase(),
+        version: parsedVersion.toString(),
+      );
+      return true;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  Directory _resolvePersistentUpdateDirectory() {
+    final localAppData = Platform.environment['LOCALAPPDATA'];
+    if (localAppData == null || localAppData.isEmpty) {
+      throw const FileSystemException('LOCALAPPDATA is unavailable.');
+    }
+    return Directory(
+      '$localAppData${Platform.pathSeparator}SuelosAR'
+      '${Platform.pathSeparator}Updates',
+    );
+  }
+
+  String _normalizeWindowsPath(String value) =>
+      value.replaceAll('/', '\\').replaceAll(RegExp(r'\\+$'), '').toLowerCase();
+
   void cancelDownload() {
     final abort = _abortDownload;
     if (abort != null && !abort.isCompleted) abort.complete();
@@ -363,9 +468,9 @@ class WindowsUpdateService {
     String path,
     String expectedSha256,
   ) async {
-    final knownDigest = _verifiedInstallers[path];
-    if (knownDigest == null ||
-        knownDigest.toLowerCase() != expectedSha256.toLowerCase()) {
+    final known = _verifiedInstallers[path];
+    if (known == null ||
+        known.sha256.toLowerCase() != expectedSha256.toLowerCase()) {
       return _operationFailure(
         WindowsUpdateErrorCode.installerNotVerified,
         'El archivo no fue descargado y registrado por este servicio.',
@@ -435,18 +540,18 @@ class WindowsUpdateService {
         status: WindowsUpdateOperationStatus.unsupportedPlatform,
       );
     }
-    if (!_installerLifecycleValidated) {
+    if (!canLaunchInstaller) {
       return const WindowsUpdateOperationResult(
         status: WindowsUpdateOperationStatus.lifecycleUnavailable,
         error: WindowsUpdateError(
           code: WindowsUpdateErrorCode.installerLifecycleUnavailable,
           message:
-              'El inicio del instalador permanece bloqueado hasta validar el ciclo real de instalación en Windows.',
+              'El instalador queda bloqueado porque faltan componentes ejecutables del ciclo seguro de actualización.',
         ),
       );
     }
-    final expectedSha256 = _verifiedInstallers[path];
-    if (expectedSha256 == null || !await File(path).exists()) {
+    final verified = _verifiedInstallers[path];
+    if (verified == null || !await File(path).exists()) {
       return _operationFailure(
         WindowsUpdateErrorCode.installerNotVerified,
         'Sólo puede iniciarse un instalador descargado y verificado por el servicio.',
@@ -454,7 +559,7 @@ class WindowsUpdateService {
     }
     final verification = await _verifyFile(
       path,
-      expectedSha256,
+      verified.sha256,
       requireExeExtension: true,
       deleteMismatch: true,
     );
@@ -463,13 +568,18 @@ class WindowsUpdateService {
       return verification;
     }
     try {
-      // Inno Setup owns the interactive close/restart flow. Do not pass silent
-      // switches or close this app before Setup can show UAC and its prompt.
-      await _installerStarter(path);
+      // The helper validates first, then waits for this app to exit before it
+      // presents Inno Setup's normal UAC and interactive installation flow.
+      await _installerLifecycleStarter(
+        path,
+        verified.sha256,
+        verified.version,
+        File(path).parent.path,
+      );
       return WindowsUpdateOperationResult(
         status: WindowsUpdateOperationStatus.succeeded,
         installerPath: path,
-        sha256: expectedSha256,
+        sha256: verified.sha256,
       );
     } on ProcessException catch (error) {
       return _operationFailure(
@@ -481,17 +591,32 @@ class WindowsUpdateService {
         WindowsUpdateErrorCode.launchFailed,
         'No se pudo acceder al instalador: ${error.message}',
       );
+    } on TimeoutException catch (error) {
+      return _operationFailure(
+        WindowsUpdateErrorCode.launchFailed,
+        'El auxiliar de instalación no respondió: $error',
+      );
+    } catch (error) {
+      return _operationFailure(
+        WindowsUpdateErrorCode.launchFailed,
+        'No se pudo preparar la actualización: $error',
+      );
     }
   }
 
   void close() => _client.close();
 
-  Future<http.Response> _get(Uri uri) async =>
-      http.Response.fromStream(await _send(uri)).timeout(requestTimeout);
+  Future<http.Response> _get(
+    Uri uri, {
+    Map<String, String> headers = const {},
+  }) async => http.Response.fromStream(
+    await _send(uri, headers: headers),
+  ).timeout(requestTimeout);
 
   Future<http.StreamedResponse> _send(
     Uri uri, {
     Future<void>? abortTrigger,
+    Map<String, String> headers = const {},
   }) async {
     if (uri.scheme != 'https') {
       throw const _DownloadException(
@@ -506,6 +631,7 @@ class WindowsUpdateService {
             ..followRedirects = false
             ..headers['User-Agent'] = _userAgent
             ..headers['Accept'] = 'application/vnd.github+json';
+      request.headers.addAll(headers);
       final response = await _client.send(request).timeout(requestTimeout);
       if (response.statusCode < 300 || response.statusCode >= 400) {
         return response;
@@ -635,8 +761,68 @@ class WindowsUpdateService {
   static Future<String> _readInstalledVersion() async =>
       (await PackageInfo.fromPlatform()).version;
 
-  static Future<void> _startInstaller(String path) async {
-    await Process.start(path, const [], mode: ProcessStartMode.detached);
+  static File _resolveBundledInstallerHelper() {
+    final executableDirectory = File(Platform.resolvedExecutable).parent;
+    return File(
+      '${executableDirectory.path}${Platform.pathSeparator}suelosar_update_helper.exe',
+    );
+  }
+
+  Future<void> _startInstallerLifecycle(
+    String installerPath,
+    String expectedSha256,
+    String version,
+    String updateDirectory,
+  ) async {
+    final bundledHelper = _installerHelperResolver();
+    if (!await bundledHelper.exists()) {
+      throw ProcessException(
+        bundledHelper.path,
+        const [],
+        'No se encontró el auxiliar de instalación incluido con SuelosAR.',
+      );
+    }
+
+    final helperDirectory = await Directory.systemTemp.createTemp(
+      'suelosar-update-helper-',
+    );
+    final helperCopy = File(
+      '${helperDirectory.path}${Platform.pathSeparator}suelosar_update_helper.exe',
+    );
+    await bundledHelper.copy(helperCopy.path);
+    final process = await Process.start(helperCopy.path, [
+      installerPath,
+      expectedSha256,
+      version,
+      _applicationExecutableResolver().path,
+      updateDirectory,
+      pid.toString(),
+      helperDirectory.path,
+    ], runInShell: false);
+    unawaited(process.stderr.drain<void>());
+    try {
+      final status = await process.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .first
+          .timeout(const Duration(seconds: 45));
+      if (status != 'READY') {
+        final exitCode = await process.exitCode;
+        throw ProcessException(
+          helperCopy.path,
+          const [],
+          'El auxiliar rechazó el inicio seguro (estado $status, código $exitCode).',
+        );
+      }
+    } on TimeoutException {
+      // Leave the helper's bounded natural wait intact. Since the application
+      // stays open on this path, the helper will refuse to start setup.
+      throw ProcessException(
+        helperCopy.path,
+        const [],
+        'El auxiliar no confirmó que estaba listo para instalar.',
+      );
+    }
   }
 
   WindowsUpdateCheckResult _checkFailure(
@@ -661,4 +847,11 @@ class _DownloadException implements Exception {
   const _DownloadException(this.code, this.message);
   final WindowsUpdateErrorCode code;
   final String message;
+}
+
+class _VerifiedInstaller {
+  const _VerifiedInstaller({required this.sha256, required this.version});
+
+  final String sha256;
+  final String version;
 }

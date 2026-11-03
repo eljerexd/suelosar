@@ -1,17 +1,23 @@
 # Windows update infrastructure (Phase 1)
 
-The update service is deliberately not connected to app startup or UI. Phase 2
-can import `lib/services/windows_update_service.dart` and call
-`WindowsUpdateService.checkForUpdates()`, `downloadUpdate()`,
-`cancelDownload()`, `verifyDownloadedInstaller()` and `launchInstaller()`.
-Results and errors are typed in `windows_update_models.dart`. Web uses a stub;
-the IO implementation returns `unsupportedPlatform` outside Windows.
+The updater uses two repositories with separate responsibilities:
+
+- `eljerexd/suelosar` is the main SuelosAR source-code repository, where
+  application development and source-code tags are maintained.
+- `eljerexd/Web-SuelosAR` is the Windows distribution repository. Its GitHub
+  Releases host installer assets and SHA-256 checksums.
+
+The service and Windows UI integration are described in this document and
+`WINDOWS_UPDATE_PHASE2A.md`. Results and errors are typed in
+`windows_update_models.dart`. Web uses a stub; the IO implementation returns
+`unsupportedPlatform` outside Windows.
 
 ## Release discovery and versioning
 
-The service queries the official stable-release endpoint:
+The service queries the stable-release API in the Windows distribution
+repository, not the source-code repository's tags page or releases:
 
-`https://api.github.com/repos/eljerexd/suelosar/releases/latest`
+`https://api.github.com/repos/eljerexd/Web-SuelosAR/releases/latest`
 
 It validates published, non-draft, non-prerelease metadata and compares parsed
 SemVer major, minor, patch, then prerelease precedence. Flutter build metadata
@@ -21,11 +27,10 @@ update just like a higher minor or major release.
 The only eligible installer is the unique asset named exactly
 `SuelosAR-Setup-<major>.<minor>.<patch>.exe`, matching the version in the stable
 release tag. Its HTTPS URL must be the matching
-`github.com/eljerexd/suelosar/releases/download/<tag>/<filename>` asset. The
-actual latest release inspected during this work (`v1.7.0`) returned an empty
-`assets` array from the GitHub Releases API, so no uploaded Windows installer
-is available yet (GitHub's release page also counts its generated source
-archives). This contract is therefore not exercised by a production installer.
+`github.com/eljerexd/Web-SuelosAR/releases/download/<tag>/<filename>` asset.
+Only assets published on a matching release in `Web-SuelosAR` are eligible;
+source-code repository tags and releases do not provide Windows updater
+metadata or installer assets.
 The authoritative script is preserved at `SetupSuelosAR.iss`. It retains
 AppId `{C7098677-ADDE-4FE4-A0FA-E24AC63B3CD0}` and sets
 `OutputBaseFilename=SuelosAR-Setup-{#MyAppVersion}`. `pubspec.yaml` is the
@@ -74,26 +79,38 @@ restarts affected applications automatically unless command-line overrides say
 otherwise. For automatic restart after installation, the application must call
 Windows `RegisterApplicationRestart`; this repository has no such call, so do
 not promise that Inno will restart SuelosAR automatically. The `[Run]` entry is
-`postinstall nowait skipifsilent`: interactively, the finish page offers an
-optional app launch; `nowait` means Setup does not wait for that process. In
-silent mode the entry is skipped. The updater launches without silent switches,
-so the intended route is interactive. The script omits `PrivilegesRequired`,
-whose Inno default is `admin`, so elevation is requested when required.
+`postinstall nowait skipifsilent`; an additional `Check` suppresses this entry
+for helper-driven updates and when the VC++ prerequisite requires a reboot.
+For a normal interactive setup, the finish page offers an optional app launch;
+`nowait` means Setup does not wait for that process. In silent mode the entry is
+skipped. The updater launches without silent switches, so the intended route
+is interactive. The script omits `PrivilegesRequired`, whose Inno default is
+`admin`, so elevation is requested when required.
 
 `downloadUpdate()` accepts only the latest check-result object issued by that
 same service instance; callers cannot construct an arbitrary URL and supply
 their own digest to authorize a download. Downloaded bytes are size-checked
-when possible and SHA-256 verified before the `.exe` is registered. However,
-`launchInstaller()` deliberately returns `lifecycleUnavailable` until the
-production Windows close/elevation/relaunch lifecycle has been validated. The
-gate is explicit in code and is not inferred from the current lack of release
-assets. Once validated, launch still requires a file in the private verified
-registry and a fresh digest check. Inno owns the interactive close prompt; its
-post-install launch is optional, and automatic Restart Manager restart is not
-available because the app does not register with `RegisterApplicationRestart`.
-Phase 2 should call the service only on user action, show structured results
-and progress, and never run checks synchronously during startup. Use mocked
-service/test releases rather than a live installer in UI tests.
+when possible and SHA-256 verified before the `.exe` is registered. On Windows,
+installer launch also requires the bundled helper to exist and have a valid PE
+header; the service rechecks the digest immediately before starting it. The
+helper is copied to a temporary directory outside the installation folder,
+validates the installer path/name/hash and installed AppId, waits for SuelosAR
+to exit, then starts normal interactive Inno Setup. After Setup exits it checks
+the installed executable version, restarts the app, and writes a one-time
+confirmation marker only for the expected successful version. The app consumes
+that marker after restart and independently checks its installed package version
+before displaying success. Failure or cancellation restarts without a success
+marker. Cleanup of the temporary installer/helper directory is best-effort if
+Windows still holds a file open.
+
+This lifecycle passed the recorded Windows Sandbox 1.6.0-to-1.7.0 test in
+`docs/RESULTADO_E2E_ACTUALIZADOR.md`. That evidence does not validate a separate
+host UAC prompt or a visible interactive desktop in Sandbox. Inno's
+`RestartApplications` default remains `yes`, but the helper owns the explicit
+SuelosAR restart sequence because the app does not register with
+`RegisterApplicationRestart`. The normal user-launched Setup still uses Inno's
+interactive finish-page launch behavior. Focused tests use mocked services for
+the app-side state and marker checks; they do not replace the Sandbox evidence.
 
 Inno lifecycle references: [CloseApplications](https://jrsoftware.org/ishelp/topic_setup_closeapplications.htm),
 [RestartApplications](https://jrsoftware.org/ishelp/topic_setup_restartapplications.htm),
@@ -109,16 +126,12 @@ macro, then verifies that the updater accepts the exact corresponding stable
 release asset name. The installed Inno compiler's preprocess-only mode produced
 `OutputBaseFilename=SuelosAR-Setup-1.7.0` for project version `1.7.0+20`.
 
-Verification performed: `flutter test
-test/services/windows_update_service_test.dart` passed the targeted updater
-suite (including issued-check and lifecycle gates);
-`dart analyze` on updater implementation and test files reported no issues;
-`git diff --check` passed. No application or installer binary was compiled or
-installed. Full installer lifecycle validation remains blocked until a
-version-matched installer is published as a stable GitHub release asset and a
-real Windows installation can be tested. `SetupSuelosAR.iss` and the wrapper
-are maintained in the repository working tree. The installer script is staged
-as a new repository source file; no commit or push was made.
+Verification history: focused service, controller, preview, indicator,
+confirmation, and installation-helper tests accompany the current
+implementation. Re-run the focused updater tests before creating a release
+installer. The release asset and its checksum are maintained separately in
+`eljerexd/Web-SuelosAR`; changing this source repository does not publish or
+replace them.
 
 ## Full-suite audit caveat
 

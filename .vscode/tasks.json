@@ -16,6 +16,22 @@
         "panel": "shared"
       },
       "problemMatcher": []
+    },
+    {
+      "label": "SuelosAR: Build Windows Release",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tool\\build_windows_release.ps1"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
     }
   ]
 }

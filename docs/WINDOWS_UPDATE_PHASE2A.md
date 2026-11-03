@@ -6,6 +6,10 @@ its initialization without blocking the menu, and hosts the independent
 download popup above the navigator. The indicator and popup observe the same
 controller; there is no second download manager or copied progress state.
 
+Repository roles are separate: `eljerexd/suelosar` contains application source
+and source-code tags, while `eljerexd/Web-SuelosAR` is the Windows distribution
+repository queried for stable GitHub Releases, installer assets, and checksums.
+
 Selecting an available update opens the availability dialog. Choosing
 `Descargar` pops that dialog first; after the dialog route returns, the screen
 starts the controller's download operation. Progress is shown in the independent
@@ -28,11 +32,23 @@ opens or the download button is pressed.
 
 The real Windows service can download to a temporary file, report byte
 progress, cancel and remove partial files, verify the expected size and
-SHA-256, and retain only the completed verified installer. Automatic installer
-execution is deliberately unavailable: `launchInstaller()` returns
-`lifecycleUnavailable` until the Windows install/close/restart lifecycle is
-validated. Therefore this implementation supports update detection and verified
-downloading, not complete automatic installation.
+SHA-256, and retain only the completed verified installer. On Windows it can
+start the bundled `suelosar_update_helper.exe` only after confirming that the
+helper exists, has a PE header, and the installer is still registered as
+verified; the installer digest is rechecked before launch. The helper runs
+outside the install directory, waits for the app to close, starts interactive
+Inno Setup, verifies the installed executable version, then restarts SuelosAR.
+A single-use marker is written only after a successful install with the
+expected version; on restart, the app consumes the marker and checks its actual
+package version before showing the success dialog. Failure/cancellation do not
+produce success confirmation. The helper removes its temporary update files
+after the restart path where Windows permits cleanup.
+
+The recorded Sandbox test validated the 1.6.0-to-1.7.0 path; its evidence and
+limits are documented in `RESULTADO_E2E_ACTUALIZADOR.md`. In particular, the
+Sandbox run did not provide a separately observed host UAC prompt or an
+interactive graphical desktop. The lifecycle is not described as host-UAC or
+visual-Sandbox validated.
 
 The optional preview is enabled only in debug builds with
 `--dart-define=SUelosAR_UPDATE_PREVIEW=true`. It uses a development controller
@@ -48,7 +64,7 @@ until they are either connected in a separately reviewed change or explicitly
 excluded from the feature scope.
 
 Focused tests cover the controller, status indicator, availability dialog,
-preview flow, popup progress and cancellation, and the service download,
-checksum, and failure paths. Tests use mocked preferences and network responses;
-they do not execute a real installer or validate the Windows installer
-lifecycle.
+preview flow, popup progress and cancellation, confirmation-marker validation,
+and service download/checksum/failure paths. Most use mocked preferences and
+network responses; the separate Sandbox report records the installer lifecycle
+trial. The optional live TLS test runs only when explicitly enabled.

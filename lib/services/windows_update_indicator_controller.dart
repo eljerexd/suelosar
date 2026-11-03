@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'desktop_window_service.dart';
 import 'windows_update_service.dart';
 import 'windows_update_preview_mode.dart';
 
@@ -17,6 +19,14 @@ typedef WindowsUpdateDownloadRunner =
       void Function(WindowsUpdateProgress progress)? onProgress,
     });
 typedef WindowsUpdateDownloadCanceller = void Function();
+typedef WindowsUpdateInstallRunner =
+    Future<WindowsUpdateOperationResult> Function(String installerPath);
+typedef WindowsUpdateInstallerRestorer =
+    Future<bool> Function({
+      required String path,
+      required String expectedSha256,
+      required String version,
+    });
 
 enum WindowsUpdateIndicatorState { checking, upToDate, updateAvailable, error }
 
@@ -27,6 +37,9 @@ enum WindowsUpdateDownloadState {
   completed,
   cancelled,
   failed,
+  preparingInstall,
+  waitingForApplicationShutdown,
+  installationFailed,
 }
 
 /// Owns the Windows update indicator state and its durable release snapshot.
@@ -35,6 +48,8 @@ enum WindowsUpdateDownloadState {
 /// [WindowsUpdateCheckResult] issued by the same [WindowsUpdateService]
 /// instance, as enforced by the Phase 1 service.
 class WindowsUpdateIndicatorController extends ChangeNotifier {
+  static const _downloadSpeedSampleInterval = Duration(seconds: 1);
+  static const _downloadSpeedSmoothingFactor = 0.35;
   WindowsUpdateIndicatorController({
     required this.isWindows,
     required this._checkForUpdates,
@@ -42,6 +57,10 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     InstalledAppVersionReader? installedVersionReader,
     this.downloadRunner,
     this.downloadCanceller,
+    this.installRunner,
+    this.installerRestorer,
+    this.canInstallUpdate = false,
+    this.closeApplication,
     DateTime Function()? clock,
     this._onDispose,
   }) : _preferencesLoader = preferencesLoader ?? SharedPreferences.getInstance,
@@ -57,6 +76,10 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
       _installedVersionReader = _readInstalledVersion,
       downloadRunner = null,
       downloadCanceller = null,
+      installRunner = null,
+      installerRestorer = null,
+      canInstallUpdate = false,
+      closeApplication = null,
       _clock = DateTime.now,
       _developmentPreviewRelease = _createDevelopmentPreviewRelease(),
       _onDispose = null;
@@ -70,13 +93,17 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     return WindowsUpdateIndicatorController._developmentPreview();
   }
 
-  factory WindowsUpdateIndicatorController.forWindows() {
-    final service = WindowsUpdateService(isWindows: true);
+  factory WindowsUpdateIndicatorController.forWindows({http.Client? client}) {
+    final service = WindowsUpdateService(isWindows: true, client: client);
     return WindowsUpdateIndicatorController(
       isWindows: true,
       checkForUpdates: service.checkForUpdates,
       downloadRunner: service.downloadUpdate,
       downloadCanceller: service.cancelDownload,
+      installRunner: service.launchInstaller,
+      installerRestorer: service.restoreDownloadedInstaller,
+      canInstallUpdate: service.canLaunchInstaller,
+      closeApplication: DesktopWindowService.instance.closeWindow,
       onDispose: service.close,
     );
   }
@@ -88,6 +115,12 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   static const lastReleaseKey = 'windows_update.last_release';
   static const pendingReleaseKey = 'windows_update.pending_release';
   static const dismissedVersionKey = 'windows_update.dismissed_version';
+  static const verifiedInstallerPathKey =
+      'windows_update.verified_installer_path';
+  static const verifiedInstallerSha256Key =
+      'windows_update.verified_installer_sha256';
+  static const verifiedInstallerVersionKey =
+      'windows_update.verified_installer_version';
 
   final bool isWindows;
   final WindowsUpdateCheck _checkForUpdates;
@@ -95,6 +128,10 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   final InstalledAppVersionReader _installedVersionReader;
   final WindowsUpdateDownloadRunner? downloadRunner;
   final WindowsUpdateDownloadCanceller? downloadCanceller;
+  final WindowsUpdateInstallRunner? installRunner;
+  final WindowsUpdateInstallerRestorer? installerRestorer;
+  final bool canInstallUpdate;
+  final Future<void> Function()? closeApplication;
   final DateTime Function() _clock;
   final WindowsReleaseInfo? _developmentPreviewRelease;
   final VoidCallback? _onDispose;
@@ -114,15 +151,19 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   WindowsUpdateProgress? _downloadProgress;
   double? _downloadSpeedBytesPerSecond;
   String? _downloadErrorMessage;
+  String? _verifiedInstallerPath;
+  String? _verifiedInstallerVersion;
+  bool _installing = false;
   Stopwatch? _downloadStopwatch;
-  int _lastProgressBytes = 0;
-  Duration _lastProgressAt = Duration.zero;
+  int _speedSampleBytes = 0;
+  Duration _speedSampleAt = Duration.zero;
   Timer? _previewDownloadTimer;
   Timer? _previewCancelTimer;
   Future<void>? _initialization;
   Future<WindowsUpdateCheckResult?>? _activeCheck;
   bool _initialized = false;
   bool _checking = false;
+  bool _releaseMetadataIsFresh = false;
   bool _startupPromptTaken = false;
   bool _hadPendingReleaseAtLaunch = false;
   bool _disposed = false;
@@ -131,6 +172,8 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   WindowsUpdateIndicatorState get state => _state;
   WindowsReleaseInfo? get latestAvailableRelease => _latestAvailableRelease;
   WindowsReleaseInfo? get lastStableRelease => _lastStableRelease;
+  bool get releaseNotesAreFromCache =>
+      _lastStableRelease != null && !_releaseMetadataIsFresh;
   WindowsUpdateCheckResult? verifiedCheckFor(WindowsReleaseInfo release) {
     final result = _latestCheckResult;
     if (result?.release?.tag != release.tag ||
@@ -150,6 +193,10 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   WindowsUpdateProgress? get downloadProgress => _downloadProgress;
   double? get downloadSpeedBytesPerSecond => _downloadSpeedBytesPerSecond;
   String? get downloadErrorMessage => _downloadErrorMessage;
+  String? get verifiedInstallerPath => _verifiedInstallerPath;
+  bool get canInstallCurrentUpdate =>
+      canInstallUpdate && _verifiedInstallerPath != null;
+  bool get isInstalling => _installing;
   bool get hasDownloadPopup =>
       _downloadState != WindowsUpdateDownloadState.idle;
   Future<String> get installedVersion => isDevelopmentPreview
@@ -171,6 +218,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     if (previewRelease != null) {
       _latestAvailableRelease = previewRelease;
       _lastStableRelease = previewRelease;
+      _releaseMetadataIsFresh = true;
       _state = WindowsUpdateIndicatorState.updateAvailable;
       _initialized = true;
       _notify();
@@ -198,14 +246,42 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
       _latestAvailableRelease = _decodeRelease(
         preferences.getString(pendingReleaseKey),
       );
+      var installedPendingIsCurrent = false;
+      final pendingRelease = _latestAvailableRelease;
+      if (pendingRelease != null) {
+        try {
+          final installed = SemanticVersion.tryParse(
+            await _installedVersionReader(),
+          );
+          if (installed != null &&
+              pendingRelease.version.compareTo(installed) <= 0) {
+            installedPendingIsCurrent = true;
+            _latestAvailableRelease = null;
+            _dismissedVersion = null;
+            _lastStableRelease = pendingRelease;
+            _lastSuccessfulAt = _clock().toUtc();
+            try {
+              await _persistUpToDate(pendingRelease);
+            } catch (_) {
+              // The in-memory state is still authoritative for this session.
+            }
+          }
+        } catch (_) {
+          // Keep the cached update if local package metadata is unavailable.
+        }
+      }
       _hadPendingReleaseAtLaunch = _latestAvailableRelease != null;
       _startupPromptRelease = _latestAvailableRelease;
 
       if (_latestAvailableRelease != null) {
         _state = WindowsUpdateIndicatorState.updateAvailable;
+      } else if (installedPendingIsCurrent) {
+        _state = WindowsUpdateIndicatorState.upToDate;
       } else {
         _state = _stateFromStorage(preferences.getString(lastStatusKey));
       }
+
+      await _restorePendingInstaller(preferences);
     } catch (_) {
       _state = WindowsUpdateIndicatorState.checking;
     }
@@ -255,8 +331,8 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     _downloadSpeedBytesPerSecond = null;
     _downloadErrorMessage = null;
     _downloadStopwatch = Stopwatch()..start();
-    _lastProgressBytes = 0;
-    _lastProgressAt = Duration.zero;
+    _speedSampleBytes = 0;
+    _speedSampleAt = Duration.zero;
     _notify();
 
     try {
@@ -264,6 +340,13 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
       switch (result.status) {
         case WindowsUpdateOperationStatus.succeeded:
           _downloadState = WindowsUpdateDownloadState.completed;
+          _verifiedInstallerPath = result.installerPath;
+          _verifiedInstallerVersion = check.release?.version.toString();
+          await _persistVerifiedInstaller(
+            result.installerPath,
+            check.sha256,
+            _verifiedInstallerVersion,
+          );
         case WindowsUpdateOperationStatus.cancelled:
           _downloadState = WindowsUpdateDownloadState.cancelled;
         case WindowsUpdateOperationStatus.failed ||
@@ -310,32 +393,96 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   }
 
   void dismissDownloadPopup() {
+    if (_installing) return;
     if (_downloadState == WindowsUpdateDownloadState.downloading ||
         _downloadState == WindowsUpdateDownloadState.cancelling) {
+      return;
+    }
+    if ((_downloadState == WindowsUpdateDownloadState.completed ||
+            _downloadState == WindowsUpdateDownloadState.installationFailed) &&
+        _verifiedInstallerPath != null) {
+      _downloadPopupExpanded = false;
+      _notify();
       return;
     }
     _downloadState = WindowsUpdateDownloadState.idle;
     _downloadProgress = null;
     _downloadSpeedBytesPerSecond = null;
     _downloadErrorMessage = null;
+    _verifiedInstallerPath = null;
     _downloadPopupExpanded = true;
     _notify();
+  }
+
+  Future<void> installAndRestart({
+    Future<void> Function()? closeApplication,
+  }) async {
+    if (_installing ||
+        !{
+          WindowsUpdateDownloadState.completed,
+          WindowsUpdateDownloadState.installationFailed,
+        }.contains(_downloadState) ||
+        !canInstallUpdate) {
+      return;
+    }
+    final installerPath = _verifiedInstallerPath;
+    final runner = installRunner;
+    final close = closeApplication ?? this.closeApplication;
+    if (installerPath == null || runner == null || close == null) return;
+
+    _installing = true;
+    _downloadState = WindowsUpdateDownloadState.preparingInstall;
+    _downloadErrorMessage = null;
+    _notify();
+    try {
+      final result = await runner(installerPath);
+      if (!result.succeeded) {
+        _downloadState = WindowsUpdateDownloadState.installationFailed;
+        _downloadErrorMessage =
+            result.error?.message ?? 'No se pudo preparar la instalación.';
+        if (result.error?.code == WindowsUpdateErrorCode.checksumMismatch ||
+            result.error?.code == WindowsUpdateErrorCode.installerNotVerified) {
+          _verifiedInstallerPath = null;
+          _verifiedInstallerVersion = null;
+          await _clearPersistedInstaller();
+        }
+        return;
+      }
+      _downloadState = WindowsUpdateDownloadState.waitingForApplicationShutdown;
+      _notify();
+      await close();
+    } catch (error) {
+      _downloadState = WindowsUpdateDownloadState.installationFailed;
+      _downloadErrorMessage = 'No se pudo iniciar la actualización: $error';
+    } finally {
+      _installing = false;
+      _notify();
+    }
   }
 
   void _acceptDownloadProgress(WindowsUpdateProgress progress) {
     final stopwatch = _downloadStopwatch;
     if (stopwatch != null) {
       final now = stopwatch.elapsed;
-      final elapsed = now - _lastProgressAt;
-      if (_downloadProgress != null && elapsed.inMicroseconds > 0) {
-        final bytes = progress.downloadedBytes - _lastProgressBytes;
-        if (bytes >= 0) {
-          _downloadSpeedBytesPerSecond =
+      final elapsed = now - _speedSampleAt;
+      if (elapsed >= _downloadSpeedSampleInterval) {
+        final bytes = progress.downloadedBytes - _speedSampleBytes;
+        if (bytes > 0) {
+          final measuredSpeed =
               bytes * Duration.microsecondsPerSecond / elapsed.inMicroseconds;
+          final previousSpeed = _downloadSpeedBytesPerSecond;
+          _downloadSpeedBytesPerSecond = previousSpeed == null
+              ? measuredSpeed
+              : previousSpeed +
+                    (measuredSpeed - previousSpeed) *
+                        _downloadSpeedSmoothingFactor;
         }
+        // Keep the last positive speed across empty network chunks. Those
+        // callbacks are common and must not make the UI blink between a value
+        // and a hidden/zero state.
+        _speedSampleAt = now;
+        _speedSampleBytes = progress.downloadedBytes;
       }
-      _lastProgressAt = now;
-      _lastProgressBytes = progress.downloadedBytes;
     }
     _downloadProgress = progress;
     _notify();
@@ -383,6 +530,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     if (!manual && !_isAutomaticCheckDue()) return null;
 
     _checking = true;
+    _releaseMetadataIsFresh = false;
     _state = WindowsUpdateIndicatorState.checking;
     _lastAttemptedAt = _clock().toUtc();
     _notify();
@@ -419,9 +567,20 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   }) async {
     _latestCheckResult = result;
     final release = result.release;
-    if (release != null) _lastStableRelease = release;
+    if (release != null) {
+      _lastStableRelease = release;
+      _releaseMetadataIsFresh = true;
+    }
 
     if (result.updateAvailable && release != null) {
+      if (_verifiedInstallerVersion != null &&
+          _verifiedInstallerVersion != release.version.toString()) {
+        _downloadState = WindowsUpdateDownloadState.idle;
+        _downloadProgress = null;
+        _verifiedInstallerPath = null;
+        _verifiedInstallerVersion = null;
+        await _clearPersistedInstaller();
+      }
       final previousVersion = _latestAvailableRelease?.version.toString();
       _latestAvailableRelease = release;
       _state = WindowsUpdateIndicatorState.updateAvailable;
@@ -493,9 +652,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     _startupPromptTaken = true;
 
     final release = _startupPromptRelease;
-    if (release == null || _dismissedVersion == release.version.toString()) {
-      return null;
-    }
+    if (release == null) return null;
     _notify();
     try {
       final installed = SemanticVersion.tryParse(
@@ -512,6 +669,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     } catch (_) {
       // Retain the persisted prompt if local package metadata is unavailable.
     }
+    if (_dismissedVersion == release.version.toString()) return null;
     return release;
   }
 
@@ -587,6 +745,9 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     }
     await preferences.remove(pendingReleaseKey);
     await preferences.remove(dismissedVersionKey);
+    await preferences.remove(verifiedInstallerPathKey);
+    await preferences.remove(verifiedInstallerSha256Key);
+    await preferences.remove(verifiedInstallerVersionKey);
   }
 
   Future<void> _persistStatus(WindowsUpdateIndicatorState state) async {
@@ -605,6 +766,79 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     await preferences.remove(pendingReleaseKey);
     await preferences.remove(dismissedVersionKey);
     await preferences.setString(lastStatusKey, 'upToDate');
+    await preferences.remove(verifiedInstallerPathKey);
+    await preferences.remove(verifiedInstallerSha256Key);
+    await preferences.remove(verifiedInstallerVersionKey);
+  }
+
+  Future<void> _restorePendingInstaller(SharedPreferences preferences) async {
+    final path = preferences.getString(verifiedInstallerPathKey);
+    final sha256 = preferences.getString(verifiedInstallerSha256Key);
+    final version = preferences.getString(verifiedInstallerVersionKey);
+    final release = _latestAvailableRelease;
+    if (path == null || sha256 == null || version == null) return;
+    if (release == null || release.version.toString() != version) {
+      await _clearPersistedInstaller();
+      return;
+    }
+    final restorer = installerRestorer;
+    var restored = false;
+    if (restorer != null) {
+      try {
+        restored = await restorer(
+          path: path,
+          expectedSha256: sha256,
+          version: version,
+        );
+      } catch (_) {
+        restored = false;
+      }
+    }
+    if (!restored) {
+      await _clearPersistedInstaller();
+      return;
+    }
+
+    final installer = release.assets.where(
+      (asset) => asset.name == 'SuelosAR-Setup-$version.exe',
+    );
+    _verifiedInstallerPath = path;
+    _verifiedInstallerVersion = version;
+    _downloadState = WindowsUpdateDownloadState.completed;
+    _downloadProgress = WindowsUpdateProgress(
+      downloadedBytes: installer.isEmpty ? 0 : installer.single.size,
+      totalBytes: installer.isEmpty ? null : installer.single.size,
+    );
+    _downloadSpeedBytesPerSecond = null;
+    _downloadPopupExpanded = true;
+    _startupPromptRelease = null;
+  }
+
+  Future<void> _persistVerifiedInstaller(
+    String? path,
+    String? sha256,
+    String? version,
+  ) async {
+    if (path == null || sha256 == null || version == null) return;
+    try {
+      final preferences = await _preferencesOrLoad();
+      await preferences.setString(verifiedInstallerPathKey, path);
+      await preferences.setString(verifiedInstallerSha256Key, sha256);
+      await preferences.setString(verifiedInstallerVersionKey, version);
+    } catch (_) {
+      // The current session can still install; a later launch will re-download.
+    }
+  }
+
+  Future<void> _clearPersistedInstaller() async {
+    try {
+      final preferences = await _preferencesOrLoad();
+      await preferences.remove(verifiedInstallerPathKey);
+      await preferences.remove(verifiedInstallerSha256Key);
+      await preferences.remove(verifiedInstallerVersionKey);
+    } catch (_) {
+      // Ignore preference storage failures; service verification remains strict.
+    }
   }
 
   Future<SharedPreferences> _preferencesOrLoad() async =>
@@ -734,6 +968,6 @@ WindowsReleaseInfo _createDevelopmentPreviewRelease() => WindowsReleaseInfo(
   publishedAt: DateTime.utc(2026, 11, 1),
   assets: const [],
   htmlUrl: Uri.parse(
-    'https://github.com/eljerexd/suelosar/releases/tag/v1.8.0',
+    'https://github.com/eljerexd/Web-SuelosAR/releases/tag/v1.8.0',
   ),
 );

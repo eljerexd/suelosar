@@ -38,3 +38,14 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# Run outside the installation directory while Setup replaces application files.
+add_executable(suelosar_update_helper WIN32 "update_helper.cpp")
+apply_standard_settings(suelosar_update_helper)
+target_link_libraries(suelosar_update_helper PRIVATE
+  "advapi32.lib"
+  "bcrypt.lib"
+  "shell32.lib"
+  "user32.lib"
+  "version.lib"
+)

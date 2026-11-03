@@ -341,7 +341,7 @@ void main() {
     final asset = WindowsReleaseAsset(
       name: 'SuelosAR-Setup-1.8.5.exe',
       downloadUrl: Uri.parse(
-        'https://github.com/eljerexd/suelosar/releases/download/v1.8.5/SuelosAR-Setup-1.8.5.exe',
+        'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.8.5/SuelosAR-Setup-1.8.5.exe',
       ),
       size: 100,
     );
@@ -401,7 +401,7 @@ void main() {
       installer: WindowsReleaseAsset(
         name: 'SuelosAR-Setup-1.8.6.exe',
         downloadUrl: Uri.parse(
-          'https://github.com/eljerexd/suelosar/releases/download/v1.8.6/SuelosAR-Setup-1.8.6.exe',
+          'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.8.6/SuelosAR-Setup-1.8.6.exe',
         ),
         size: 100,
       ),
@@ -462,7 +462,7 @@ WindowsReleaseInfo _release(
   publishedAt: DateTime.utc(2026, 11, 1),
   assets: const [],
   htmlUrl: Uri.parse(
-    'https://github.com/eljerexd/suelosar/releases/tag/v$version',
+    'https://github.com/eljerexd/Web-SuelosAR/releases/tag/v$version',
   ),
 );
 

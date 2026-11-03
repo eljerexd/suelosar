@@ -60,6 +60,32 @@ void main() {
     },
   );
 
+  testWidgets('update indicator hides build metadata in the release version', (
+    tester,
+  ) async {
+    final controller = _controller(
+      () async => _updateAvailable('1.8.0+25'),
+      installedVersion: '1.7.0+21',
+    );
+    await controller.initialize();
+    await controller.checkCompletion;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: Scaffold(
+          body: WindowsUpdateStatusIndicator(controller: controller),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Nueva versión 1.8.0'), findsOneWidget);
+    expect(find.textContaining('+'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
+
   testWidgets(
     'manual up-to-date check confirms and update click emits release',
     (tester) async {
@@ -253,6 +279,74 @@ void main() {
   });
 
   testWidgets(
+    'tapping a cached update refreshes its verification before opening the dialog',
+    (tester) async {
+      final cachedRelease = _release(
+        '1.7.0',
+        description: 'Notas guardadas de la comprobación anterior.',
+      );
+      final recentAttempt = DateTime.utc(
+        2026,
+        11,
+        1,
+      ).subtract(const Duration(hours: 1));
+      SharedPreferences.setMockInitialValues({
+        WindowsUpdateIndicatorController.lastAttemptedAtKey: recentAttempt
+            .toIso8601String(),
+        WindowsUpdateIndicatorController.lastStatusKey: 'updateAvailable',
+        WindowsUpdateIndicatorController.pendingReleaseKey: jsonEncode(
+          _encodeRelease(cachedRelease),
+        ),
+        WindowsUpdateIndicatorController.lastReleaseKey: jsonEncode(
+          _encodeRelease(cachedRelease),
+        ),
+      });
+
+      var checkCount = 0;
+      final controller = _controller(() async {
+        checkCount++;
+        return _verifiedUpdateAvailable('1.7.0');
+      }, installedVersion: '1.6.0');
+      await controller.initialize();
+      await controller.checkCompletion;
+      expect(checkCount, 0);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.windows),
+          home: HomeScreen(
+            deviceLinkedStatusLoader: () async => false,
+            windowsUpdateController: controller,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final staleDownload = tester.widget<FilledButton>(
+        find.byKey(const ValueKey('update-dialog-download')),
+      );
+      expect(staleDownload.onPressed, isNull);
+      await tester.tap(find.byKey(const ValueKey('update-dialog-later')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Nueva versión 1.7.0'));
+      await tester.pumpAndSettle();
+
+      expect(checkCount, 1);
+      expect(find.text('Notas actuales de GitHub.'), findsOneWidget);
+      final refreshedDownload = tester.widget<FilledButton>(
+        find.byKey(const ValueKey('update-dialog-download')),
+      );
+      expect(refreshedDownload.onPressed, isNotNull);
+
+      await tester.tap(find.byKey(const ValueKey('update-dialog-later')));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
     'startup pending release prompts once and Later keeps it pending',
     (tester) async {
       final release = _release('1.8.0');
@@ -310,6 +404,196 @@ void main() {
       controller.dispose();
     },
   );
+
+  testWidgets(
+    'installed release clears the stale update indicator at startup',
+    (tester) async {
+      final release = _release('1.7.0');
+      SharedPreferences.setMockInitialValues({
+        WindowsUpdateIndicatorController.lastAttemptedAtKey: DateTime.utc(
+          2026,
+          11,
+          1,
+        ).subtract(const Duration(minutes: 5)).toIso8601String(),
+        WindowsUpdateIndicatorController.lastStatusKey: 'updateAvailable',
+        WindowsUpdateIndicatorController.pendingReleaseKey: jsonEncode(
+          _encodeRelease(release),
+        ),
+        WindowsUpdateIndicatorController.lastReleaseKey: jsonEncode(
+          _encodeRelease(release),
+        ),
+        WindowsUpdateIndicatorController.dismissedVersionKey: '1.7.0',
+      });
+      final controller = _controller(
+        () async => _upToDate(),
+        installedVersion: '1.7.0+20',
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.windows),
+          home: HomeScreen(
+            deviceLinkedStatusLoader: () async => false,
+            windowsUpdateController: controller,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Aplicación actualizada'), findsOneWidget);
+      expect(find.text('Nueva versión 1.7.0'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('windows-update-availability-dialog')),
+        findsNothing,
+      );
+      expect(controller.state, WindowsUpdateIndicatorState.upToDate);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'open update dialog refreshes notes when the release body changes',
+    (tester) async {
+      final oldRelease = _release(
+        '1.7.0',
+        description: 'Notas antiguas: paa comodidad.',
+      );
+      final recentAttempt = DateTime.utc(
+        2026,
+        11,
+        1,
+      ).subtract(const Duration(hours: 25));
+      SharedPreferences.setMockInitialValues({
+        WindowsUpdateIndicatorController.lastAttemptedAtKey: recentAttempt
+            .toIso8601String(),
+        WindowsUpdateIndicatorController.lastStatusKey: 'updateAvailable',
+        WindowsUpdateIndicatorController.pendingReleaseKey: jsonEncode(
+          _encodeRelease(oldRelease),
+        ),
+        WindowsUpdateIndicatorController.lastReleaseKey: jsonEncode(
+          _encodeRelease(oldRelease),
+        ),
+      });
+      final refreshed = Completer<WindowsUpdateCheckResult>();
+      final controller = _controller(
+        () => refreshed.future,
+        installedVersion: '1.6.0',
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.windows),
+          home: HomeScreen(
+            deviceLinkedStatusLoader: () async => false,
+            windowsUpdateController: controller,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+
+      expect(find.text('Notas antiguas: paa comodidad.'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('update-dialog-cached-release-note')),
+        findsOneWidget,
+      );
+
+      const newDescription = 'Gestor de descarga para más comodidad.';
+      refreshed.complete(
+        WindowsUpdateCheckResult(
+          status: WindowsUpdateStatus.installerAssetMissing,
+          installedVersion: SemanticVersion.tryParse('1.6.0'),
+          release: _release('1.7.0', description: newDescription),
+        ),
+      );
+      await controller.checkCompletion;
+      await tester.pumpAndSettle();
+
+      expect(find.text(newDescription), findsOneWidget);
+      expect(find.text('Notas antiguas: paa comodidad.'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('update-dialog-cached-release-note')),
+        findsNothing,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('update-dialog-later')));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets('cached release notes stay identified after an offline check', (
+    tester,
+  ) async {
+    final cached = _release(
+      '1.7.0',
+      description: 'Notas guardadas de una comprobación anterior.',
+    );
+    final recentAttempt = DateTime.utc(
+      2026,
+      11,
+      1,
+    ).subtract(const Duration(hours: 25));
+    SharedPreferences.setMockInitialValues({
+      WindowsUpdateIndicatorController.lastAttemptedAtKey: recentAttempt
+          .toIso8601String(),
+      WindowsUpdateIndicatorController.lastStatusKey: 'updateAvailable',
+      WindowsUpdateIndicatorController.pendingReleaseKey: jsonEncode(
+        _encodeRelease(cached),
+      ),
+      WindowsUpdateIndicatorController.lastReleaseKey: jsonEncode(
+        _encodeRelease(cached),
+      ),
+    });
+    final check = Completer<WindowsUpdateCheckResult>();
+    final controller = _controller(
+      () => check.future,
+      installedVersion: '1.6.0',
+    );
+    await controller.initialize();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: HomeScreen(
+          deviceLinkedStatusLoader: () async => false,
+          windowsUpdateController: controller,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+
+    expect(find.text(cached.description), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('update-dialog-cached-release-note')),
+      findsOneWidget,
+    );
+
+    check.complete(
+      const WindowsUpdateCheckResult(
+        status: WindowsUpdateStatus.releaseUnavailable,
+        error: WindowsUpdateError(
+          code: WindowsUpdateErrorCode.networkUnavailable,
+          message: 'offline',
+        ),
+      ),
+    );
+    await controller.checkCompletion;
+    await tester.pumpAndSettle();
+
+    expect(find.text(cached.description), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('update-dialog-cached-release-note')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('update-dialog-later')));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+  });
 
   testWidgets('up-to-date popup is anchored below and aligned with indicator', (
     tester,
@@ -422,13 +706,15 @@ void main() {
   );
 }
 
-WindowsUpdateIndicatorController _controller(WindowsUpdateCheck check) =>
-    WindowsUpdateIndicatorController(
-      isWindows: true,
-      checkForUpdates: check,
-      installedVersionReader: () async => '1.7.0',
-      clock: () => DateTime.utc(2026, 11, 1),
-    );
+WindowsUpdateIndicatorController _controller(
+  WindowsUpdateCheck check, {
+  String installedVersion = '1.7.0',
+}) => WindowsUpdateIndicatorController(
+  isWindows: true,
+  checkForUpdates: check,
+  installedVersionReader: () async => installedVersion,
+  clock: () => DateTime.utc(2026, 11, 1),
+);
 
 WindowsUpdateCheckResult _upToDate() => WindowsUpdateCheckResult(
   status: WindowsUpdateStatus.upToDate,
@@ -443,15 +729,36 @@ WindowsUpdateCheckResult _updateAvailable(String version) =>
       release: _release(version),
     );
 
-WindowsReleaseInfo _release(String version) => WindowsReleaseInfo(
+WindowsUpdateCheckResult _verifiedUpdateAvailable(String version) {
+  final name = 'SuelosAR-Setup-$version.exe';
+  final checksum = List.filled(64, 'a').join();
+  return WindowsUpdateCheckResult(
+    status: WindowsUpdateStatus.updateAvailable,
+    installedVersion: SemanticVersion.tryParse('1.6.0'),
+    release: _release(version, description: 'Notas actuales de GitHub.'),
+    installer: WindowsReleaseAsset(
+      name: name,
+      downloadUrl: Uri.parse(
+        'https://github.com/eljerexd/Web-SuelosAR/releases/download/v$version/$name',
+      ),
+      size: 100,
+    ),
+    sha256: checksum,
+  );
+}
+
+WindowsReleaseInfo _release(
+  String version, {
+  String description = 'Notas de versión',
+}) => WindowsReleaseInfo(
   tag: 'v$version',
   version: SemanticVersion.tryParse(version)!,
   name: 'SuelosAR $version',
-  description: 'Notas de versión',
+  description: description,
   publishedAt: DateTime.utc(2026, 10, 31),
   assets: const [],
   htmlUrl: Uri.parse(
-    'https://github.com/eljerexd/suelosar/releases/tag/v$version',
+    'https://github.com/eljerexd/Web-SuelosAR/releases/tag/v$version',
   ),
 );
 
