@@ -1367,6 +1367,39 @@ void main() {
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
+
+  testWidgets('desktop compass drag rotates the map and tap resets north', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1280, 720);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const GisMapScreen(repository: _EmptyGisRepository()),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    final map = tester.widget<FlutterMap>(find.byType(FlutterMap).first);
+    expect(map.mapController!.camera.rotation, closeTo(0, 0.01));
+    final compass = find.byTooltip(
+      'Arrastrá para rotar · clic para volver al norte',
+    );
+    expect(compass, findsOneWidget);
+
+    await tester.drag(compass, const Offset(120, 0));
+    await tester.pumpAndSettle();
+    expect(map.mapController!.camera.rotation.abs(), greaterThan(1));
+
+    await tester.tap(compass);
+    await tester.pumpAndSettle();
+    expect(map.mapController!.camera.rotation, closeTo(0, 0.01));
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _RecordingNavigatorObserver extends NavigatorObserver {

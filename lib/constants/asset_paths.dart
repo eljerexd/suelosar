@@ -3,6 +3,8 @@ class AssetPaths {
 
   static const String soilMapsCatalog = 'assets/data/soil_maps.json';
   static const String soilMapsPdfDirectory = 'assets/pdfs';
+  static const String buenosAiresFeatureMetadata =
+      'assets/data/buenos_aires_feature_metadata.json';
   static const String gisPmTiles = 'assets/maps/soil_polygons.pmtiles';
   static const String gisPmTilesVersion =
       'assets/maps/soil_polygons.pmtiles.sha256';
@@ -33,4 +35,19 @@ class AssetPaths {
   // IGN WFS + GeoRef Argentina, clipped to Santa Fe's real extent.
   static const String santaFeAgronomicReferenceMap =
       'assets/maps/agronomic_reference_map_santa_fe.json';
+
+  static const String cordobaSeriesIndex =
+      'assets/data/cordoba_series_index.json';
+  static const String cordobaFeatureMetadata =
+      'assets/data/cordoba_feature_metadata.json';
+  static const String cordobaSeriesPercentageSupplement =
+      'assets/data/cordoba_series_percentage_supplement.json';
+  static const String cordobaSeriesPdf =
+      'assets/pdfs_cordoba/cordoba_series.pdf';
+  static const String cordobaAgronomicReferenceMap =
+      'assets/maps/agronomic_reference_map_cordoba.json';
+  static const String cordobaGisPmTiles =
+      'assets/maps/cordoba_soil_polygons.pmtiles';
+  static const String cordobaGisPmTilesVersion =
+      'assets/maps/cordoba_soil_polygons.pmtiles.sha256';
 }

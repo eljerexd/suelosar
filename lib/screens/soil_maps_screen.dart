@@ -9,6 +9,7 @@ import '../models/pdf_soil_sheet_favorite.dart';
 import '../models/soil_card.dart';
 import '../models/soil_map.dart';
 import '../repositories/santa_fe_series_repository.dart';
+import '../repositories/cordoba_series_repository.dart';
 import '../repositories/soil_map_repository.dart';
 import '../services/pdf_soil_sheet_favorites_service.dart';
 import '../utils/app_motion.dart';
@@ -18,7 +19,12 @@ import '../widgets/scrollable_empty_state.dart';
 import 'pdf_viewer_screen.dart';
 
 class SoilMapsScreen extends StatefulWidget {
-  const SoilMapsScreen({this.soilMapsLoader, this.santaFeCardsLoader, super.key});
+  const SoilMapsScreen({
+    this.soilMapsLoader,
+    this.santaFeCardsLoader,
+    this.cordobaCardsLoader,
+    super.key,
+  });
 
   /// Buenos Aires' catalog loader. Optional and additive — unchanged since
   /// before Santa Fe Fase 7, so existing test fixtures keep working as-is.
@@ -28,6 +34,7 @@ class SoilMapsScreen extends StatefulWidget {
   /// carries its own page range, unlike [soilMapsLoader]'s [SoilMap]s).
   /// Defaults to the real [SantaFeSeriesRepository]-backed catalog.
   final Future<List<SoilCard>> Function()? santaFeCardsLoader;
+  final Future<List<SoilCard>> Function()? cordobaCardsLoader;
 
   @override
   State<SoilMapsScreen> createState() => _SoilMapsScreenState();
@@ -42,11 +49,11 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
   late final Future<List<SoilCard>> _soilCardsFuture;
   List<PdfSoilSheetFavorite> _favorites = const [];
   Set<String> _favoritePdfIdentifiers = const {};
+  Future<void> _favoriteToggleQueue = Future<void>.value();
+  final Map<String, double> _favoriteAnimationStartValues = {};
   final Map<SoilCard, String> _searchNames = Map.identity();
   final ValueNotifier<String> _searchQuery = ValueNotifier('');
-  final ValueNotifier<SoilCardProvince?> _provinceFilter = ValueNotifier(
-    null,
-  );
+  final ValueNotifier<SoilCardProvince?> _provinceFilter = ValueNotifier(null);
 
   @override
   void initState() {
@@ -58,14 +65,19 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
   Future<List<SoilCard>> _loadCatalog() async {
     final buenosAiresCards =
         (widget.soilMapsLoader ?? _soilMapRepository.loadSoilMaps)().then(
-      (soilMaps) => [for (final soilMap in soilMaps) SoilCard.buenosAires(soilMap)],
-    );
+          (soilMaps) => [
+            for (final soilMap in soilMaps) SoilCard.buenosAires(soilMap),
+          ],
+        );
     final santaFeCards = (widget.santaFeCardsLoader ?? _loadSantaFeCards)();
-    final results = await Future.wait([buenosAiresCards, santaFeCards]);
-    final cards = [...results[0], ...results[1]]
-      ..sort(
-        (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
-      );
+    final cordobaCards = (widget.cordobaCardsLoader ?? _loadCordobaCards)();
+    final results = await Future.wait([
+      buenosAiresCards,
+      santaFeCards,
+      cordobaCards,
+    ]);
+    final cards = [...results[0], ...results[1], ...results[2]]
+      ..sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
     for (final card in cards) {
       _searchNames[card] = _normalizeForSearch(card.title);
     }
@@ -78,6 +90,15 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
     final pdfAsset = await repository.pdfAsset;
     return [
       for (final entry in entries) SoilCard.santaFe(entry, pdfAsset: pdfAsset),
+    ];
+  }
+
+  static Future<List<SoilCard>> _loadCordobaCards() async {
+    final repository = CordobaSeriesRepository();
+    final entries = await repository.loadAllSeries();
+    final pdfAsset = await repository.pdfAsset;
+    return [
+      for (final entry in entries) SoilCard.cordoba(entry, pdfAsset: pdfAsset),
     ];
   }
 
@@ -148,8 +169,7 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                     builder: (context, provinceFilter, _) =>
                         _ProvinceFilterSection(
                           selected: provinceFilter,
-                          onChanged: (value) =>
-                              _provinceFilter.value = value,
+                          onChanged: (value) => _provinceFilter.value = value,
                         ),
                   ),
                   Expanded(
@@ -160,107 +180,117 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
                             valueListenable: _provinceFilter,
                             builder: (context, provinceFilter, _) =>
                                 FutureBuilder<List<SoilCard>>(
-                            future: _soilCardsFuture,
-                            builder: (context, snapshot) {
-                              if (snapshot.connectionState !=
-                                  ConnectionState.done) {
-                                return const Center(
-                                  child: CircularProgressIndicator(),
-                                );
-                              }
+                                  future: _soilCardsFuture,
+                                  builder: (context, snapshot) {
+                                    if (snapshot.connectionState !=
+                                        ConnectionState.done) {
+                                      return const Center(
+                                        child: CircularProgressIndicator(),
+                                      );
+                                    }
 
-                              if (snapshot.hasError) {
-                                return const _SoilMapLoadError();
-                              }
+                                    if (snapshot.hasError) {
+                                      return const _SoilMapLoadError();
+                                    }
 
-                              final soilMaps = _filterSoilCards(
-                                snapshot.data ?? const [],
-                                query,
-                                provinceFilter,
-                              );
-                              if (soilMaps.isEmpty) {
-                                return const _EmptySoilMapSearch();
-                              }
+                                    final soilMaps = _filterSoilCards(
+                                      snapshot.data ?? const [],
+                                      query,
+                                      provinceFilter,
+                                    );
+                                    if (soilMaps.isEmpty) {
+                                      return const _EmptySoilMapSearch();
+                                    }
 
-                              final favoriteMaps = soilMaps
-                                  .where(_isFavorite)
-                                  .toList(growable: false);
-                              // A favorited carta only shows in "Favoritos"
-                              // — it's excluded here so it isn't listed
-                              // twice on screen. This is purely a display
-                              // filter: favoriteIdentifier already
-                              // distinguishes cards by province (so a BA
-                              // and an SF carta sharing a name never
-                              // collide here), and nothing about
-                              // persistence, IDs, or province logic
-                              // changes.
-                              final nonFavoriteMaps = soilMaps
-                                  .where((soilMap) => !_isFavorite(soilMap))
-                                  .toList(growable: false);
-                              return CustomScrollView(
-                                slivers: [
-                                  const SliverToBoxAdapter(
-                                    child: SizedBox(height: 4),
-                                  ),
-                                  SliverToBoxAdapter(
-                                    child: _SectionTitle(
-                                      icon: AppIcons.star,
-                                      title:
-                                          'Favoritos (${favoriteMaps.length})',
-                                    ),
-                                  ),
-                                  const SliverToBoxAdapter(
-                                    child: SizedBox(height: 12),
-                                  ),
-                                  if (favoriteMaps.isEmpty)
-                                    const SliverToBoxAdapter(
-                                      child: _EmptyFavorites(),
-                                    )
-                                  else
-                                    SliverList.separated(
-                                      addAutomaticKeepAlives: false,
-                                      itemCount: favoriteMaps.length,
-                                      itemBuilder: (context, index) =>
-                                          _buildSoilMapItem(
-                                            context,
-                                            favoriteMaps[index],
-                                            colorScheme,
-                                          ),
-                                      separatorBuilder: (context, index) =>
-                                          const SizedBox(height: 10),
-                                    ),
-                                  const SliverToBoxAdapter(
-                                    child: SizedBox(height: 32),
-                                  ),
-                                  const SliverToBoxAdapter(
-                                    child: _SectionTitle(
-                                      icon: AppIcons.library,
-                                      title: 'Todas las cartas',
-                                    ),
-                                  ),
-                                  const SliverToBoxAdapter(
-                                    child: SizedBox(height: 12),
-                                  ),
-                                  SliverList.separated(
-                                    addAutomaticKeepAlives: false,
-                                    itemCount: nonFavoriteMaps.length,
-                                    itemBuilder: (context, index) =>
-                                        _buildSoilMapItem(
-                                          context,
-                                          nonFavoriteMaps[index],
-                                          colorScheme,
+                                    final favoriteMaps = soilMaps
+                                        .where(_isFavorite)
+                                        .toList(growable: false);
+                                    // A favorited carta only shows in "Favoritos"
+                                    // — it's excluded here so it isn't listed
+                                    // twice on screen. This is purely a display
+                                    // filter: favoriteIdentifier already
+                                    // distinguishes cards by province (so a BA
+                                    // and an SF carta sharing a name never
+                                    // collide here), and nothing about
+                                    // persistence, IDs, or province logic
+                                    // changes.
+                                    final nonFavoriteMaps = soilMaps
+                                        .where(
+                                          (soilMap) => !_isFavorite(soilMap),
+                                        )
+                                        .toList(growable: false);
+                                    return CustomScrollView(
+                                      slivers: [
+                                        const SliverToBoxAdapter(
+                                          child: SizedBox(height: 4),
                                         ),
-                                    separatorBuilder: (context, index) =>
-                                        const SizedBox(height: 10),
-                                  ),
-                                  const SliverToBoxAdapter(
-                                    child: _SoilMapListBottomClearance(),
-                                  ),
-                                ],
-                              );
-                            },
+                                        SliverToBoxAdapter(
+                                          child: _SectionTitle(
+                                            icon: AppIcons.star,
+                                            title:
+                                                'Favoritos (${favoriteMaps.length})',
+                                          ),
+                                        ),
+                                        const SliverToBoxAdapter(
+                                          child: SizedBox(height: 12),
+                                        ),
+                                        if (favoriteMaps.isEmpty)
+                                          const SliverToBoxAdapter(
+                                            child: _EmptyFavorites(),
+                                          )
+                                        else
+                                          SliverList.separated(
+                                            addAutomaticKeepAlives: false,
+                                            itemCount: favoriteMaps.length,
+                                            itemBuilder: (context, index) {
+                                              final soilMap =
+                                                  favoriteMaps[index];
+                                              return _buildSoilMapItem(
+                                                context,
+                                                soilMap,
+                                                colorScheme,
+                                              );
+                                            },
+                                            separatorBuilder: (
+                                              context,
+                                              index,
+                                            ) => const SizedBox(height: 10),
+                                          ),
+                                        const SliverToBoxAdapter(
+                                          child: SizedBox(height: 32),
+                                        ),
+                                        const SliverToBoxAdapter(
+                                          child: _SectionTitle(
+                                            icon: AppIcons.library,
+                                            title: 'Todas las cartas',
+                                          ),
+                                        ),
+                                        const SliverToBoxAdapter(
+                                          child: SizedBox(height: 12),
+                                        ),
+                                        SliverList.separated(
+                                          addAutomaticKeepAlives: false,
+                                          itemCount: nonFavoriteMaps.length,
+                                          itemBuilder: (context, index) {
+                                            final soilMap =
+                                                nonFavoriteMaps[index];
+                                            return _buildSoilMapItem(
+                                              context,
+                                              soilMap,
+                                              colorScheme,
+                                            );
+                                          },
+                                          separatorBuilder: (context, index) =>
+                                              const SizedBox(height: 10),
+                                        ),
+                                        const SliverToBoxAdapter(
+                                          child: _SoilMapListBottomClearance(),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                ),
                           ),
-                        ),
                     ),
                   ),
                 ],
@@ -278,6 +308,12 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
     ColorScheme colorScheme,
   ) {
     final isFavorite = _isFavorite(soilCard);
+    final favoriteIdentifier = soilCard.favoriteIdentifier.trim();
+    final favoriteAnimationDuration = AppMotion.duration(
+      context,
+      const Duration(milliseconds: 220),
+      reduced: const Duration(milliseconds: 60),
+    );
     return Material(
       key: ValueKey('soil-card-${soilCard.favoriteIdentifier}'),
       color: colorScheme.surface,
@@ -307,9 +343,8 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
           soilCard.title,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+          style: Theme.of(context).textTheme.titleMedium
+              ?.copyWith(fontWeight: FontWeight.w600),
         ),
         subtitle: Align(
           alignment: AlignmentDirectional.centerStart,
@@ -322,35 +357,42 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
               tooltip: isFavorite
                   ? 'Quitar de favoritos'
                   : 'Agregar a favoritos',
-              onPressed: () => _toggleFavorite(soilCard),
-              icon: AnimatedSwitcher(
-                duration: AppMotion.duration(
-                  context,
-                  const Duration(milliseconds: 220),
-                  reduced: const Duration(milliseconds: 60),
+              onPressed: () => _queueFavoriteToggle(soilCard),
+              icon: TweenAnimationBuilder<double>(
+                tween: Tween<double>(
+                  begin:
+                      _favoriteAnimationStartValues[favoriteIdentifier] ??
+                      (isFavorite ? 1 : 0),
+                  end: isFavorite ? 1 : 0,
                 ),
-                switchInCurve: Curves.easeOutBack,
-                switchOutCurve: Curves.easeIn,
-                transitionBuilder: (child, animation) =>
-                    ScaleTransition(scale: animation, child: child),
-                // Favorited gets a soft circular backing (same soft-green
-                // token as the leading PDF icon) so the active state reads
-                // at a glance, not just from the icon's own fill/color.
-                child: Container(
-                  key: ValueKey(isFavorite),
+                duration: favoriteAnimationDuration,
+                curve: Curves.easeInOut,
+                onEnd: () {
+                  if (_favoriteAnimationStartValues.containsKey(
+                        favoriteIdentifier,
+                      ) &&
+                      _isFavorite(soilCard) == isFavorite) {
+                    _favoriteAnimationStartValues.remove(favoriteIdentifier);
+                  }
+                },
+                builder: (context, fill, _) => Container(
                   padding: const EdgeInsets.all(4),
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: isFavorite
-                        ? colorScheme.primaryContainer.withValues(alpha: 0.55)
-                        : Colors.transparent,
+                    color: Color.lerp(
+                      Colors.transparent,
+                      colorScheme.primaryContainer.withValues(alpha: 0.55),
+                      fill,
+                    ),
                   ),
                   child: Icon(
                     AppIcons.star,
-                    color: isFavorite
-                        ? colorScheme.primary
-                        : colorScheme.onSurfaceVariant,
-                    fill: isFavorite ? 1 : 0,
+                    color: Color.lerp(
+                      colorScheme.onSurfaceVariant,
+                      colorScheme.primary,
+                      fill,
+                    ),
+                    fill: fill,
                   ),
                 ),
               ),
@@ -370,6 +412,20 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
     return _favoritePdfIdentifiers.contains(soilCard.favoriteIdentifier.trim());
   }
 
+  void _queueFavoriteToggle(SoilCard soilCard) {
+    _favoriteToggleQueue = _favoriteToggleQueue
+        .then((_) => _toggleFavorite(soilCard))
+        .catchError((Object error, StackTrace stackTrace) {
+          FlutterError.reportError(
+            FlutterErrorDetails(
+              exception: error,
+              stack: stackTrace,
+              library: 'soil map favorites',
+            ),
+          );
+        });
+  }
+
   Future<void> _loadFavorites() async {
     final favorites = await _favoritesService.load();
     if (mounted) {
@@ -382,6 +438,8 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
 
   Future<void> _toggleFavorite(SoilCard soilCard) async {
     final wasFavorite = _isFavorite(soilCard);
+    _favoriteAnimationStartValues[soilCard.favoriteIdentifier.trim()] =
+        wasFavorite ? 1 : 0;
     final updated = await _favoritesService.toggle(
       _favorites,
       title: soilCard.title,
@@ -411,16 +469,18 @@ class _SoilMapsScreenState extends State<SoilMapsScreen> {
   ) {
     final query = _normalizeForSearch(searchQuery.trim());
 
-    return soilCards.where((soilCard) {
-      if (provinceFilter != null && soilCard.province != provinceFilter) {
-        return false;
-      }
-      if (query.isEmpty) {
-        return true;
-      }
-      return (_searchNames[soilCard] ?? _normalizeForSearch(soilCard.title))
-          .contains(query);
-    }).toList(growable: false);
+    return soilCards
+        .where((soilCard) {
+          if (provinceFilter != null && soilCard.province != provinceFilter) {
+            return false;
+          }
+          if (query.isEmpty) {
+            return true;
+          }
+          return (_searchNames[soilCard] ?? _normalizeForSearch(soilCard.title))
+              .contains(query);
+        })
+        .toList(growable: false);
   }
 
   /// Lowercases and strips accents so searching "Rio Salado" (no tilde)
@@ -493,9 +553,8 @@ class _SectionTitle extends StatelessWidget {
               height: 32,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: Theme.of(
-                  context,
-                ).colorScheme.primaryContainer.withValues(alpha: 0.55),
+                color: Theme.of(context).colorScheme.primaryContainer
+                    .withValues(alpha: 0.55),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(
@@ -511,9 +570,8 @@ class _SectionTitle extends StatelessWidget {
               title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
           ),
         ],
@@ -544,6 +602,8 @@ String _provinceDisplayName(SoilCardProvince province) {
       return 'Buenos Aires';
     case SoilCardProvince.santaFe:
       return 'Santa Fe';
+    case SoilCardProvince.cordoba:
+      return 'Córdoba';
   }
 }
 
@@ -559,6 +619,8 @@ Color _provinceAccentColor(SoilCardProvince province) {
       return const Color(0xFF4A6FA5);
     case SoilCardProvince.santaFe:
       return const Color(0xFF9C6B3F);
+    case SoilCardProvince.cordoba:
+      return const Color(0xFF765D83);
   }
 }
 
@@ -585,11 +647,8 @@ class _ProvinceTag extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         softWrap: false,
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: color,
-          fontWeight: FontWeight.w600,
-          height: 1.1,
-        ),
+        style: Theme.of(context).textTheme.labelSmall
+            ?.copyWith(color: color, fontWeight: FontWeight.w600, height: 1.1),
       ),
     );
   }
@@ -603,7 +662,10 @@ class _ProvinceTag extends StatelessWidget {
 /// search bar, and their gaps are accounted for). Everywhere else — phone
 /// portrait, tablet, desktop — the filter renders normally.
 class _ProvinceFilterSection extends StatelessWidget {
-  const _ProvinceFilterSection({required this.selected, required this.onChanged});
+  const _ProvinceFilterSection({
+    required this.selected,
+    required this.onChanged,
+  });
 
   final SoilCardProvince? selected;
   final ValueChanged<SoilCardProvince?> onChanged;
@@ -750,9 +812,8 @@ class _EmptyFavorites extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
         child: Text(
           'Todavía no hay cartas de suelo favoritas.',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
+          style: Theme.of(context).textTheme.bodyMedium
+              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
         ),
       ),
     );
@@ -816,9 +877,8 @@ class _SoilMapLoadError extends StatelessWidget {
             Text(
               'Volvé a intentarlo en unos instantes.',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
+              style: Theme.of(context).textTheme.bodyMedium
+                  ?.copyWith(color: colorScheme.onSurfaceVariant),
             ),
           ],
         ),

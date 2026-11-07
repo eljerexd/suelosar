@@ -4,6 +4,8 @@ import 'package:latlong2/latlong.dart';
 
 import '../gis_feature.dart';
 import '../gis_layer.dart';
+import '../native_map_source.dart';
+import '../../models/saved_measurement.dart';
 import 'soil_map_engine.dart';
 
 /// [SoilMapEngine] implementation backed by `flutter_map`.
@@ -26,6 +28,15 @@ class FlutterMapEngine implements SoilMapEngine {
   FlutterMapEngine() : _controller = MapController();
 
   final MapController _controller;
+  final ValueNotifier<int> _cameraRevision = ValueNotifier(0);
+  double _minZoom = 0;
+  double _maxZoom = 24;
+
+  @override
+  Listenable get cameraChanges => _cameraRevision;
+
+  @override
+  bool get rendersSoilPolygonsInternally => false;
 
   /// Escape hatch for code that still needs the raw `flutter_map`
   /// [MapController]/[MapCamera] — today, only the soil-polygon tile
@@ -43,11 +54,15 @@ class FlutterMapEngine implements SoilMapEngine {
     required double maxZoom,
     required Color backgroundColor,
     required bool gesturesEnabled,
+    required bool annotationGesturesEnabled,
     required SoilMapReadyCallback onReady,
     required SoilMapPositionChangedCallback onPositionChanged,
     SoilMapTapCallback? onTap,
     required List<Widget> children,
+    List<Widget> mapFrameChildren = const [],
   }) {
+    _minZoom = minZoom;
+    _maxZoom = maxZoom;
     return FlutterMap(
       key: key,
       mapController: _controller,
@@ -67,6 +82,7 @@ class FlutterMapEngine implements SoilMapEngine {
         ),
         onMapReady: onReady,
         onPositionChanged: (camera, hasGesture) {
+          _cameraRevision.value++;
           onPositionChanged(_toState(camera), hasGesture: hasGesture);
         },
         onMapEvent: (event) {
@@ -75,6 +91,7 @@ class FlutterMapEngine implements SoilMapEngine {
           // only `onMapEvent`. Forwarding it through the same callback keeps
           // viewport-dependent overlays (compass) in sync during rotation,
           // exactly as the screen did before this abstraction existed.
+          _cameraRevision.value++;
           onPositionChanged(
             _toState(event.camera),
             hasGesture: event.source != MapEventSource.mapController,
@@ -91,7 +108,7 @@ class FlutterMapEngine implements SoilMapEngine {
                 );
               },
       ),
-      children: children,
+      children: [...children, ...mapFrameChildren],
     );
   }
 
@@ -100,6 +117,15 @@ class FlutterMapEngine implements SoilMapEngine {
 
   @override
   void move(LatLng center, double zoom) => _controller.move(center, zoom);
+
+  @override
+  void zoomAtScreenPoint(Offset screenPoint, double scrollDeltaY) {
+    if (scrollDeltaY == 0 || !scrollDeltaY.isFinite) return;
+    final camera = _controller.camera;
+    final zoom = (camera.zoom - scrollDeltaY * 0.005).clamp(_minZoom, _maxZoom);
+    if (zoom == camera.zoom) return;
+    _controller.move(camera.focusedZoomCenter(screenPoint, zoom), zoom);
+  }
 
   @override
   void rotate(double degrees) => _controller.rotate(degrees);
@@ -133,6 +159,7 @@ class FlutterMapEngine implements SoilMapEngine {
     // MapController does not require explicit disposal in flutter_map's
     // current API — mirrors the screen's previous behavior, which never
     // disposed it either.
+    _cameraRevision.dispose();
   }
 
   @override
@@ -141,13 +168,14 @@ class FlutterMapEngine implements SoilMapEngine {
     required String layerName,
     required Color normalFillColor,
     required Color selectedFillColor,
+    required List<GisNativeMapSource> sources,
   }) async {
     // No-op: GisMapScreen renders soil polygons via its own tile pipeline
     // and `children` widgets, unchanged since before this engine existed.
   }
 
   @override
-  void setSelectedSoilFeature(String? featureId) {
+  void setSelectedSoilFeature(String? featureId, {GisFeature? feature}) {
     // No-op: selection highlighting is driven directly by GisMapScreen's
     // `children` widgets.
   }
@@ -167,7 +195,7 @@ class FlutterMapEngine implements SoilMapEngine {
   }
 
   @override
-  Future<void> loadReferenceBasemap() async {
+  Future<void> loadReferenceBasemap({required List<String> assetPaths}) async {
     // No-op: rendered via OfflineReferenceMapLayer as a `children` widget.
   }
 
@@ -189,25 +217,70 @@ class FlutterMapEngine implements SoilMapEngine {
   }
 
   @override
+  void setSavedMeasurementGeometry({
+    required List<SavedMeasurement> measurements,
+    String? highlightedId,
+    String? hoveredId,
+    ValueChanged<String?>? onHoverChanged,
+  }) {
+    // No-op: rendered via a `children` _SavedMeasurementsLayer widget.
+  }
+
+  @override
   void setMeasurementGeometry({
     required List<LatLng> distancePoints,
     required List<LatLng> areaPoints,
     required Color color,
-    required void Function(int index, Offset screenPosition) onVertexTap,
-    required void Function(int index) onVertexDragStart,
-    required void Function(int index, LatLng newPoint) onVertexDragUpdate,
-    required void Function(int index) onVertexDragEnd,
-    int? draggedVertexIndex,
+    List<SoilMapMeasurementMarker> markers = const [],
   }) {
     // No-op: rendered via a `children` _MeasurementLayer widget, whose own
     // _AreaVertexHandle gesture handling is unchanged by this engine layer.
   }
 
+  @override
+  void setProvinceBoundaryHighlight({
+    required String coverageId,
+    required List<List<LatLng>>? rings,
+    required Color fillColor,
+    required Color borderColor,
+  }) {
+    // No-op: FlutterMapEngine draws the same rings in its screen overlay.
+  }
+
   SoilMapCameraState _toState(MapCamera camera) {
+    SoilMapVisibleBounds? visibleBounds;
+    final size = camera.nonRotatedSize;
+    final center = camera.center;
+    if (size.width.isFinite &&
+        size.height.isFinite &&
+        size.width > 0 &&
+        size.height > 0 &&
+        center.latitude.isFinite &&
+        center.longitude.isFinite &&
+        camera.zoom.isFinite &&
+        camera.rotation.isFinite) {
+      try {
+        final bounds = camera.visibleBounds;
+        if (bounds.west.isFinite &&
+            bounds.south.isFinite &&
+            bounds.east.isFinite &&
+            bounds.north.isFinite) {
+          visibleBounds = SoilMapVisibleBounds(
+            west: bounds.west,
+            south: bounds.south,
+            east: bounds.east,
+            north: bounds.north,
+          );
+        }
+      } on AssertionError {
+        // flutter_map can expose an invalid camera for the first layout frame.
+      }
+    }
     return SoilMapCameraState(
-      center: camera.center,
+      center: center,
       zoom: camera.zoom,
       rotation: camera.rotation,
+      visibleBounds: visibleBounds,
     );
   }
 }

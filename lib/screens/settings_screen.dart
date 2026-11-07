@@ -238,9 +238,8 @@ class _AboutSectionTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: Theme.of(
-        context,
-      ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+      style: Theme.of(context).textTheme.titleMedium
+          ?.copyWith(fontWeight: FontWeight.w700),
     );
   }
 }
@@ -267,9 +266,8 @@ class _AboutInfoRow extends StatelessWidget {
           child: Text(
             value,
             textAlign: TextAlign.end,
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+            style: Theme.of(context).textTheme.bodyMedium
+                ?.copyWith(fontWeight: FontWeight.w600),
           ),
         ),
       ],
@@ -534,9 +532,7 @@ Future<List<File>> _mapsCacheFiles() async {
       .listSync()
       .whereType<File>()
       .where(
-        (file) => _mapsCacheFilePattern.hasMatch(
-          file.uri.pathSegments.last,
-        ),
+        (file) => _mapsCacheFilePattern.hasMatch(file.uri.pathSegments.last),
       )
       .toList();
 }
@@ -545,10 +541,7 @@ Future<List<File>> _mapsCacheFiles() async {
 /// content hash, e.g. `soil_polygons` or `santa_fe_soil_polygons`.
 String _mapsCacheStem(File file) {
   final name = file.uri.pathSegments.last;
-  final withoutSuffix = name.replaceFirst(
-    RegExp(r'\.pmtiles(\.tmp)?$'),
-    '',
-  );
+  final withoutSuffix = name.replaceFirst(RegExp(r'\.pmtiles(\.tmp)?$'), '');
   final hashStart = withoutSuffix.length - 64;
   return hashStart > 1
       ? withoutSuffix.substring(0, hashStart - 1)
@@ -627,7 +620,8 @@ Future<void> _autoTrimMapsCacheIfNeeded() async {
     }
   }
   final removable =
-      files.where((file) => newestPerStem[_mapsCacheStem(file)] != file)
+      files
+          .where((file) => newestPerStem[_mapsCacheStem(file)] != file)
           .toList()
         ..sort((a, b) => modified[a]!.compareTo(modified[b]!));
 
@@ -685,6 +679,7 @@ String _cartographyProvinceDisplayName(String coverageId) {
   return switch (coverageId) {
     'buenos_aires' => 'Buenos Aires',
     'santa_fe' => 'Santa Fe',
+    'cordoba' => 'Córdoba',
     _ => coverageId,
   };
 }
@@ -764,8 +759,7 @@ class _ProvinceCartographyManagerState
       return switch (delivery.status) {
         PmtilesDeliveryStatus.available => _CartographyStatus.available,
         PmtilesDeliveryStatus.downloading => _CartographyStatus.downloading,
-        PmtilesDeliveryStatus.notInstalled =>
-          _CartographyStatus.notDownloaded,
+        PmtilesDeliveryStatus.notInstalled => _CartographyStatus.notDownloaded,
         PmtilesDeliveryStatus.error => _CartographyStatus.error,
       };
     }
@@ -1089,8 +1083,7 @@ class _ClearMapsCacheSetting extends StatefulWidget {
   const _ClearMapsCacheSetting();
 
   @override
-  State<_ClearMapsCacheSetting> createState() =>
-      _ClearMapsCacheSettingState();
+  State<_ClearMapsCacheSetting> createState() => _ClearMapsCacheSettingState();
 }
 
 class _ClearMapsCacheSettingState extends State<_ClearMapsCacheSetting> {

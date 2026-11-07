@@ -66,3 +66,4 @@ app.*.map.json
 /tmp/
 /flutter_*.png
 node_modules/
+node_modules

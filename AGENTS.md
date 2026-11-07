@@ -219,6 +219,12 @@ Never mix multiple unrelated changes.
 
 Avoid large refactors.
 
+## Windows MapLibre Debug Workflow
+
+Use the VS Code launch configuration `SuelosAR Alpha - Windows MapLibre (Debug)` for the alpha Windows desktop workflow. It runs `lib/main.dart` in Flutter Debug mode, selects the Windows device, enables `SUelosAR_MAPLIBRE_NATIVE=true`, and loads the local Supabase defines file. Do not replace this with a Release build for ordinary Dart iteration; use F5, Hot Reload, and Hot Restart.
+
+Hot Reload applies Dart changes only where Flutter supports it. Changes to MapLibre native/plugin C++, Rust libraries, CMake configuration, generated plugin registration, or native DLLs require stopping the app and rebuilding/restarting the Windows Debug application. Changes to native dependency versions may require regenerating plugin/build files before relaunch. Keep the official Windows Release build procedure separate from this Debug launch configuration.
+
 Small isolated changes are always preferred.
 
 ---

@@ -1134,10 +1134,7 @@ void main() {
     // measurement) until _finishMeasurement kept
     // distanceMeasurementPoints/areaMeasurementPoints populated
     // unconditionally instead of only for MapLibreEngine.
-    expect(
-      find.byKey(const ValueKey('measurement-distance')),
-      findsNothing,
-    );
+    expect(find.byKey(const ValueKey('measurement-distance')), findsNothing);
     expect(find.byKey(const ValueKey('save-measurement')), findsNothing);
 
     await _selectMapTool(tester, 'Measure Area');
@@ -1873,6 +1870,7 @@ void main() {
   testWidgets('GIS map measures area with undo and clear actions', (
     WidgetTester tester,
   ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
     await tester.pumpWidget(
       MaterialApp(
         home: GisMapScreen(
@@ -1980,6 +1978,7 @@ void main() {
   testWidgets('GIS area measurement validates and edits vertices', (
     WidgetTester tester,
   ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
     await tester.pumpWidget(
       MaterialApp(
         home: GisMapScreen(

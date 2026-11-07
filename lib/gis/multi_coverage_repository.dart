@@ -6,6 +6,7 @@ import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_repository.dart';
 import 'map_coverage.dart';
+import 'native_map_source.dart';
 
 /// Composes several per-province [PmTilesGisRepository] instances behind
 /// the single [GisRepository] interface `GisMapScreen` already talks to —
@@ -21,7 +22,8 @@ import 'map_coverage.dart';
 /// touches the Santa Fe archive (or vice versa) — no wasted PMTiles reads,
 /// no wasted decoding. A tile straddling both extents (Parte 4's "zona
 /// dentro de más de una cobertura") queries both and merges their features.
-class MultiCoverageRepository implements GisRepository {
+class MultiCoverageRepository
+    implements GisRepository, GisNativeMapSourceProvider {
   MultiCoverageRepository({
     required this.coverages,
     required this.defaultCoverageId,
@@ -188,7 +190,11 @@ class MultiCoverageRepository implements GisRepository {
         .toList(growable: false);
 
     if (relevant.isEmpty) {
-      return GisLayer(id: _tileLayerId(coordinates), name: '', features: const []);
+      return GisLayer(
+        id: _tileLayerId(coordinates),
+        name: '',
+        features: const [],
+      );
     }
 
     // Bugfix (aislar fallos entre coberturas): each coverage's fetch is
@@ -263,6 +269,31 @@ class MultiCoverageRepository implements GisRepository {
       name: succeededLayers.first.name,
       features: List<GisFeature>.unmodifiable(features),
     );
+  }
+
+  @override
+  Future<List<GisNativeMapSource>> getNativeMapSources() async {
+    await initialize();
+    final sources = <GisNativeMapSource>[];
+    for (final coverage in coverages) {
+      if (!_availableCoverageIds.contains(coverage.id)) continue;
+      final repository = _repositoryFor(coverage);
+      if (repository is GisNativeMapSourceProvider) {
+        final sourceProvider = repository as GisNativeMapSourceProvider;
+        sources.addAll(
+          (await sourceProvider.getNativeMapSources()).map(
+            (source) => GisNativeMapSource(
+              id: 'soil-${coverage.id.toLowerCase().replaceAll(RegExp(r'[^a-z0-9_-]'), '-')}',
+              coverageId: coverage.id,
+              layerName: source.layerName,
+              archivePath: source.archivePath,
+              defaultCoverage: coverage.id == defaultCoverageId,
+            ),
+          ),
+        );
+      }
+    }
+    return sources;
   }
 
   @override

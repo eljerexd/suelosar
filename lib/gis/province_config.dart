@@ -2,9 +2,22 @@ import 'package:latlong2/latlong.dart';
 
 import '../constants/asset_paths.dart';
 import '../repositories/pdf_series_repository.dart';
+import '../repositories/cordoba_series_repository.dart';
 import '../repositories/santa_fe_series_repository.dart';
 import 'gis_layer.dart';
 import 'series_resolver.dart';
+
+class ProvinceDownloadMetadata {
+  const ProvinceDownloadMetadata({
+    required this.description,
+    required this.coverage,
+    required this.sourceLines,
+  });
+
+  final String description;
+  final String coverage;
+  final List<String> sourceLines;
+}
 
 /// Everything about a province's soil map that genuinely differs from
 /// Buenos Aires — derived from the Fase 4A audit of `GisMapScreen`, not
@@ -22,9 +35,12 @@ class ProvinceConfig {
     required this.defaultArchiveInfo,
     required this.seriesResolver,
     required this.seriesNameResolver,
+    required this.downloadMetadata,
     this.referenceMapAsset,
     this.preloadSeriesNames,
     this.downloadBannerAnchor,
+    this.showPolygonUnitSymbols = true,
+    this.pmtilesDownloadSizeBytes,
   });
 
   final String id;
@@ -71,6 +87,15 @@ class ProvinceConfig {
   /// center or the boundary polygon's centroid.
   final LatLng? downloadBannerAnchor;
 
+  /// Whether the renderer paints each mapping-unit symbol over its polygon.
+  /// Córdoba keeps the official symbol available in feature details but its
+  /// dense unit coverage is not labeled directly on the map.
+  final bool showPolygonUnitSymbols;
+
+  final ProvinceDownloadMetadata downloadMetadata;
+
+  final int? pmtilesDownloadSizeBytes;
+
   static final ProvinceConfig buenosAires = ProvinceConfig(
     id: 'buenos_aires',
     pmtilesAsset: AssetPaths.gisPmTiles,
@@ -90,6 +115,12 @@ class ProvinceConfig {
     // middle of the province, the same reasoning Santa Fe's anchor uses
     // below (Fase 12A: Buenos Aires becomes on-demand too).
     downloadBannerAnchor: const LatLng(-36.2333, -61.1167),
+    downloadMetadata: ProvinceDownloadMetadata(
+      description: 'Cartografía de suelos y polígonos',
+      coverage: 'Cobertura: Provincia de Buenos Aires',
+      sourceLines: const ['Escala de origen: 1:50.000'],
+    ),
+    pmtilesDownloadSizeBytes: 158646380,
   );
 
   /// Center/bounds read directly from the validated PMTiles archive's own
@@ -134,6 +165,45 @@ class ProvinceConfig {
       // download-banner widget itself in Fase 12A, once Buenos Aires needed
       // an equivalent anchor and this stopped being Santa-Fe-only data.
       downloadBannerAnchor: const LatLng(-31.2503, -61.4867),
+      downloadMetadata: ProvinceDownloadMetadata(
+        description: 'Cartografía de suelos y polígonos',
+        coverage: 'Cobertura: Provincia de Santa Fe',
+        sourceLines: const ['Fuente: INTA (GeoJSON)'],
+      ),
+      pmtilesDownloadSizeBytes: 65985455,
+    );
+  }
+
+  static final ProvinceConfig cordoba = _buildCordoba();
+
+  static ProvinceConfig _buildCordoba() {
+    final repository = CordobaSeriesRepository();
+    return ProvinceConfig(
+      id: 'cordoba',
+      pmtilesAsset: AssetPaths.cordobaGisPmTiles,
+      pmtilesVersionAsset: AssetPaths.cordobaGisPmTilesVersion,
+      pmtilesLayerName: AssetPaths.gisLayerName,
+      initialCenter: const LatLng(-32.296419, -62.655029),
+      defaultArchiveInfo: const GisArchiveInfo(
+        minZoom: 4,
+        maxZoom: 14,
+        centerLatitude: -32.296419,
+        centerLongitude: -62.655029,
+      ),
+      referenceMapAsset: AssetPaths.cordobaAgronomicReferenceMap,
+      seriesResolver: CordobaSeriesResolver(repository),
+      seriesNameResolver: const IdentitySeriesNameResolver(),
+      downloadBannerAnchor: const LatLng(-32.4075, -63.2400),
+      downloadMetadata: ProvinceDownloadMetadata(
+        description: 'Cartografía de suelos y polígonos',
+        coverage: 'Cobertura: Provincia de Córdoba',
+        sourceLines: const [
+          'Escalas: 1:50.000 · 1:100.000',
+          'Cobertura residual: 1:500.000',
+        ],
+      ),
+      pmtilesDownloadSizeBytes: 77400595,
+      showPolygonUnitSymbols: false,
     );
   }
 }

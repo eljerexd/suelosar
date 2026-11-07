@@ -29,6 +29,10 @@ class GisRenderMetrics extends ChangeNotifier {
   int maxVisiblePolygonCount = 0;
   int maxVisibleVertexCount = 0;
   Duration totalPaintDuration = Duration.zero;
+  // Live gauges: reset() clears interval counters but keeps the current map state.
+  int visibleTileCount = 0;
+  int prefetchedTileCount = 0;
+  int renderedTileCacheSize = 0;
 
   void recordVisibleGeometry({
     required int polygonCount,
@@ -46,6 +50,19 @@ class GisRenderMetrics extends ChangeNotifier {
     maxVisibleVertexCount = maxVisibleVertexCount < vertexCount
         ? vertexCount
         : maxVisibleVertexCount;
+  }
+
+  void recordTileCacheState({
+    required int visibleTileCount,
+    required int prefetchedTileCount,
+    required int renderedTileCacheSize,
+  }) {
+    if (!enabled) {
+      return;
+    }
+    this.visibleTileCount = visibleTileCount;
+    this.prefetchedTileCount = prefetchedTileCount;
+    this.renderedTileCacheSize = renderedTileCacheSize;
   }
 
   void reset() {
@@ -96,6 +113,9 @@ class GisRenderMetrics extends ChangeNotifier {
       maxVisiblePolygonCount: maxVisiblePolygonCount,
       maxVisibleVertexCount: maxVisibleVertexCount,
       totalPaintDuration: totalPaintDuration,
+      visibleTileCount: visibleTileCount,
+      prefetchedTileCount: prefetchedTileCount,
+      renderedTileCacheSize: renderedTileCacheSize,
     );
   }
 }
@@ -123,6 +143,9 @@ class GisRenderMetricsSnapshot {
     required this.maxVisiblePolygonCount,
     required this.maxVisibleVertexCount,
     required this.totalPaintDuration,
+    required this.visibleTileCount,
+    required this.prefetchedTileCount,
+    required this.renderedTileCacheSize,
   });
 
   final int mapBuildCount;
@@ -146,4 +169,7 @@ class GisRenderMetricsSnapshot {
   final int maxVisiblePolygonCount;
   final int maxVisibleVertexCount;
   final Duration totalPaintDuration;
+  final int visibleTileCount;
+  final int prefetchedTileCount;
+  final int renderedTileCacheSize;
 }

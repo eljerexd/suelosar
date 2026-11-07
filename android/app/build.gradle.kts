@@ -96,7 +96,15 @@ android {
     // are assets-only deferred components (see pubspec.yaml), delivered on
     // demand via Play Feature/Asset Delivery instead of shipping inside the
     // base module.
-    dynamicFeatures += setOf(":santaFePmtiles", ":buenosAiresPmtiles")
+    dynamicFeatures += setOf(
+        ":santaFePmtiles",
+        ":buenosAiresPmtiles",
+        ":cordobaPmtiles",
+    )
+}
+
+dependencies {
+    implementation("com.google.android.play:feature-delivery:2.1.0")
 }
 
 kotlin {

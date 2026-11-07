@@ -1,4 +1,5 @@
 import '../repositories/pdf_series_repository.dart';
+import '../repositories/cordoba_series_repository.dart';
 import '../repositories/santa_fe_series_repository.dart';
 import 'gis_soil_series.dart';
 
@@ -121,7 +122,23 @@ class SantaFeSeriesNameResolver implements SeriesNameResolver {
     final code = SantaFeSeriesRepository.extractSeriesCode(rawSeriesValue);
     if (code == null) return rawSeriesValue;
 
-    return names[SantaFeSeriesRepository.normalizeCode(code)] ??
-        rawSeriesValue;
+    return names[SantaFeSeriesRepository.normalizeCode(code)] ?? rawSeriesValue;
+  }
+}
+
+class CordobaSeriesResolver implements SeriesResolver {
+  CordobaSeriesResolver(this._repository);
+
+  final CordobaSeriesRepository _repository;
+
+  @override
+  Future<SeriesPdfLocation?> resolve(GisSoilSeries series) async {
+    final entry = await _repository.findByName(series.name);
+    if (entry == null) return null;
+    return SeriesPdfLocation(
+      assetPath: await _repository.pdfAsset,
+      startPage: entry.startPage,
+      endPage: entry.endPage,
+    );
   }
 }

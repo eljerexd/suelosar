@@ -47,22 +47,35 @@ import '../widgets/personal_marker_category_icon.dart';
 import '../widgets/responsive_desktop_shell.dart';
 import '../widgets/saved_measurement_overflow_menu.dart';
 import 'engine/flutter_map_engine.dart';
+import 'engine/maplibre_engine.dart';
 import 'engine/soil_map_engine.dart';
 import 'gis_feature.dart';
 import 'gis_layer.dart';
 import 'gis_location_service.dart';
 import 'gis_map_occlusion_observer.dart';
 import 'measurement_math.dart';
+import 'measurement_render_data.dart';
+import 'measurement_render_style.dart';
+import 'measurement_label_anchor.dart';
+import 'measurement_label_placement.dart';
+import 'measurement_label_edge_fade.dart';
+import 'camera_revision_builder.dart';
 import 'offline_reference_map_layer.dart';
 import 'gis_render_metrics.dart';
 import 'gis_repository.dart';
+import 'buenos_aires_feature_metadata_repository.dart';
+import 'native_map_source.dart';
 import 'gis_soil_series.dart';
+import 'cordoba_feature_metadata_repository.dart';
+import 'cordoba_series_percentage_repository.dart';
+import 'gis_soil_taxonomy.dart';
 import 'map_coverage.dart';
 import 'multi_coverage_repository.dart';
 import 'pmtiles_delivery.dart';
 import 'province_config.dart';
 import 'series_resolver.dart';
 import 'widgets/expandable_tools_fab.dart';
+import 'widgets/province_download_map_overlay.dart';
 
 /// Interactive offline viewer for the spatial layers available in SuelosAR.
 class GisMapScreen extends StatefulWidget {
@@ -129,6 +142,9 @@ class _GisMapScreenState extends State<GisMapScreen>
   static const LatLng _buenosAiresCenter = LatLng(-36.5, -60);
   static const double _minimumMapZoom = 7;
   static const double _initialZoom = _minimumMapZoom;
+  static const bool _useMapLibreNative = bool.fromEnvironment(
+    'SUelosAR_MAPLIBRE_NATIVE',
+  );
 
   /// Fixed zoom used only when this screen opens already targeting a saved
   /// personal marker (via [GisMapScreen.focusPersonalMarkerId], e.g. from
@@ -156,6 +172,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   );
 
   late final SoilMapEngine _mapEngine;
+  final Stopwatch _mapInitializationClock = Stopwatch()..start();
   final GlobalKey _mapKey = GlobalKey();
 
   late final GisRepository _repository;
@@ -167,6 +184,11 @@ class _GisMapScreenState extends State<GisMapScreen>
   final Map<String, VoidCallback> _onDemandDeliveryListeners = {};
   late final GisLocationService _locationService;
   late final PdfSeriesRepository _pdfSeriesRepository;
+  late final BuenosAiresFeatureMetadataRepository
+  _buenosAiresFeatureMetadataRepository;
+  late final CordobaFeatureMetadataRepository _cordobaFeatureMetadataRepository;
+  late final CordobaSeriesPercentageRepository
+  _cordobaSeriesPercentageRepository;
   late final List<MapCoverage> _coverages;
   late final MapCoverage _defaultCoverage;
   late final SeriesResolver _seriesResolver;
@@ -241,6 +263,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   final List<LatLng> _areaMeasurementPoints = <LatLng>[];
   final List<SavedMeasurement> _savedMeasurements = <SavedMeasurement>[];
   String? _highlightedSavedMeasurementId;
+  String? _hoveredSavedMeasurementId;
   String? _activeSavedMeasurementId;
   String? _savedMeasurementGeometrySignature;
   String? _savedMeasurementColorId;
@@ -330,8 +353,14 @@ class _GisMapScreenState extends State<GisMapScreen>
   @override
   void initState() {
     super.initState();
+    _buenosAiresFeatureMetadataRepository =
+        BuenosAiresFeatureMetadataRepository();
+    _cordobaFeatureMetadataRepository = CordobaFeatureMetadataRepository();
+    _cordobaSeriesPercentageRepository = CordobaSeriesPercentageRepository();
     unawaited(AnalyticsService.instance.logMapOpened());
-    _mapEngine = widget.engine ?? FlutterMapEngine();
+    _mapEngine =
+        widget.engine ??
+        (_useMapLibreNative ? MapLibreEngine() : FlutterMapEngine());
     _ownsRenderMetrics = widget.renderMetrics == null;
     _renderMetrics = widget.renderMetrics ?? GisRenderMetrics.disabled();
     _desktopWindowService =
@@ -519,6 +548,17 @@ class _GisMapScreenState extends State<GisMapScreen>
       icon: AppIcons.information,
       text: _buildDownloadLaterHintSpan(provinceName, recognizer),
     );
+  }
+
+  Future<void> _dismissProvinceNotice(
+    String coverageId,
+    PmtilesDeliveryStatus status,
+  ) async {
+    final previousStatus = await _ProvinceNoticeDismissal.read(coverageId);
+    await _ProvinceNoticeDismissal.write(coverageId, status.name);
+    if (previousStatus == null && mounted) {
+      _showDownloadLaterHint(_provinceDisplayName(coverageId));
+    }
   }
 
   void _setTransientMapHintLinkPressed(String provinceName, bool pressed) {
@@ -712,9 +752,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                                 viewOnClose: _handleSearchViewClose,
                                 viewHintText:
                                     'Buscar localidad, unidad o serie...',
-                                viewBackgroundColor: Theme.of(
-                                  context,
-                                ).colorScheme.surfaceContainerLow,
+                                viewBackgroundColor: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerLow,
                                 viewSurfaceTintColor: Colors.transparent,
                                 viewElevation: 8,
                                 viewShape: RoundedRectangleBorder(
@@ -738,9 +778,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                                     .textTheme
                                     .bodyLarge
                                     ?.copyWith(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onSurfaceVariant,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                     ),
                                 dividerColor: Theme.of(context)
                                     .colorScheme
@@ -819,15 +859,13 @@ class _GisMapScreenState extends State<GisMapScreen>
                 children: [
                   Text(
                     'Mapa de suelos',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
                   ),
                   Text(
                     'Provincia de Buenos Aires',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
+                    style: Theme.of(context).textTheme.labelMedium
+                        ?.copyWith(color: colorScheme.onSurfaceVariant),
                   ),
                 ],
               ),
@@ -1226,9 +1264,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                     Text(
                       portraitMobile ? 'Mapa' : 'Mapa de suelos',
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                      style: Theme.of(context).textTheme.titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(width: 8),
                   ],
@@ -1379,9 +1416,39 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   Future<void> _initializeArchive() async {
     if (_disableGisTilePipelineForDiagnostic) return;
+    if (kProfileMode) debugPrint('GIS_LABEL_TIMING map_screen_created_ms=0');
     unawaited(_preloadSeriesNamesIfNeeded());
+
     try {
+      // Reference labels and linework are bundled map data, independent of
+      // the province PMTiles delivered on demand. Load them before opening
+      // any soil archive so localities are present even when none is installed.
+      await _mapEngine.loadReferenceBasemap(
+        assetPaths: _referenceMapAssetPaths,
+      );
+      if (kProfileMode) {
+        debugPrint(
+          'GIS_LABEL_TIMING reference_sources_ready_from_screen_ms=${_mapInitializationClock.elapsedMilliseconds}',
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      _updateOverlay(
+        isLoading: false,
+        error: 'No se pudo cargar la información geográfica.',
+      );
+    }
+
+    if (!mounted) return;
+    try {
+      final archiveClock = Stopwatch()..start();
       final archiveInfo = await _repository.initialize();
+      archiveClock.stop();
+      if (kProfileMode) {
+        debugPrint(
+          'GIS_LABEL_TIMING archive_initialize_ms=${archiveClock.elapsedMilliseconds} screen_elapsed_ms=${_mapInitializationClock.elapsedMilliseconds}',
+        );
+      }
       if (!mounted) {
         return;
       }
@@ -1391,28 +1458,31 @@ class _GisMapScreenState extends State<GisMapScreen>
       });
 
       if (_isMapReady) {
-        unawaited(
-          _loadVisibleTiles(
-            (_mapEngine as FlutterMapEngine).controller.camera,
-            archiveInfo,
-          ),
-        );
+        unawaited(_loadVisibleTiles(_mapEngine.camera, archiveInfo));
       }
 
       // No-op for FlutterMapEngine (its polygons keep rendering through the
       // existing tile pipeline above), kept because it is part of the
       // [SoilMapEngine] contract for engines that render polygons natively.
       final colorScheme = Theme.of(context).colorScheme;
+      final nativeSources = _repository is GisNativeMapSourceProvider
+          ? await (_repository as GisNativeMapSourceProvider)
+                .getNativeMapSources()
+          : const <GisNativeMapSource>[];
+      final soilLayerClock = Stopwatch()..start();
       await _mapEngine.loadSoilPolygonsLayer(
         archiveInfo: archiveInfo,
         layerName: _defaultCoverage.config.pmtilesLayerName,
         normalFillColor: colorScheme.primary,
         selectedFillColor: colorScheme.tertiary,
+        sources: nativeSources,
       );
-      if (!mounted) return;
-      await _mapEngine.loadReferenceBasemap();
-      if (!mounted) return;
-      setState(() {});
+      soilLayerClock.stop();
+      if (kProfileMode) {
+        debugPrint(
+          'GIS_LABEL_TIMING soil_layer_ready_ms=${soilLayerClock.elapsedMilliseconds} screen_elapsed_ms=${_mapInitializationClock.elapsedMilliseconds}',
+        );
+      }
     } catch (_) {
       if (!mounted) {
         return;
@@ -1479,20 +1549,97 @@ class _GisMapScreenState extends State<GisMapScreen>
   /// Called from `_buildMap` on every rebuild. Kept because it is part of
   /// the [SoilMapEngine] contract for engines that render measurements
   /// natively rather than as layer widgets.
-  void _pushMeasurementGeometryToEngine() {
+  void _pushMeasurementGeometryToEngine({bool enabled = true}) {
     final renderedMeasurementMode =
         _measurementMode ?? _retainedMeasurementMode;
     final showsMeasurement =
-        renderedMeasurementMode != null && _hasMeasurementPoints;
+        enabled && renderedMeasurementMode != null && _hasMeasurementPoints;
+    final points = renderedMeasurementMode == _MeasurementMode.area
+        ? _areaMeasurementPoints
+        : _distanceMeasurementPoints;
+    final markers = <SoilMapMeasurementMarker>[];
+    if (enabled && _measurementMode != null && showsMeasurement) {
+      final colorScheme = Theme.of(context).colorScheme;
+      for (var index = 0; index < points.length; index++) {
+        final point = points[index];
+        final isFirst = index == 0;
+        final isDragged = _draggedAreaVertexIndex == index;
+        final useFlutterOverlay =
+            isDragged && defaultTargetPlatform != TargetPlatform.android;
+        markers.add(
+          SoilMapMeasurementMarker(
+            point: point,
+            size: Size.square(isDragged ? 44 : (isFirst ? 38 : 30)),
+            label: '${index + 1}',
+            radius: isDragged ? 22 : (isFirst ? 19 : 15),
+            fillColor: isDragged ? colorScheme.error : _measurementColor.color,
+            textColor: isDragged
+                ? colorScheme.onError
+                : _measurementColor.onColor,
+            strokeColor: isDragged ? colorScheme.onError : colorScheme.surface,
+            strokeWidth: isDragged ? 4 : 3,
+            useFlutterOverlay: useFlutterOverlay,
+            child: _AreaVertexHandle(
+              key: ValueKey('native-measurement-vertex-$index'),
+              label: '${index + 1}',
+              isFirst: isFirst,
+              isDragged: isDragged,
+              colorScheme: colorScheme,
+              measurementColor: _measurementColor.color,
+              measurementOnColor: _measurementColor.onColor,
+              desktopInteraction: isSuelosArDesktopPlatform(context),
+              renderVisuals:
+                  !_mapEngine.rendersSoilPolygonsInternally ||
+                  useFlutterOverlay,
+              onDragStart: (position) => _startAreaVertexDrag(index, position),
+              onDragUpdate: (position) => _moveAreaVertex(index, position),
+              onDragEnd: _endAreaVertexDrag,
+              onTap: (position) => _showVertexMenu(index, position),
+              onPointerSignal: _handleMeasurementPointerSignal,
+            ),
+          ),
+        );
+      }
+    }
+    if (enabled &&
+        renderedMeasurementMode == _MeasurementMode.distance &&
+        points.length >= 2) {
+      final previousPoint = points[points.length - 2];
+      final lastPoint = points.last;
+      markers.add(
+        SoilMapMeasurementMarker(
+          point: _safeLatLng(
+            (previousPoint.latitude + lastPoint.latitude) / 2,
+            (previousPoint.longitude + lastPoint.longitude) / 2,
+          )!,
+          size: const Size(112, 36),
+          useFlutterOverlay: true,
+          child: IgnorePointer(
+            child: Container(
+              decoration: _mapHudDecoration(Theme.of(context).colorScheme),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              child: Center(
+                child: Text(
+                  _MeasurementLayer._formatDistance(
+                    _MeasurementLayer._calculatePathDistance(points),
+                  ),
+                  key: const ValueKey('measurement-distance'),
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     _mapEngine.setMeasurementGeometry(
       distancePoints: showsMeasurement ? _distanceMeasurementPoints : const [],
       areaPoints: showsMeasurement ? _areaMeasurementPoints : const [],
       color: _measurementColor.color,
-      onVertexTap: _showVertexMenu,
-      onVertexDragStart: (index) => _startAreaVertexDrag(index, Offset.zero),
-      onVertexDragUpdate: _moveAreaVertexTo,
-      onVertexDragEnd: (index) => _endAreaVertexDrag(),
-      draggedVertexIndex: _draggedAreaVertexIndex,
+      markers: markers,
     );
   }
 
@@ -1521,31 +1668,92 @@ class _GisMapScreenState extends State<GisMapScreen>
     // below instead). Kept because it is part of the [SoilMapEngine]
     // contract for engines that render annotations natively; each setter
     // no-ops internally when nothing actually changed.
-    if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused) {
-      _mapEngine.setPersonalMarkers(
-        [
-          for (final marker in _personalMarkers)
-            SoilMapMarkerPin(
-              id: marker.id,
-              point: LatLng(marker.latitude, marker.longitude),
-              icon: personalMarkerCategoryIcon(marker.category),
-            ),
-        ],
-        onMarkerTap: (id) {
-          final marker = _personalMarkers
-              .where((candidate) => candidate.id == id)
-              .firstOrNull;
-          if (marker != null) _handlePersonalMarkerTap(marker);
-        },
-      );
-      final location = _currentLocation;
-      _mapEngine.setCurrentLocationMarker(
-        point: location?.point,
-        accuracyMeters: location?.accuracyMeters,
-        showAccuracyCircle: SettingsService.instance.showGpsAccuracyCircle,
-      );
-      _pushMeasurementGeometryToEngine();
-    }
+    final annotationsEnabled =
+        !_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused;
+    final renderedSavedMeasurements = annotationsEnabled
+        ? savedMeasurementsBehindEditor(
+            measurements: _savedMeasurements,
+            editingMeasurementId: _activeSavedMeasurementId,
+          )
+        : const <SavedMeasurement>[];
+    _mapEngine.setReferenceBasemapVisible(
+      _showReferenceBasemap && !_mapVisualsPaused,
+    );
+    _mapEngine.setPersonalMarkers(
+      annotationsEnabled
+          ? [
+              for (final marker in _personalMarkers)
+                SoilMapMarkerPin(
+                  id: marker.id,
+                  point: LatLng(marker.latitude, marker.longitude),
+                  icon: personalMarkerCategoryIcon(marker.category),
+                  categoryId: marker.category.id,
+                  properties: marker.toJson(),
+                ),
+            ]
+          : const [],
+      onMarkerTap: (id) {
+        final marker = _personalMarkers
+            .where((candidate) => candidate.id == id)
+            .firstOrNull;
+        if (marker != null) _handlePersonalMarkerTap(marker);
+      },
+    );
+    final location = _currentLocation;
+    _mapEngine.setCurrentLocationMarker(
+      point: annotationsEnabled ? location?.point : null,
+      accuracyMeters: annotationsEnabled ? location?.accuracyMeters : null,
+      showAccuracyCircle: SettingsService.instance.showGpsAccuracyCircle,
+    );
+    _mapEngine.setSavedMeasurementGeometry(
+      measurements: renderedSavedMeasurements,
+      highlightedId: _highlightedSavedMeasurementId,
+      hoveredId: _hoveredSavedMeasurementId,
+      onHoverChanged: (id) {
+        if (_hoveredSavedMeasurementId != id && mounted) {
+          setState(() => _hoveredSavedMeasurementId = id);
+        }
+      },
+    );
+    _pushMeasurementGeometryToEngine(enabled: annotationsEnabled);
+
+    final hasProvinceDownloadIndicators =
+        !_mapVisualsPaused &&
+        _coverages.any(
+          (coverage) =>
+              coverage.onDemandDelivery != null &&
+              coverage.config.downloadBannerAnchor != null,
+        );
+    final provinceDownloadOverlay = hasProvinceDownloadIndicators
+        ? ProvinceDownloadMapOverlay(
+            key: const ValueKey('province-download-map-overlay'),
+            cameraChanges: _mapEngine.rendersSoilPolygonsInternally
+                ? _mapEngine.cameraChanges
+                : _mapViewportState,
+            mapFrameSynchronized: _mapEngine.rendersSoilPolygonsInternally,
+            topOverlayClearance: topControlOffset,
+            onDismiss: (coverageId, status) =>
+                unawaited(_dismissProvinceNotice(coverageId, status)),
+            items: [
+              for (final coverage in _coverages)
+                if (coverage.onDemandDelivery != null &&
+                    coverage.config.downloadBannerAnchor != null)
+                  ProvinceDownloadMapItem(
+                    id: coverage.id,
+                    name: _provinceDisplayName(coverage.id),
+                    sizeBytes: coverage.config.pmtilesDownloadSizeBytes,
+                    metadata: coverage.config.downloadMetadata,
+                    delivery: coverage.onDemandDelivery!,
+                    resolveScreenPosition: () =>
+                        _mapEngine.latLngToScreenOffset(
+                          coverage.config.downloadBannerAnchor!,
+                        ),
+                    onDownload: () =>
+                        unawaited(coverage.onDemandDelivery!.download()),
+                  ),
+            ],
+          )
+        : null;
 
     return Stack(
       fit: StackFit.expand,
@@ -1558,17 +1766,13 @@ class _GisMapScreenState extends State<GisMapScreen>
           maxZoom: archiveInfo.maxZoom + 2,
           backgroundColor: colorScheme.surfaceContainerLowest,
           gesturesEnabled: _draggedAreaVertexIndex == null,
+          annotationGesturesEnabled: renderedMeasurementMode != null,
           onReady: () {
             _isMapReady = true;
             _updateMapViewportState(_mapEngine.camera);
             _consumePendingPersonalMarkerFocusIfReady();
             if (!_disableGisTilePipelineForDiagnostic) {
-              unawaited(
-                _loadVisibleTiles(
-                  (_mapEngine as FlutterMapEngine).controller.camera,
-                  archiveInfo,
-                ),
-              );
+              unawaited(_loadVisibleTiles(_mapEngine.camera, archiveInfo));
             }
             if (!_disableGeolocatorForDiagnostic &&
                 _isFollowingLocation &&
@@ -1582,15 +1786,19 @@ class _GisMapScreenState extends State<GisMapScreen>
             }
             _updateMapViewportState(camera);
             if (!_disableGisTilePipelineForDiagnostic) {
-              _scheduleTileLoad(
-                (_mapEngine as FlutterMapEngine).controller.camera,
-                archiveInfo,
-              );
+              _scheduleTileLoad(camera, archiveInfo);
             }
           },
+          mapFrameChildren:
+              _mapEngine.rendersSoilPolygonsInternally &&
+                  provinceDownloadOverlay != null
+              ? [provinceDownloadOverlay]
+              : const [],
           onTap: _disableGisTilePipelineForDiagnostic ? null : _handleMapTap,
           children: [
-            if (!_mapVisualsPaused && _showReferenceBasemap)
+            if (!_mapVisualsPaused &&
+                _showReferenceBasemap &&
+                !_mapEngine.rendersSoilPolygonsInternally)
               Positioned.fill(
                 child: OfflineReferenceMapLayer(
                   assetPaths: _referenceMapAssetPaths,
@@ -1598,42 +1806,60 @@ class _GisMapScreenState extends State<GisMapScreen>
               ),
             if (!_disableGisTilePipelineForDiagnostic &&
                 !_mapVisualsPaused &&
-                _showSoilPolygons)
+                _showSoilPolygons &&
+                !_mapEngine.rendersSoilPolygonsInternally)
               Positioned.fill(
                 child: _GisVisibleTileLayers(
                   snapshotListenable: _visibleTileSnapshot,
                   renderMetrics: _renderMetrics,
                 ),
               ),
-            if (!_mapVisualsPaused && _showReferenceBasemap)
+            if (!_mapVisualsPaused &&
+                _showReferenceBasemap &&
+                !_mapEngine.rendersSoilPolygonsInternally)
               Positioned.fill(
                 child: OfflineReferenceMapLayer(
                   foreground: true,
                   assetPaths: _referenceMapAssetPaths,
                 ),
               ),
-            if (!_disableGisTilePipelineForDiagnostic &&
-                !_mapVisualsPaused)
+            if (!_disableGisTilePipelineForDiagnostic && !_mapVisualsPaused)
               if (_currentLocation case final location?)
-                AnimatedBuilder(
-                  animation: SettingsService.instance,
-                  builder: (context, _) => _CurrentLocationLayer(
-                    location: location,
-                    showAccuracyCircle:
-                        SettingsService.instance.showGpsAccuracyCircle,
+                if (!_mapEngine.rendersSoilPolygonsInternally)
+                  AnimatedBuilder(
+                    animation: SettingsService.instance,
+                    builder: (context, _) => _CurrentLocationLayer(
+                      location: location,
+                      showAccuracyCircle:
+                          SettingsService.instance.showGpsAccuracyCircle,
+                    ),
                   ),
-                ),
             if (!_disableGisTilePipelineForDiagnostic &&
                 !_mapVisualsPaused &&
                 _savedMeasurements.isNotEmpty)
               _SavedMeasurementsLayer(
-                measurements: _savedMeasurements
-                    .where((measurement) => measurement.isVisible)
-                    .toList(growable: false),
+                measurements: renderedSavedMeasurements,
                 highlightedMeasurementId: _highlightedSavedMeasurementId,
                 showLabels: measurementMode == null,
                 onHideMeasurement: _hideSavedMeasurement,
                 onSelectMeasurement: _previewSavedMeasurement,
+                renderFlutterGeometry:
+                    !_mapEngine.rendersSoilPolygonsInternally,
+                projectPoint: _mapEngine.rendersSoilPolygonsInternally
+                    ? _mapEngine.latLngToScreenOffset
+                    : null,
+                cameraChanges: _mapEngine.rendersSoilPolygonsInternally
+                    ? _mapEngine.cameraChanges
+                    : null,
+                mapZoom: _mapEngine.rendersSoilPolygonsInternally
+                    ? () => _mapEngine.camera.zoom
+                    : null,
+                onHoverMeasurementChanged: (id) {
+                  if (_hoveredSavedMeasurementId != id && mounted) {
+                    setState(() => _hoveredSavedMeasurementId = id);
+                  }
+                },
+                onPointerSignal: _handleMeasurementPointerSignal,
               ),
             if (!_disableGisTilePipelineForDiagnostic &&
                 !_mapVisualsPaused &&
@@ -1650,10 +1876,21 @@ class _GisMapScreenState extends State<GisMapScreen>
                   onHideMeasurement: _hideSavedMeasurement,
                   onSelectMeasurement: _previewSavedMeasurement,
                   onHoverMeasurement: (_) {},
+                  projectPoint: _mapEngine.rendersSoilPolygonsInternally
+                      ? _mapEngine.latLngToScreenOffset
+                      : null,
+                  cameraChanges: _mapEngine.rendersSoilPolygonsInternally
+                      ? _mapEngine.cameraChanges
+                      : null,
+                  mapZoom: _mapEngine.rendersSoilPolygonsInternally
+                      ? () => _mapEngine.camera.zoom
+                      : null,
+                  onPointerSignal: _handleMeasurementPointerSignal,
                 ),
               ),
             if (!_disableGisTilePipelineForDiagnostic &&
                 !_mapVisualsPaused &&
+                !_mapEngine.rendersSoilPolygonsInternally &&
                 _personalMarkers.isNotEmpty)
               MarkerLayer(
                 markers: _personalMarkers
@@ -1685,16 +1922,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                               child: SizedBox.square(
                                 dimension: 36,
                                 child: Icon(
-                                  personalMarkerCategoryIcon(
-                                    marker.category,
-                                  ),
+                                  personalMarkerCategoryIcon(marker.category),
                                   size: 22,
-                                  color: const Color.fromARGB(
-                                    255,
-                                    209,
-                                    19,
-                                    19,
-                                  ),
+                                  color: const Color.fromARGB(255, 209, 19, 19),
                                 ),
                               ),
                             ),
@@ -1720,6 +1950,7 @@ class _GisMapScreenState extends State<GisMapScreen>
                 onMoveAreaVertex: _moveAreaVertex,
                 onEndAreaVertexDrag: _endAreaVertexDrag,
                 onVertexTap: _showVertexMenu,
+                onPointerSignal: _handleMeasurementPointerSignal,
                 onColorChanged: _setMeasurementColor,
                 onSave: _saveCurrentMeasurement,
                 isSavedMeasurement: _activeSavedMeasurementId != null,
@@ -1732,6 +1963,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                 onExit: _exitMeasurement,
                 onAnalyze: _showParcelAnalysis,
                 onExport: _exportCurrentMeasurementPdf,
+                renderFlutterGeometry:
+                    !_mapEngine.rendersSoilPolygonsInternally,
               ),
           ],
         ),
@@ -1760,8 +1993,6 @@ class _GisMapScreenState extends State<GisMapScreen>
                           // explains that. Showing this generic red error on
                           // top of it would describe the same situation as
                           // if it were a bug.
-                          final camera =
-                              (_mapEngine as FlutterMapEngine).controller.camera;
                           final screenSize = MediaQuery.sizeOf(context);
                           final suppressedForOnDemandCoverage = _coverages.any((
                             coverage,
@@ -1774,9 +2005,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                             return delivery.status !=
                                     PmtilesDeliveryStatus.available &&
                                 _ProvincePmtilesBanner.isCoverageVisible(
-                                  camera,
+                                  _mapEngine.latLngToScreenOffset(anchor),
                                   screenSize,
-                                  anchor,
                                 );
                           });
                           if (suppressedForOnDemandCoverage) {
@@ -1859,29 +2089,29 @@ class _GisMapScreenState extends State<GisMapScreen>
             showScale:
                 renderedMeasurementMode == null || !_hasMeasurementPoints,
           ),
-        for (final undownloadedCoverage in _coverages.where(
-          (coverage) =>
-              coverage.onDemandDelivery != null &&
-              coverage.config.downloadBannerAnchor != null,
-        ))
-          _ProvincePmtilesBanner(
-            key: ValueKey('province-pmtiles-banner-${undownloadedCoverage.id}'),
-            coverageId: undownloadedCoverage.id,
-            delivery: undownloadedCoverage.onDemandDelivery!,
-            anchorPoint: undownloadedCoverage.config.downloadBannerAnchor!,
-            provinceBounds: undownloadedCoverage.bounds,
-            provinceName: _provinceDisplayName(undownloadedCoverage.id),
-            referenceMapAssetPath:
-                undownloadedCoverage.config.referenceMapAsset,
-            viewStateListenable: _mapViewportState,
-            resolveCamera: () =>
-                (_mapEngine as FlutterMapEngine).controller.camera,
-            onDownload: () =>
-                unawaited(undownloadedCoverage.onDemandDelivery!.download()),
-            onDismissedFirstTime: () => _showDownloadLaterHint(
-              _provinceDisplayName(undownloadedCoverage.id),
-            ),
-          ),
+        if (!_mapVisualsPaused)
+          for (final coverage in _coverages)
+            if (coverage.onDemandDelivery != null &&
+                coverage.config.downloadBannerAnchor != null)
+              _ProvincePmtilesBanner(
+                key: ValueKey('province-pmtiles-highlight-${coverage.id}'),
+                showCard: false,
+                coverageId: coverage.id,
+                delivery: coverage.onDemandDelivery!,
+                anchorPoint: coverage.config.downloadBannerAnchor!,
+                provinceBounds: coverage.bounds,
+                provinceName: _provinceDisplayName(coverage.id),
+                referenceMapAssetPath: coverage.config.referenceMapAsset,
+                mapEngine: _mapEngine,
+                viewStateListenable: _mapViewportState,
+                resolveCamera: () => _mapEngine.camera,
+                projectPoint: _mapEngine.latLngToScreenOffset,
+                onDownload: () {},
+                onDismissedFirstTime: () {},
+              ),
+        if (!_mapEngine.rendersSoilPolygonsInternally &&
+            provinceDownloadOverlay != null)
+          provinceDownloadOverlay,
       ],
     );
   }
@@ -2835,15 +3065,28 @@ class _GisMapScreenState extends State<GisMapScreen>
     _moveAreaVertexTo(index, point);
   }
 
+  void _handleMeasurementPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent || event.scrollDelta.dy == 0) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (resolved) {
+      if (resolved is! PointerScrollEvent) return;
+      final mapContext = _mapKey.currentContext;
+      if (mapContext == null) return;
+      final renderObject = mapContext.findRenderObject();
+      if (renderObject is! RenderBox || !renderObject.hasSize) return;
+      final localPosition = renderObject.globalToLocal(resolved.position);
+      final bounds = Offset.zero & renderObject.size;
+      if (!bounds.contains(localPosition)) return;
+      _mapEngine.zoomAtScreenPoint(localPosition, resolved.scrollDelta.dy);
+    });
+  }
+
   /// Same vertex-move logic as [_moveAreaVertex], but taking the new
   /// geographic point directly instead of a screen offset — for callers
   /// that already have the dragged [LatLng] and need no screen<->geo
   /// projection.
   ///
-  /// Reached from [_moveAreaVertex] (FlutterMapEngine's `_AreaVertexHandle`
-  /// drag, after projecting the screen offset) and passed as
-  /// `onVertexDragUpdate` to [SoilMapEngine.setMeasurementGeometry], which
-  /// FlutterMapEngine ignores.
+  /// Reached from [_moveAreaVertex] after converting its pointer position
+  /// through the active map engine's camera projection.
   void _moveAreaVertexTo(int index, LatLng point) {
     _suppressNextMapTap = false;
     if (!_pointIsInRange(index, point)) return;
@@ -2909,10 +3152,8 @@ class _GisMapScreenState extends State<GisMapScreen>
 
   /// Shows the delete/cancel popup for vertex [index] at screen [position].
   ///
-  /// Extracted from `_MeasurementLayer` (which owned this for
-  /// FlutterMapEngine's `_AreaVertexHandle.onTap`) so it can also be reached
-  /// through [SoilMapEngine.setMeasurementGeometry]'s `onVertexTap` — one
-  /// menu, identical text, styling and delete behavior on every engine.
+  /// Extracted from `_MeasurementLayer` so both map engines use the same
+  /// menu, text, styling and delete behavior for a vertex tap.
   Future<void> _showVertexMenu(int index, Offset position) async {
     final isArea = _measurementMode == _MeasurementMode.area;
     final points = isArea ? _areaMeasurementPoints : _distanceMeasurementPoints;
@@ -3599,10 +3840,28 @@ class _GisMapScreenState extends State<GisMapScreen>
     _renderedTileCache.clear();
     _visibleTileCoordinates = {};
     _prefetchedTileCoordinates = {};
+    _recordTileCacheMetrics();
     final engine = _mapEngine;
-    if (engine is FlutterMapEngine) {
-      unawaited(_loadVisibleTiles(engine.controller.camera, _archiveInfo));
+    if (_isMapReady) unawaited(_loadVisibleTiles(engine.camera, _archiveInfo));
+    if (engine.rendersSoilPolygonsInternally) {
+      unawaited(_refreshNativeSoilSources());
     }
+  }
+
+  Future<void> _refreshNativeSoilSources() async {
+    final repository = _repository;
+    final sources = repository is GisNativeMapSourceProvider
+        ? await (repository as GisNativeMapSourceProvider).getNativeMapSources()
+        : const <GisNativeMapSource>[];
+    if (!mounted) return;
+    final colors = Theme.of(context).colorScheme;
+    await _mapEngine.loadSoilPolygonsLayer(
+      archiveInfo: _archiveInfo,
+      layerName: _defaultCoverage.config.pmtilesLayerName,
+      normalFillColor: colors.primary,
+      selectedFillColor: colors.tertiary,
+      sources: sources,
+    );
   }
 
   void _updateMapViewportState(SoilMapCameraState camera) {
@@ -3648,9 +3907,12 @@ class _GisMapScreenState extends State<GisMapScreen>
     controller.forward();
   }
 
-  void _scheduleTileLoad(MapCamera camera, GisArchiveInfo archiveInfo) {
+  void _scheduleTileLoad(
+    SoilMapCameraState camera,
+    GisArchiveInfo archiveInfo,
+  ) {
     if (_disableGisTilePipelineForDiagnostic) return;
-    if (!_isFiniteCamera(camera)) {
+    if (!_isFiniteCameraState(camera)) {
       return;
     }
     _tileLoadDebounce?.cancel();
@@ -3661,11 +3923,11 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   Future<void> _loadVisibleTiles(
-    MapCamera camera,
+    SoilMapCameraState camera,
     GisArchiveInfo archiveInfo,
   ) async {
     if (_disableGisTilePipelineForDiagnostic) return;
-    if (!_isFiniteCamera(camera)) {
+    if (!_isFiniteCameraState(camera)) {
       return;
     }
     final visibleCoordinates = _tileCoordinatesForViewport(
@@ -3688,6 +3950,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     final requestId = ++_tileRequestId;
     _visibleTileCoordinates = visibleSet;
     _prefetchedTileCoordinates = prefetchSet;
+    _recordTileCacheMetrics();
     _visibleTileZoom = visibleCoordinates.firstOrNull?.zoom;
     final uncachedCoordinates = <GisTileCoordinates>[];
 
@@ -3700,7 +3963,8 @@ class _GisMapScreenState extends State<GisMapScreen>
       }
     }
 
-    _publishVisibleTiles(visibleCoordinates, camera.visibleBounds);
+    final visibleBounds = _latLngBoundsFor(camera);
+    _publishVisibleTiles(visibleCoordinates, visibleBounds);
     _updateOverlay(isLoading: uncachedCoordinates.isNotEmpty);
 
     if (uncachedCoordinates.isEmpty) {
@@ -3721,7 +3985,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       }
       _enforceRenderedTileCacheLimit();
 
-      _publishVisibleTiles(visibleCoordinates, camera.visibleBounds);
+      _publishVisibleTiles(visibleCoordinates, visibleBounds);
       _updateOverlay(isLoading: false);
     } catch (_) {
       if (!mounted || requestId != _tileRequestId) {
@@ -3767,6 +4031,14 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
   }
 
+  void _recordTileCacheMetrics() {
+    _renderMetrics.recordTileCacheState(
+      visibleTileCount: _visibleTileCoordinates.length,
+      prefetchedTileCount: _prefetchedTileCoordinates.length,
+      renderedTileCacheSize: _renderedTileCache.length,
+    );
+  }
+
   void _updateOverlay({required bool isLoading, String? error}) {
     final nextState = _MapOverlayState(isLoading: isLoading, error: error);
     if (_overlayState.value != nextState) {
@@ -3808,6 +4080,7 @@ class _GisMapScreenState extends State<GisMapScreen>
     replacedTile?.dispose();
     _renderedTileCache[coordinates] = tile;
     _indexSoilSeries(polygons);
+    _recordTileCacheMetrics();
   }
 
   _RenderedGisTile? _getRenderedTile(GisTileCoordinates coordinates) {
@@ -3833,6 +4106,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       if (tile == null) continue;
       tile.dispose();
     }
+    _recordTileCacheMetrics();
   }
 
   Iterable<Widget> _buildSearchSuggestions(
@@ -3908,12 +4182,10 @@ class _GisMapScreenState extends State<GisMapScreen>
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(14),
                 ),
-                hoverColor: Theme.of(
-                  context,
-                ).colorScheme.primaryContainer.withValues(alpha: 0.32),
-                splashColor: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.10),
+                hoverColor: Theme.of(context).colorScheme.primaryContainer
+                    .withValues(alpha: 0.32),
+                splashColor: Theme.of(context).colorScheme.primary
+                    .withValues(alpha: 0.10),
                 leading: DecoratedBox(
                   decoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.surfaceContainerHigh,
@@ -3926,9 +4198,8 @@ class _GisMapScreenState extends State<GisMapScreen>
                 ),
                 title: Text(
                   entry.name,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                  style: Theme.of(context).textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 subtitle: Text(
                   entry.subtitle,
@@ -4441,7 +4712,7 @@ class _GisMapScreenState extends State<GisMapScreen>
   }
 
   List<GisTileCoordinates> _tileCoordinatesForViewport(
-    MapCamera camera,
+    SoilMapCameraState camera,
     GisArchiveInfo archiveInfo, {
     required int padding,
   }) {
@@ -4449,7 +4720,7 @@ class _GisMapScreenState extends State<GisMapScreen>
       archiveInfo.minZoom,
       archiveInfo.maxZoom,
     );
-    final bounds = camera.visibleBounds;
+    final bounds = _latLngBoundsFor(camera);
     final tilesAtZoom = 1 << zoom;
     final minX = (_longitudeToTileX(bounds.west, zoom) - padding).clamp(
       0,
@@ -4476,6 +4747,17 @@ class _GisMapScreenState extends State<GisMapScreen>
     }
 
     return coordinates;
+  }
+
+  LatLngBounds _latLngBoundsFor(SoilMapCameraState camera) {
+    final bounds = camera.visibleBounds;
+    if (bounds == null) {
+      return LatLngBounds(camera.center, camera.center);
+    }
+    return LatLngBounds(
+      LatLng(bounds.south, bounds.west),
+      LatLng(bounds.north, bounds.east),
+    );
   }
 
   int _longitudeToTileX(double longitude, int zoom) {
@@ -4646,7 +4928,12 @@ class _GisMapScreenState extends State<GisMapScreen>
       return;
     }
 
-    final feature = _findFeatureAt(point);
+    final nativeFeature = _mapEngine.rendersSoilPolygonsInternally
+        ? await _mapEngine.hitTestSoilFeature(tapOffset)
+        : null;
+    final feature = nativeFeature == null
+        ? _findFeatureAt(point)
+        : _canonicalFeatureForNativeHit(nativeFeature, point);
     if (!mounted) return;
     if (feature == null) {
       _selectionPreview.value = null;
@@ -5115,6 +5402,27 @@ class _GisMapScreenState extends State<GisMapScreen>
     return _visibleTiles[coordinates]?.hitTest(point);
   }
 
+  GisFeature _canonicalFeatureForNativeHit(
+    GisFeature renderedFeature,
+    LatLng point,
+  ) {
+    final decodedFeature = _findFeatureAt(point);
+    if (decodedFeature == null || decodedFeature.id == renderedFeature.id) {
+      return decodedFeature ?? renderedFeature;
+    }
+
+    final sharedProperties = renderedFeature.properties.entries.where(
+      (entry) => decodedFeature.properties.containsKey(entry.key),
+    );
+    if (sharedProperties.isNotEmpty &&
+        sharedProperties.every(
+          (entry) => decodedFeature.properties[entry.key] == entry.value,
+        )) {
+      return decodedFeature;
+    }
+    return renderedFeature;
+  }
+
   void _selectFeature(GisFeature feature) {
     final previousFeatureId = _selectedFeatureId;
     _selectedFeatureId = feature.id;
@@ -5124,11 +5432,57 @@ class _GisMapScreenState extends State<GisMapScreen>
         tile.updateSelection(feature.id);
       }
     }
-    _mapEngine.setSelectedSoilFeature(feature.id);
+    _mapEngine.setSelectedSoilFeature(feature.id, feature: feature);
   }
 
   Future<void> _showFeatureAttributes(GisFeature feature) {
     _selectionPreview.value = null;
+    return _showFeatureAttributesAfterEnrichment(feature);
+  }
+
+  Future<void> _showFeatureAttributesAfterEnrichment(
+    GisFeature selectedFeature,
+  ) async {
+    var feature = selectedFeature;
+    final isCordoba =
+        _coverageForFeature(feature).id == ProvinceConfig.cordoba.id;
+    var seriesComposition = CordobaSeriesCompositionResult(
+      GisSoilSeries.fromProperties(feature.properties),
+    );
+    final isBuenosAires =
+        _coverageForFeature(feature).id == ProvinceConfig.buenosAires.id;
+    if (isBuenosAires) {
+      try {
+        feature = await _buenosAiresFeatureMetadataRepository.enrichCardFeature(
+          feature,
+        );
+      } catch (error) {
+        debugPrint('Buenos Aires card metadata unavailable: $error');
+      }
+      if (!mounted) return;
+    }
+    if (isCordoba) {
+      try {
+        feature = await _cordobaFeatureMetadataRepository.enrichCardFeature(
+          feature,
+        );
+      } catch (error) {
+        debugPrint('Córdoba card metadata unavailable: $error');
+      }
+      if (!mounted) return;
+
+      final sourceSeries = GisSoilSeries.fromProperties(feature.properties);
+      if (_cordobaSeriesPercentageRepository.mayHaveSupplement(feature)) {
+        try {
+          seriesComposition = await _cordobaSeriesPercentageRepository
+              .enrichCardSeries(feature: feature, sourceSeries: sourceSeries);
+        } catch (error) {
+          debugPrint('Córdoba series percentages unavailable: $error');
+          seriesComposition = CordobaSeriesCompositionResult(sourceSeries);
+        }
+      }
+      if (!mounted) return;
+    }
     // PDF resolution needs the raw SERIE* value (e.g. "RSA cc") — Santa
     // Fe's SantaFeSeriesResolver extracts the series *code* from it.
     // `series` below is a separate, display-only copy with names already
@@ -5141,13 +5495,20 @@ class _GisMapScreenState extends State<GisMapScreen>
     // element-by-element), so `matches[index]` still lines up with
     // `series[index]` wherever they're both used below.
     final rawSeries = GisSoilSeries.fromProperties(feature.properties);
-    final series = _resolveSeriesDisplayNames(feature, rawSeries);
+    final series = _resolveSeriesDisplayNames(
+      feature,
+      seriesComposition.applyTo(rawSeries),
+    );
     final matchesFuture = _findSeriesPdfs(feature, rawSeries);
+    final title = _featureDetailTitle(feature, series);
+    final unitDescription = isCordoba
+        ? feature.properties['Nombre_UC']?.toString().trim()
+        : null;
+    final taxonomy = GisSoilTaxonomy.fromProperties(feature.properties);
 
     return _showMapBottomSheet<void>(
       isScrollControlled: true,
       builder: (bottomSheetContext) {
-        final title = _readAttribute(feature, 'Nombre_UC');
         final capability = _readAttribute(feature, 'CAP_USO');
         final type = _readAttribute(feature, 'TIPO');
         final seriesCount = series.length == 1
@@ -5174,9 +5535,9 @@ class _GisMapScreenState extends State<GisMapScreen>
                     'Capacidad $capability • $seriesCount • $type',
                     style: Theme.of(bottomSheetContext).textTheme.bodySmall
                         ?.copyWith(
-                          color: Theme.of(
-                            bottomSheetContext,
-                          ).colorScheme.onSurfaceVariant,
+                          color: Theme.of(bottomSheetContext)
+                              .colorScheme
+                              .onSurfaceVariant,
                         ),
                   ),
                 ),
@@ -5219,6 +5580,56 @@ class _GisMapScreenState extends State<GisMapScreen>
                     ),
                   ],
                 ),
+                if (unitDescription != null &&
+                    unitDescription.isNotEmpty &&
+                    unitDescription != title)
+                  _BottomSheetSection(
+                    title: 'Descripción de la unidad',
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text(
+                          unitDescription,
+                          style: Theme.of(bottomSheetContext)
+                              .textTheme
+                              .bodyLarge,
+                        ),
+                      ),
+                    ],
+                  ),
+                if (!taxonomy.isEmpty)
+                  _BottomSheetSection(
+                    title: 'Clasificación del suelo y taxonomía',
+                    children: [
+                      if (taxonomy.soilClass != null)
+                        _InfoRow(label: 'Clase', value: taxonomy.soilClass!),
+                      if (taxonomy.subclass != null)
+                        _InfoRow(label: 'Subclase', value: taxonomy.subclass!),
+                      if (taxonomy.productivityIndex != null)
+                        _InfoRow(
+                          label: 'Índice de productividad (IP)',
+                          value: taxonomy.productivityIndex!,
+                        ),
+                      for (final classification
+                          in taxonomy.sourceClassifications)
+                        _InfoRow(
+                          label: classification.label,
+                          value: classification.value,
+                        ),
+                      for (final component in taxonomy.components) ...[
+                        if (component.subgroup != null)
+                          _InfoRow(
+                            label: 'Subgrupo ${component.index}',
+                            value: component.subgroup!,
+                          ),
+                        if (component.position != null)
+                          _InfoRow(
+                            label: 'Posición ${component.index}',
+                            value: component.position!,
+                          ),
+                      ],
+                    ],
+                  ),
                 _BottomSheetSection(
                   title: 'Paisaje',
                   children: [
@@ -5241,6 +5652,12 @@ class _GisMapScreenState extends State<GisMapScreen>
                           series: series[index],
                           isDominant: index == 0,
                         ),
+                    for (final aggregate
+                        in seriesComposition.aggregateCompositions)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Text(aggregate.displayText),
+                      ),
                   ],
                 ),
                 _BottomSheetSection(
@@ -5372,6 +5789,38 @@ class _GisMapScreenState extends State<GisMapScreen>
       series,
       _seriesNameResolverForFeature(feature),
     );
+  }
+
+  String _featureDetailTitle(GisFeature feature, List<GisSoilSeries> series) {
+    GisSoilSeries? leadingSeries;
+    double? highestPercentage;
+    for (final item in series) {
+      final raw = item.percentage.endsWith('%')
+          ? item.percentage.substring(0, item.percentage.length - 1)
+          : item.percentage;
+      final percentage = double.tryParse(raw.replaceAll(',', '.'));
+      if (percentage != null &&
+          (highestPercentage == null || percentage > highestPercentage)) {
+        leadingSeries = item;
+        highestPercentage = percentage;
+      }
+    }
+    leadingSeries ??= series.firstOrNull;
+    if (leadingSeries != null) {
+      final words = leadingSeries.name.toLowerCase().split(RegExp(r'\s+'));
+      const lowercaseWords = {'a', 'al', 'de', 'del', 'la', 'las', 'los', 'y'};
+      return words.indexed
+          .map((entry) {
+            final word = entry.$2;
+            if (entry.$1 > 0 && lowercaseWords.contains(word)) return word;
+            return word.isEmpty
+                ? word
+                : '${word[0].toUpperCase()}${word.substring(1)}';
+          })
+          .join(' ');
+    }
+    final symbol = feature.properties['SIMBC']?.toString().trim();
+    return symbol == null || symbol.isEmpty ? 'Unidad cartográfica' : symbol;
   }
 
   Future<List<SeriesPdfLocation?>> _findSeriesPdfs(
@@ -5647,9 +6096,8 @@ class _ParcelAnalysisMetric extends StatelessWidget {
             ),
             Text(
               value,
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
           ],
         ),
@@ -5726,9 +6174,8 @@ class _ParcelCompositionContent extends StatelessWidget {
   }
 
   TableRow _buildHeaderRow(BuildContext context) {
-    final style = Theme.of(
-      context,
-    ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700);
+    final style = Theme.of(context).textTheme.labelMedium
+        ?.copyWith(fontWeight: FontWeight.w700);
     return TableRow(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHigh,
@@ -5967,9 +6414,8 @@ class _ParcelDominantValue extends StatelessWidget {
           child: Text(
             value,
             textAlign: TextAlign.end,
-            style: Theme.of(
-              context,
-            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+            style: Theme.of(context).textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.w700),
           ),
         ),
       ],
@@ -6055,9 +6501,8 @@ class _DesktopMapToolsPanelState extends State<_DesktopMapToolsPanel>
                   Expanded(
                     child: Text(
                       'Navegación GIS',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                      style: Theme.of(context).textTheme.titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w700),
                     ),
                   ),
                   IconButton(
@@ -6228,9 +6673,8 @@ class _DesktopNavigationDivider extends StatelessWidget {
       padding: EdgeInsets.symmetric(vertical: compact ? 8 : 10),
       child: Divider(
         height: 1,
-        color: Theme.of(
-          context,
-        ).colorScheme.outlineVariant.withValues(alpha: 0.75),
+        color: Theme.of(context).colorScheme.outlineVariant
+            .withValues(alpha: 0.75),
       ),
     );
   }
@@ -6847,9 +7291,8 @@ class _DesktopActiveModePanel extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 'Esc para cancelar',
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
+                style: Theme.of(context).textTheme.labelMedium
+                    ?.copyWith(color: colorScheme.onSurfaceVariant),
               ),
             ],
           ),
@@ -7066,9 +7509,8 @@ class _DesktopPanelNoSearchResults extends StatelessWidget {
     return Center(
       child: Text(
         'No hay coincidencias.',
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
+        style: Theme.of(context).textTheme.bodyMedium
+            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
       ),
     );
   }
@@ -7124,9 +7566,8 @@ class _DesktopSearchEmptyState extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
             child: Text(
               'Todavía no hay búsquedas recientes.',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: colorScheme.onSurfaceVariant),
             ),
           )
         else
@@ -7185,18 +7626,16 @@ class _DesktopSearchResultRow extends StatelessWidget {
                         entry.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: Theme.of(context).textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         entry.subtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                        ),
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: colorScheme.onSurfaceVariant),
                       ),
                     ],
                   ),
@@ -7622,6 +8061,8 @@ List<GisSoilSeries> _applySeriesNameResolver(
         (soilSeries) => GisSoilSeries(
           name: resolver.resolve(soilSeries.name),
           percentage: soilSeries.percentage,
+          phase: soilSeries.phase,
+          position: soilSeries.position,
         ),
       )
       .toList(growable: false);
@@ -8198,6 +8639,19 @@ class _CurrentLocationLayer extends StatelessWidget {
   }
 }
 
+SavedMeasurementRenderStyle _savedMeasurementStyleFor(
+  SavedMeasurement measurement,
+  String? selectedId,
+  String? hoveredId,
+) {
+  final state = measurement.id == selectedId
+      ? SavedMeasurementVisualState.selected
+      : measurement.id == hoveredId
+      ? SavedMeasurementVisualState.hovered
+      : SavedMeasurementVisualState.normal;
+  return MeasurementRenderStyles.saved(state);
+}
+
 class _SavedMeasurementsLayer extends StatefulWidget {
   const _SavedMeasurementsLayer({
     required this.measurements,
@@ -8205,6 +8659,12 @@ class _SavedMeasurementsLayer extends StatefulWidget {
     required this.showLabels,
     required this.onHideMeasurement,
     required this.onSelectMeasurement,
+    this.renderFlutterGeometry = true,
+    this.projectPoint,
+    this.cameraChanges,
+    this.mapZoom,
+    this.onHoverMeasurementChanged,
+    required this.onPointerSignal,
   });
 
   final List<SavedMeasurement> measurements;
@@ -8212,6 +8672,12 @@ class _SavedMeasurementsLayer extends StatefulWidget {
   final bool showLabels;
   final ValueChanged<SavedMeasurement> onHideMeasurement;
   final ValueChanged<SavedMeasurement> onSelectMeasurement;
+  final bool renderFlutterGeometry;
+  final Offset? Function(LatLng point)? projectPoint;
+  final Listenable? cameraChanges;
+  final double? Function()? mapZoom;
+  final ValueChanged<String?>? onHoverMeasurementChanged;
+  final ValueChanged<PointerSignalEvent> onPointerSignal;
 
   @override
   State<_SavedMeasurementsLayer> createState() =>
@@ -8229,7 +8695,6 @@ class _SavedMeasurementsLayerState extends State<_SavedMeasurementsLayer> {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     final orderedMeasurements = [
       ...widget.measurements.where(
         (measurement) => measurement.id != widget.highlightedMeasurementId,
@@ -8249,64 +8714,67 @@ class _SavedMeasurementsLayerState extends State<_SavedMeasurementsLayer> {
           measurement.geometry.length >= 2,
     );
 
-    final geometryLayer = Stack(
-      children: [
-        if (areas.isNotEmpty)
-          IgnorePointer(
-            child: PolygonLayer(
-              polygons: [
-                for (final measurement in areas)
-                  Polygon(
-                    points: measurement.geometry,
-                    color:
-                        MeasurementColorOption.fromStorageValue(
-                          measurement.colorId,
-                        ).color.withValues(
-                          alpha:
-                              measurement.id == widget.highlightedMeasurementId
-                              ? 0.42
-                              : measurement.id == _hoveredMeasurementId
-                              ? 0.34
-                              : 0.25,
+    final geometryLayer = widget.renderFlutterGeometry
+        ? Stack(
+            children: [
+              if (areas.isNotEmpty)
+                IgnorePointer(
+                  child: PolygonLayer(
+                    polygons: [
+                      for (final measurement in areas)
+                        Polygon(
+                          points: measurement.geometry,
+                          color:
+                              MeasurementColorOption.fromStorageValue(
+                                measurement.colorId,
+                              ).color.withValues(
+                                alpha: _savedMeasurementStyleFor(
+                                  measurement,
+                                  widget.highlightedMeasurementId,
+                                  _hoveredMeasurementId,
+                                ).areaFillOpacity,
+                              ),
+                          borderColor: MeasurementColorOption.fromStorageValue(
+                            measurement.colorId,
+                          ).color,
+                          borderStrokeWidth: _savedMeasurementStyleFor(
+                            measurement,
+                            widget.highlightedMeasurementId,
+                            _hoveredMeasurementId,
+                          ).areaOutline.width,
+                          strokeCap: ui.StrokeCap.round,
+                          strokeJoin: ui.StrokeJoin.round,
                         ),
-                    borderColor: MeasurementColorOption.fromStorageValue(
-                      measurement.colorId,
-                    ).color,
-                    borderStrokeWidth:
-                        measurement.id == widget.highlightedMeasurementId
-                        ? 6
-                        : measurement.id == _hoveredMeasurementId
-                        ? 4.5
-                        : 3,
+                    ],
                   ),
-              ],
-            ),
-          ),
-        if (distances.isNotEmpty)
-          IgnorePointer(
-            child: PolylineLayer(
-              polylines: [
-                for (final measurement in distances)
-                  Polyline(
-                    points: measurement.geometry,
-                    strokeWidth:
-                        measurement.id == widget.highlightedMeasurementId
-                        ? 8
-                        : measurement.id == _hoveredMeasurementId
-                        ? 5.5
-                        : 4,
-                    color: MeasurementColorOption.fromStorageValue(
-                      measurement.colorId,
-                    ).color,
-                    borderStrokeWidth: 1.5,
-                    borderColor: colorScheme.surface,
+                ),
+              if (distances.isNotEmpty)
+                IgnorePointer(
+                  child: PolylineLayer(
+                    polylines: [
+                      for (final measurement in distances)
+                        Polyline(
+                          points: measurement.geometry,
+                          strokeWidth: _savedMeasurementStyleFor(
+                            measurement,
+                            widget.highlightedMeasurementId,
+                            _hoveredMeasurementId,
+                          ).distance.width,
+                          color: MeasurementColorOption.fromStorageValue(
+                            measurement.colorId,
+                          ).color,
+                          borderStrokeWidth: 0,
+                          strokeCap: ui.StrokeCap.round,
+                          strokeJoin: ui.StrokeJoin.round,
+                        ),
+                    ],
                   ),
-              ],
-            ),
-          ),
-      ],
-    );
-    final interactiveGeometryLayer = !_supportsHover
+                ),
+            ],
+          )
+        : const SizedBox.expand();
+    final interactiveGeometryLayer =
+        !_supportsHover || !widget.renderFlutterGeometry
         ? geometryLayer
         : MouseRegion(
             cursor: _hoveredMeasurementId == null
@@ -8330,13 +8798,18 @@ class _SavedMeasurementsLayerState extends State<_SavedMeasurementsLayer> {
               measurements: orderedMeasurements,
               selectedMeasurementId: widget.highlightedMeasurementId,
               hoveredMeasurementId: _hoveredMeasurementId,
+              projectPoint: widget.projectPoint,
+              cameraChanges: widget.cameraChanges,
+              mapZoom: widget.mapZoom,
               onHideMeasurement: widget.onHideMeasurement,
               onSelectMeasurement: widget.onSelectMeasurement,
               onHoverMeasurement: (measurementId) {
                 if (_hoveredMeasurementId != measurementId) {
                   setState(() => _hoveredMeasurementId = measurementId);
+                  widget.onHoverMeasurementChanged?.call(measurementId);
                 }
               },
+              onPointerSignal: widget.onPointerSignal,
             ),
           ),
       ],
@@ -8344,7 +8817,9 @@ class _SavedMeasurementsLayerState extends State<_SavedMeasurementsLayer> {
   }
 
   void _updateHoveredMeasurement(BuildContext context, Offset position) {
-    final camera = MapCamera.of(context);
+    final camera = widget.projectPoint == null ? MapCamera.of(context) : null;
+    Offset project(LatLng point) =>
+        widget.projectPoint?.call(point) ?? camera!.latLngToScreenOffset(point);
     String? hoveredId;
     for (final measurement in widget.measurements.reversed) {
       final points = measurement.geometry;
@@ -8353,10 +8828,8 @@ class _SavedMeasurementsLayerState extends State<_SavedMeasurementsLayer> {
           ? points.length
           : points.length - 1;
       for (var index = 0; index < segmentCount; index++) {
-        final start = camera.latLngToScreenOffset(points[index]);
-        final end = camera.latLngToScreenOffset(
-          points[(index + 1) % points.length],
-        );
+        final start = project(points[index]);
+        final end = project(points[(index + 1) % points.length]);
         if (_distanceToSegment(position, start, end) <= 10) {
           hoveredId = measurement.id;
           break;
@@ -8366,28 +8839,8 @@ class _SavedMeasurementsLayerState extends State<_SavedMeasurementsLayer> {
     }
     if (hoveredId != _hoveredMeasurementId) {
       setState(() => _hoveredMeasurementId = hoveredId);
+      widget.onHoverMeasurementChanged?.call(hoveredId);
     }
-  }
-
-  static LatLng? _labelPoint(SavedMeasurement measurement) {
-    final points = measurement.geometry;
-    if (measurement.type == SavedMeasurementType.distance) {
-      if (points.length < 2) return null;
-      final index = points.length ~/ 2;
-      final start = points[index - 1];
-      final end = points[index];
-      return _safeLatLng(
-        (start.latitude + end.latitude) / 2,
-        (start.longitude + end.longitude) / 2,
-      );
-    }
-    if (points.length < 3) return null;
-    return _safeLatLng(
-      points.fold<double>(0, (sum, point) => sum + point.latitude) /
-          points.length,
-      points.fold<double>(0, (sum, point) => sum + point.longitude) /
-          points.length,
-    );
   }
 
   static String _label(SavedMeasurement measurement) {
@@ -8402,7 +8855,7 @@ class _SavedMeasurementsLayerState extends State<_SavedMeasurementsLayer> {
   }
 }
 
-class _SavedMeasurementLabels extends StatelessWidget {
+class _SavedMeasurementLabels extends StatefulWidget {
   const _SavedMeasurementLabels({
     required this.measurements,
     required this.selectedMeasurementId,
@@ -8410,6 +8863,10 @@ class _SavedMeasurementLabels extends StatelessWidget {
     required this.onHideMeasurement,
     required this.onSelectMeasurement,
     required this.onHoverMeasurement,
+    this.projectPoint,
+    this.cameraChanges,
+    this.mapZoom,
+    required this.onPointerSignal,
   });
 
   final List<SavedMeasurement> measurements;
@@ -8418,22 +8875,49 @@ class _SavedMeasurementLabels extends StatelessWidget {
   final ValueChanged<SavedMeasurement> onHideMeasurement;
   final ValueChanged<SavedMeasurement> onSelectMeasurement;
   final ValueChanged<String?> onHoverMeasurement;
+  final Offset? Function(LatLng point)? projectPoint;
+  final Listenable? cameraChanges;
+  final double? Function()? mapZoom;
+  final ValueChanged<PointerSignalEvent> onPointerSignal;
+
+  @override
+  State<_SavedMeasurementLabels> createState() =>
+      _SavedMeasurementLabelsState();
+}
+
+class _SavedMeasurementLabelsState extends State<_SavedMeasurementLabels> {
+  final MeasurementLabelPlacementCache _placementCache =
+      MeasurementLabelPlacementCache();
 
   @override
   Widget build(BuildContext context) {
-    final camera = MapCamera.of(context);
-    if (!_isFiniteCamera(camera)) {
+    final changes = widget.cameraChanges;
+    if (changes != null) {
+      return CameraRevisionBuilder(
+        cameraChanges: changes,
+        builder: (context) => _buildProjectedLabels(context, null),
+      );
+    }
+    return _buildProjectedLabels(context, null);
+  }
+
+  Widget _buildProjectedLabels(BuildContext context, Widget? child) {
+    final camera = widget.projectPoint == null ? MapCamera.of(context) : null;
+    final zoom = widget.mapZoom?.call() ?? camera?.zoom;
+    if (zoom == null || !zoom.isFinite) {
       return const SizedBox.shrink();
     }
-    final labelOpacity = ((camera.zoom - 7.5) / 3).clamp(0.0, 1.0);
+    Offset project(LatLng point) =>
+        widget.projectPoint?.call(point) ?? camera!.latLngToScreenOffset(point);
+    final labelOpacity = ((zoom - 7.5) / 3).clamp(0.0, 1.0);
     if (labelOpacity == 0) {
       return const SizedBox.shrink();
     }
-    final selected = measurements.where(
-      (measurement) => measurement.id == selectedMeasurementId,
+    final selected = widget.measurements.where(
+      (measurement) => measurement.id == widget.selectedMeasurementId,
     );
-    final others = measurements.where(
-      (measurement) => measurement.id != selectedMeasurementId,
+    final others = widget.measurements.where(
+      (measurement) => measurement.id != widget.selectedMeasurementId,
     );
     final priorityOrder = [...selected, ...others];
 
@@ -8449,39 +8933,45 @@ class _SavedMeasurementLabels extends StatelessWidget {
         );
         final occupied = <Rect>[];
         final placements = <_SavedMeasurementLabelPlacement>[];
+        _placementCache.retainOnly(priorityOrder.map((item) => item.id));
         for (final measurement in priorityOrder) {
-          final labelPoint = _SavedMeasurementsLayerState._labelPoint(
-            measurement,
-          );
+          final labelPoint = savedMeasurementLabelAnchor(measurement);
           if (labelPoint == null) continue;
-          final anchor = camera.latLngToScreenOffset(labelPoint);
+          final anchor = project(labelPoint);
           if (!_isFiniteOffset(anchor)) continue;
-          final geometryBounds = _screenBounds(
-            measurement.geometry
-                .map(camera.latLngToScreenOffset)
-                .where(_isFiniteOffset)
-                .toList(growable: false),
-          );
+          final projectedGeometry = measurement.geometry
+              .map(project)
+              .where(_isFiniteOffset)
+              .toList(growable: false);
+          if (projectedGeometry.isEmpty) continue;
+          final geometryBounds = _screenBounds(projectedGeometry);
           if (!geometryBounds.overlaps(Offset.zero & viewport)) {
             continue;
           }
-          final edgeOpacity = _edgeOpacity(anchor, viewport);
-          if (edgeOpacity == 0) continue;
-          final isSelected = measurement.id == selectedMeasurementId;
+          final isSelected = measurement.id == widget.selectedMeasurementId;
           final size = Size(
             isSelected ? 220 : 176,
             measurement.type == SavedMeasurementType.area
                 ? (isSelected ? 68 : 58)
                 : (isSelected ? 58 : 44),
           );
-          final rect = _findAvailableRect(
+          final geometryKey = Object.hashAll([
+            measurement.type,
+            ...measurement.geometry.map(
+              (point) => Object.hash(point.latitude, point.longitude),
+            ),
+          ]);
+          final rect = _placementCache.resolve(
+            id: measurement.id,
+            geometryKey: geometryKey,
             anchor: anchor,
             size: size,
             viewport: viewport,
             occupied: occupied,
             safeInsets: safeInsets,
           );
-          if (rect == null) continue;
+          final edgeOpacity = measurementLabelEdgeOpacity(rect, viewport);
+          if (edgeOpacity == 0) continue;
           occupied.add(rect.inflate(4));
           placements.add(
             _SavedMeasurementLabelPlacement(
@@ -8513,96 +9003,102 @@ class _SavedMeasurementLabels extends StatelessWidget {
                     rect: placement.rect,
                     child: Opacity(
                       opacity: placement.opacity,
-                      child: MouseRegion(
-                        cursor: SystemMouseCursors.click,
-                        onEnter: (_) =>
-                            onHoverMeasurement(placement.measurement.id),
-                        onHover: (_) =>
-                            onHoverMeasurement(placement.measurement.id),
-                        onExit: (_) => onHoverMeasurement(null),
-                        child: GestureDetector(
-                          key: ValueKey(
-                            'select-saved-measurement-${placement.measurement.id}',
+                      child: Listener(
+                        onPointerSignal: widget.onPointerSignal,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          onEnter: (_) => widget.onHoverMeasurement(
+                            placement.measurement.id,
                           ),
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () =>
-                              onSelectMeasurement(placement.measurement),
-                          child: Container(
+                          onHover: (_) => widget.onHoverMeasurement(
+                            placement.measurement.id,
+                          ),
+                          onExit: (_) => widget.onHoverMeasurement(null),
+                          child: GestureDetector(
                             key: ValueKey(
-                              'saved-measurement-${placement.measurement.id}',
+                              'select-saved-measurement-${placement.measurement.id}',
                             ),
-                            decoration:
-                                _mapHudDecoration(
-                                  Theme.of(context).colorScheme,
-                                ).copyWith(
-                                  border: placement.isSelected
-                                      ? Border.all(
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                          width: 2,
-                                        )
-                                      : placement.measurement.id ==
-                                            hoveredMeasurementId
-                                      ? Border.all(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .primary
-                                              .withValues(alpha: 0.55),
-                                          width: 1.5,
-                                        )
-                                      : null,
-                                ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => widget.onSelectMeasurement(
+                              placement.measurement,
                             ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    _SavedMeasurementsLayerState._label(
-                                      placement.measurement,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelMedium
-                                        ?.copyWith(
-                                          fontWeight: FontWeight.w700,
-                                          fontFeatures: const [
-                                            FontFeature.tabularFigures(),
-                                          ],
-                                        ),
+                            child: Container(
+                              key: ValueKey(
+                                'saved-measurement-${placement.measurement.id}',
+                              ),
+                              decoration:
+                                  _mapHudDecoration(
+                                    Theme.of(context).colorScheme,
+                                  ).copyWith(
+                                    border: placement.isSelected
+                                        ? Border.all(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .primary,
+                                            width: 2,
+                                          )
+                                        : placement.measurement.id ==
+                                              widget.hoveredMeasurementId
+                                        ? Border.all(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                                .withValues(alpha: 0.55),
+                                            width: 1.5,
+                                          )
+                                        : null,
                                   ),
-                                ),
-                                SizedBox.square(
-                                  dimension: 32,
-                                  child: IconButton(
-                                    key: ValueKey(
-                                      'hide-saved-measurement-'
-                                      '${placement.measurement.id}',
-                                    ),
-                                    tooltip: placement.measurement.isVisible
-                                        ? 'Ocultar medición'
-                                        : 'Mostrar medición',
-                                    visualDensity: VisualDensity.compact,
-                                    padding: EdgeInsets.zero,
-                                    icon: Icon(
-                                      placement.measurement.isVisible
-                                          ? AppIcons.visibility
-                                          : AppIcons.visibilityOff,
-                                      size: 18,
-                                    ),
-                                    onPressed: () => onHideMeasurement(
-                                      placement.measurement,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      _SavedMeasurementsLayerState._label(
+                                        placement.measurement,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelMedium
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.w700,
+                                            fontFeatures: const [
+                                              FontFeature.tabularFigures(),
+                                            ],
+                                          ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                  SizedBox.square(
+                                    dimension: 32,
+                                    child: IconButton(
+                                      key: ValueKey(
+                                        'hide-saved-measurement-'
+                                        '${placement.measurement.id}',
+                                      ),
+                                      tooltip: placement.measurement.isVisible
+                                          ? 'Ocultar medición'
+                                          : 'Mostrar medición',
+                                      visualDensity: VisualDensity.compact,
+                                      padding: EdgeInsets.zero,
+                                      icon: Icon(
+                                        placement.measurement.isVisible
+                                            ? AppIcons.visibility
+                                            : AppIcons.visibilityOff,
+                                        size: 18,
+                                      ),
+                                      onPressed: () => widget.onHideMeasurement(
+                                        placement.measurement,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
@@ -8629,55 +9125,6 @@ class _SavedMeasurementLabels extends StatelessWidget {
       bottom = math.max(bottom, point.dy);
     }
     return Rect.fromLTRB(left, top, right, bottom).inflate(1);
-  }
-
-  double _edgeOpacity(Offset anchor, Size viewport) {
-    const fadeDistance = 72.0;
-    final distance = math.min(
-      math.min(anchor.dx, viewport.width - anchor.dx),
-      math.min(anchor.dy, viewport.height - anchor.dy),
-    );
-    return (distance / fadeDistance).clamp(0.0, 1.0);
-  }
-
-  Rect? _findAvailableRect({
-    required Offset anchor,
-    required Size size,
-    required Size viewport,
-    required List<Rect> occupied,
-    required EdgeInsets safeInsets,
-  }) {
-    const gap = 12.0;
-    final offsets = <Offset>[
-      Offset(-size.width / 2, -size.height - gap),
-      Offset(gap, -size.height / 2),
-      Offset(-size.width - gap, -size.height / 2),
-      Offset(-size.width / 2, gap),
-      Offset(gap, -size.height - gap),
-      Offset(-size.width - gap, -size.height - gap),
-      Offset(gap, gap),
-      Offset(-size.width - gap, gap),
-    ];
-    for (final offset in offsets) {
-      final candidate = Rect.fromLTWH(
-        anchor.dx + offset.dx,
-        anchor.dy + offset.dy,
-        size.width,
-        size.height,
-      );
-      final availableBounds = Rect.fromLTRB(
-        safeInsets.left,
-        safeInsets.top,
-        viewport.width - safeInsets.right,
-        viewport.height - safeInsets.bottom,
-      );
-      if (availableBounds.contains(candidate.topLeft) &&
-          availableBounds.contains(candidate.bottomRight) &&
-          occupied.every((rect) => !rect.overlaps(candidate))) {
-        return candidate;
-      }
-    }
-    return null;
   }
 }
 
@@ -8706,9 +9153,8 @@ class _MeasurementLabelLeaderPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()..strokeWidth = 1;
     for (final placement in placements) {
-      paint.color = const Color(
-        0xFF425466,
-      ).withValues(alpha: 0.55 * placement.opacity);
+      paint.color = const Color(0xFF425466)
+          .withValues(alpha: 0.55 * placement.opacity);
       canvas.drawLine(placement.anchor, placement.rect.center, paint);
     }
   }
@@ -8742,6 +9188,7 @@ class _MeasurementLayer extends StatelessWidget {
     required this.onMoveAreaVertex,
     required this.onEndAreaVertexDrag,
     required this.onVertexTap,
+    required this.onPointerSignal,
     required this.onColorChanged,
     required this.onSave,
     required this.isSavedMeasurement,
@@ -8754,6 +9201,7 @@ class _MeasurementLayer extends StatelessWidget {
     required this.onExit,
     required this.onAnalyze,
     required this.onExport,
+    this.renderFlutterGeometry = true,
   });
 
   final _MeasurementMode mode;
@@ -8766,6 +9214,7 @@ class _MeasurementLayer extends StatelessWidget {
   final void Function(int index, Offset globalPosition) onMoveAreaVertex;
   final VoidCallback onEndAreaVertexDrag;
   final void Function(int index, Offset position) onVertexTap;
+  final ValueChanged<PointerSignalEvent> onPointerSignal;
   final ValueChanged<MeasurementColorOption> onColorChanged;
   final VoidCallback onSave;
   final bool isSavedMeasurement;
@@ -8778,6 +9227,7 @@ class _MeasurementLayer extends StatelessWidget {
   final VoidCallback onExit;
   final ValueChanged<ParcelAnalysis> onAnalyze;
   final VoidCallback onExport;
+  final bool renderFlutterGeometry;
 
   @override
   Widget build(BuildContext context) {
@@ -8803,6 +9253,7 @@ class _MeasurementLayer extends StatelessWidget {
           measurementOnColor: measurementOnColor,
           isDragged: draggedAreaVertexIndex == index,
           keyPrefix: 'distance',
+          onPointerSignal: onPointerSignal,
         ),
     ];
     final resultMarkers = <Marker>[];
@@ -8847,22 +9298,24 @@ class _MeasurementLayer extends StatelessWidget {
 
     return Stack(
       children: [
-        if (distancePoints.length >= 2)
+        if (renderFlutterGeometry && distancePoints.length >= 2)
           IgnorePointer(
             child: PolylineLayer(
               polylines: [
                 Polyline(
                   points: distancePoints,
-                  strokeWidth: 4,
+                  strokeWidth: MeasurementRenderStyles.activeDistance.width,
                   color: measurementColor,
-                  borderStrokeWidth: 1.5,
-                  borderColor: colorScheme.surface,
+                  borderStrokeWidth: 0,
+                  strokeCap: MeasurementRenderStyles.activeDistance.cap,
+                  strokeJoin: MeasurementRenderStyles.activeDistance.join,
                 ),
               ],
             ),
           ),
-        if (isEditing) MarkerLayer(markers: markers),
-        if (resultMarkers.isNotEmpty) MarkerLayer(markers: resultMarkers),
+        if (renderFlutterGeometry && isEditing) MarkerLayer(markers: markers),
+        if (renderFlutterGeometry && resultMarkers.isNotEmpty)
+          MarkerLayer(markers: resultMarkers),
         if (isEditing)
           Positioned(
             left: 16,
@@ -8941,6 +9394,7 @@ class _MeasurementLayer extends StatelessWidget {
           measurementOnColor: measurementOnColor,
           isDragged: draggedAreaVertexIndex == index,
           keyPrefix: 'area',
+          onPointerSignal: onPointerSignal,
         ),
     ];
 
@@ -9044,32 +9498,38 @@ class _MeasurementLayer extends StatelessWidget {
 
     return Stack(
       children: [
-        if (hasPolygon)
+        if (renderFlutterGeometry && hasPolygon)
           IgnorePointer(
             child: PolygonLayer(
               polygons: [
                 Polygon(
                   points: areaPoints,
-                  color: measurementColor.withValues(alpha: 0.25),
+                  color: measurementColor.withValues(
+                    alpha: MeasurementRenderStyles.activeAreaFillOpacity,
+                  ),
                   borderColor: measurementColor,
-                  borderStrokeWidth: 3,
+                  borderStrokeWidth: 0,
+                  strokeCap: MeasurementRenderStyles.activeAreaOutline.cap,
+                  strokeJoin: MeasurementRenderStyles.activeAreaOutline.join,
                 ),
               ],
             ),
           ),
-        if (linePoints.length >= 2)
+        if (renderFlutterGeometry && linePoints.length >= 2)
           IgnorePointer(
             child: PolylineLayer(
               polylines: [
                 Polyline(
                   points: linePoints,
-                  strokeWidth: 3,
+                  strokeWidth: MeasurementRenderStyles.activeAreaOutline.width,
                   color: measurementColor,
+                  strokeCap: MeasurementRenderStyles.activeAreaOutline.cap,
+                  strokeJoin: MeasurementRenderStyles.activeAreaOutline.join,
                 ),
               ],
             ),
           ),
-        if (isEditing) MarkerLayer(markers: markers),
+        if (renderFlutterGeometry && isEditing) MarkerLayer(markers: markers),
         measurementPanel,
       ],
     );
@@ -9085,6 +9545,7 @@ class _MeasurementLayer extends StatelessWidget {
     required Color measurementOnColor,
     required bool isDragged,
     required String keyPrefix,
+    required ValueChanged<PointerSignalEvent> onPointerSignal,
   }) {
     final isFirst = index == 0;
     return Marker(
@@ -9105,6 +9566,7 @@ class _MeasurementLayer extends StatelessWidget {
         onDragUpdate: (position) => onMoveAreaVertex(index, position),
         onDragEnd: onEndAreaVertexDrag,
         onTap: (position) => onVertexTap(index, position),
+        onPointerSignal: onPointerSignal,
       ),
     );
   }
@@ -9230,10 +9692,12 @@ class _AreaVertexHandle extends StatefulWidget {
     required this.measurementColor,
     required this.measurementOnColor,
     required this.desktopInteraction,
+    this.renderVisuals = true,
     required this.onDragStart,
     required this.onDragUpdate,
     required this.onDragEnd,
     required this.onTap,
+    required this.onPointerSignal,
   });
 
   final String label;
@@ -9243,10 +9707,12 @@ class _AreaVertexHandle extends StatefulWidget {
   final Color measurementColor;
   final Color measurementOnColor;
   final bool desktopInteraction;
+  final bool renderVisuals;
   final ValueChanged<Offset> onDragStart;
   final ValueChanged<Offset> onDragUpdate;
   final VoidCallback onDragEnd;
   final ValueChanged<Offset> onTap;
+  final ValueChanged<PointerSignalEvent> onPointerSignal;
 
   @override
   State<_AreaVertexHandle> createState() => _AreaVertexHandleState();
@@ -9268,6 +9734,7 @@ class _AreaVertexHandleState extends State<_AreaVertexHandle> {
     final colorScheme = widget.colorScheme;
     return Listener(
       behavior: HitTestBehavior.opaque,
+      onPointerSignal: widget.onPointerSignal,
       onPointerDown: (event) {
         _moved = false;
         if (widget.desktopInteraction &&
@@ -9322,31 +9789,33 @@ class _AreaVertexHandleState extends State<_AreaVertexHandle> {
         cursor: widget.isDragged
             ? SystemMouseCursors.move
             : SystemMouseCursors.click,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: widget.isDragged
-                ? colorScheme.error
-                : widget.measurementColor,
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: widget.isDragged
-                  ? colorScheme.onError
-                  : colorScheme.surface,
-              width: widget.isDragged ? 4 : 3,
-            ),
-          ),
-          child: Center(
-            child: Text(
-              widget.label,
-              style: TextStyle(
-                color: widget.isDragged
-                    ? colorScheme.onError
-                    : widget.measurementOnColor,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ),
+        child: widget.renderVisuals
+            ? DecoratedBox(
+                decoration: BoxDecoration(
+                  color: widget.isDragged
+                      ? colorScheme.error
+                      : widget.measurementColor,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: widget.isDragged
+                        ? colorScheme.onError
+                        : colorScheme.surface,
+                    width: widget.isDragged ? 4 : 3,
+                  ),
+                ),
+                child: Center(
+                  child: Text(
+                    widget.label,
+                    style: TextStyle(
+                      color: widget.isDragged
+                          ? colorScheme.onError
+                          : widget.measurementOnColor,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              )
+            : const SizedBox.expand(),
       ),
     );
   }
@@ -9581,12 +10050,6 @@ bool _isFiniteLatLng(LatLng point) {
 
 bool _isFiniteCoordinateValues(double latitude, double longitude) {
   return _isFiniteNumber(latitude) && _isFiniteNumber(longitude);
-}
-
-bool _isFiniteCamera(MapCamera camera) {
-  return _isFiniteLatLng(camera.center) &&
-      _isFiniteNumber(camera.zoom) &&
-      _isFiniteNumber(camera.rotation);
 }
 
 bool _isFiniteCameraState(SoilMapCameraState camera) {
@@ -9937,9 +10400,7 @@ class _MapCompassControlState extends State<_MapCompassControl> {
     final mapEngine = widget.mapEngine;
     if (mapEngine == null) return;
     final currentRotation = mapEngine.camera.rotation;
-    mapEngine.rotate(
-      currentRotation + details.delta.dx * _dragDegreesPerPixel,
-    );
+    mapEngine.rotate(currentRotation + details.delta.dx * _dragDegreesPerPixel);
   }
 
   void _handleDragEnd(DragEndDetails details) {
@@ -10183,6 +10644,7 @@ String _provinceDisplayName(String coverageId) {
   return switch (coverageId) {
     'santa_fe' => 'Santa Fe',
     'buenos_aires' => 'Buenos Aires',
+    'cordoba' => 'Córdoba',
     _ => coverageId,
   };
 }
@@ -10267,17 +10729,24 @@ abstract final class _ProvinceBoundaryLoader {
 class _ProvincePmtilesBanner extends StatefulWidget {
   const _ProvincePmtilesBanner({
     super.key,
+    this.showCard = true,
     required this.coverageId,
     required this.delivery,
     required this.anchorPoint,
     required this.provinceBounds,
     required this.provinceName,
     required this.referenceMapAssetPath,
+    required this.mapEngine,
     required this.viewStateListenable,
     required this.resolveCamera,
+    required this.projectPoint,
     required this.onDownload,
     required this.onDismissedFirstTime,
   });
+
+  /// Keeps the legacy delivery-aware province highlight connected while the
+  /// stable download overlay owns the only download card.
+  final bool showCard;
 
   /// Which coverage this banner is for — namespaces the persisted
   /// dismissal (see [_ProvinceNoticeDismissal]) so Santa Fe and Buenos
@@ -10318,13 +10787,13 @@ class _ProvincePmtilesBanner extends StatefulWidget {
   /// [MapCoverage] of its own, just like [ProvinceConfig].referenceMapAsset
   /// already flows into `OfflineReferenceMapLayer` elsewhere on this screen.
   final String? referenceMapAssetPath;
+  final SoilMapEngine mapEngine;
   final ValueListenable<_MapViewportState> viewStateListenable;
 
-  /// Live camera accessor (not a snapshot) — null when the active engine
-  /// isn't [FlutterMapEngine] and so exposes no equivalent projection here
-  /// (e.g. a test fake); the annotation simply doesn't render rather than
-  /// crashing or guessing a position.
-  final MapCamera? Function() resolveCamera;
+  /// Camera snapshot and synchronous projection supplied by the active map
+  /// engine so the notice remains geographically anchored for either map.
+  final SoilMapCameraState? Function() resolveCamera;
+  final Offset? Function(LatLng point) projectPoint;
   final VoidCallback onDownload;
 
   /// Fires the very first time the user closes this notice with the `×` —
@@ -10340,13 +10809,8 @@ class _ProvincePmtilesBanner extends StatefulWidget {
   /// boundary/shadow — see [_isProvinceBoundsVisible]). No zoom threshold:
   /// at any zoom level, once this point scrolls off-screen the card
   /// disappears, and it reappears the moment it's back in view.
-  static bool isCoverageVisible(
-    MapCamera? camera,
-    Size screenSize,
-    LatLng anchor,
-  ) {
-    if (camera == null || screenSize.isEmpty) return false;
-    final offset = camera.latLngToScreenOffset(anchor);
+  static bool isCoverageVisible(Offset? offset, Size screenSize) {
+    if (offset == null || screenSize.isEmpty) return false;
     return offset.dx >= 0 &&
         offset.dx <= screenSize.width &&
         offset.dy >= 0 &&
@@ -10365,11 +10829,11 @@ class _ProvincePmtilesBanner extends StatefulWidget {
   /// so a province that was visible stays visible until it's genuinely
   /// entirely off-screen.
   static bool _isProvinceBoundsVisible(
-    MapCamera? camera,
+    SoilMapCameraState? camera,
     GeoBounds provinceBounds,
   ) {
-    if (camera == null) return false;
-    final visible = camera.visibleBounds;
+    final visible = camera?.visibleBounds;
+    if (visible == null) return false;
     return GeoBounds(
       minLatitude: visible.south,
       maxLatitude: visible.north,
@@ -10400,13 +10864,19 @@ class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
   void initState() {
     super.initState();
     widget.delivery.addListener(_handleDeliveryChanged);
-    unawaited(_loadDismissal());
+    if (widget.showCard) unawaited(_loadDismissal());
     unawaited(_loadBoundary());
   }
 
   @override
   void dispose() {
     widget.delivery.removeListener(_handleDeliveryChanged);
+    widget.mapEngine.setProvinceBoundaryHighlight(
+      coverageId: widget.coverageId,
+      rings: null,
+      fillColor: Colors.transparent,
+      borderColor: Colors.transparent,
+    );
     super.dispose();
   }
 
@@ -10472,17 +10942,27 @@ class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
               camera,
               widget.provinceBounds,
             );
+        final fillColor = Theme.of(context).colorScheme.scrim
+            .withValues(alpha: 0.10);
+        final borderColor = Theme.of(context).colorScheme.primary
+            .withValues(alpha: 0.45);
+        widget.mapEngine.setProvinceBoundaryHighlight(
+          coverageId: widget.coverageId,
+          rings: showBoundary ? _boundaryRings : null,
+          fillColor: fillColor,
+          borderColor: borderColor,
+        );
 
         // Download card visibility: unchanged from before — only while
         // not yet available, not dismissed for the current status, and
         // its own anchor point is on screen.
         final showCard =
+            widget.showCard &&
             !isAvailable &&
             _dismissedStatusName != status.name &&
             _ProvincePmtilesBanner.isCoverageVisible(
-              camera,
+              widget.projectPoint(widget.anchorPoint),
               screenSize,
-              widget.anchorPoint,
             );
 
         if (!showBoundary && !showCard) {
@@ -10495,7 +10975,9 @@ class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
             // boundary — see _ProvinceBoundaryLoader. Nothing is drawn if
             // that data isn't available; a rectangle is never substituted
             // for it.
-            if (showBoundary)
+            if (showBoundary &&
+                (!widget.mapEngine.rendersSoilPolygonsInternally ||
+                    defaultTargetPlatform != TargetPlatform.android))
               IgnorePointer(
                 child: CustomPaint(
                   size: screenSize,
@@ -10503,16 +10985,13 @@ class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
                     rings: _boundaryRings!
                         .map(
                           (ring) => ring
-                              .map(camera.latLngToScreenOffset)
+                              .map(widget.projectPoint)
+                              .whereType<Offset>()
                               .toList(growable: false),
                         )
                         .toList(growable: false),
-                    fillColor: Theme.of(
-                      context,
-                    ).colorScheme.scrim.withValues(alpha: 0.10),
-                    borderColor: Theme.of(
-                      context,
-                    ).colorScheme.primary.withValues(alpha: 0.45),
+                    fillColor: fillColor,
+                    borderColor: borderColor,
                   ),
                 ),
               ),
@@ -10526,9 +11005,8 @@ class _ProvincePmtilesBannerState extends State<_ProvincePmtilesBanner> {
                   // "keep on screen": if this lands under a control or
                   // off-screen, it stays there, because the geography —
                   // not screen tidiness — decides where it goes.
-                  final anchor = camera.latLngToScreenOffset(
-                    widget.anchorPoint,
-                  );
+                  final anchor = widget.projectPoint(widget.anchorPoint);
+                  if (anchor == null) return const SizedBox.shrink();
                   return Positioned(
                     left: anchor.dx - _cardMaxWidth / 2,
                     top: anchor.dy + 8,
@@ -11751,13 +12229,12 @@ class _MapChromeIconButton extends StatelessWidget {
   }
 }
 
-typedef _SynchronizedMapHeaderBuilder =
-    Widget Function(
-      BuildContext context,
-      double titleFactor,
-      double undoFactor,
-      double clearFactor,
-    );
+typedef _SynchronizedMapHeaderBuilder = Widget Function(
+  BuildContext context,
+  double titleFactor,
+  double undoFactor,
+  double clearFactor,
+);
 
 class _SynchronizedMapHeaderTransition extends StatefulWidget {
   const _SynchronizedMapHeaderTransition({
@@ -12151,18 +12628,16 @@ class _LayerVisibilityMenuItem extends StatelessWidget {
                         title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: Theme.of(context).textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         subtitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                        ),
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: colorScheme.onSurfaceVariant),
                       ),
                     ],
                   ),

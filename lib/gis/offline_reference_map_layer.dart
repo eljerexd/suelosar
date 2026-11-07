@@ -326,6 +326,7 @@ class _AgronomicReferencePainter extends CustomPainter {
     }
 
     for (final city in basemap.majorCities) {
+      if (city.isAdministrative) continue;
       final cityOpacity = opacity * _cityVisibility(city);
       if (cityOpacity <= 0) {
         continue;
@@ -386,7 +387,7 @@ class _AgronomicReferencePainter extends CustomPainter {
           city._cachedLabelPicture == null) {
         final style = TextStyle(
           color: const Color(0xFF29312C).withValues(alpha: cityOpacity),
-          fontSize: city.isPrimary ? 16 : 14.5,
+          fontSize: city.isPrimary ? 16 : city.isAdministrative ? 13.5 : 14.5,
           fontWeight: city.isPrimary ? FontWeight.w700 : FontWeight.w600,
           height: 1.05,
         );
@@ -402,7 +403,7 @@ class _AgronomicReferencePainter extends CustomPainter {
               0xFFFCFCFA,
             ).withValues(alpha: cityOpacity * 0.98)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = city.isPrimary ? 5 : 4.5
+            ..strokeWidth = city.isPrimary ? 5 : 4.2
             ..strokeJoin = StrokeJoin.round,
         );
         final haloPainter = TextPainter(
@@ -451,6 +452,7 @@ class _AgronomicReferencePainter extends CustomPainter {
   }
 
   double _cityVisibility(_ReferenceCity city) {
+    if (city.isAdministrative) return _zoomOpacity(camera.zoom, 6.2, 8.0);
     return city.isPrimary ? 1 : _zoomOpacity(camera.zoom, 7.7, 9.4);
   }
 
@@ -635,7 +637,10 @@ class _AgronomicReferenceBasemap {
       majorRivers: majorRivers,
       nationalRoads: nationalRoads,
       provincialRoads: provincialRoads,
-      majorCities: _parseCities(layers['majorCities']),
+      majorCities: [
+        ..._parseCities(layers['majorCities']),
+        ..._parseDepartmentLabels(layers['departmentLabels']),
+      ],
       provincialBoundariesPath: _buildPath(provincialBoundaries),
       departmentBoundariesPath: _buildPath(departmentBoundaries),
       majorRiversPath: _buildPath(majorRivers),
@@ -697,6 +702,18 @@ class _AgronomicReferenceBasemap {
     return parsedCities;
   }
 
+  static List<_ReferenceCity> _parseDepartmentLabels(Object? rawLabels) {
+    final labels = rawLabels as List<dynamic>? ?? const <dynamic>[];
+    return [
+      for (final raw in labels)
+        if (_ReferenceCity.fromJson({
+          ...Map<String, dynamic>.from(raw as Map),
+          'isAdministrative': true,
+        }) case final city?)
+          city,
+    ];
+  }
+
   static LatLng? _parsePoint(List<dynamic> rawPoint) {
     final longitude = (rawPoint[0] as num).toDouble();
     final latitude = (rawPoint[1] as num).toDouble();
@@ -710,12 +727,14 @@ class _ReferenceCity {
     required this.name,
     required this.position,
     required this.isPrimary,
+    this.isAdministrative = false,
   });
 
   final String name;
   final LatLng position;
   final bool isPrimary;
-  int get priority => isPrimary ? 1 : 0;
+  final bool isAdministrative;
+  int get priority => isPrimary ? 2 : isAdministrative ? 0 : 1;
 
   // Fase 8C perf fix: a label's rendered look (its shaped+stroked halo and
   // text) depends only on its name/style and `cityOpacity` (baked into the
@@ -739,6 +758,7 @@ class _ReferenceCity {
       name: json['name'] as String,
       position: position,
       isPrimary: json['importance'] == 'primary',
+      isAdministrative: json['isAdministrative'] == true,
     );
   }
 }

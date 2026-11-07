@@ -6,6 +6,7 @@ import '../models/pdf_soil_sheet_favorite.dart';
 import '../models/soil_card.dart';
 import '../repositories/pdf_series_repository.dart';
 import '../repositories/santa_fe_series_repository.dart';
+import '../repositories/cordoba_series_repository.dart';
 import '../services/pdf_soil_sheet_favorites_service.dart';
 import 'pdf_viewer_screen.dart';
 import '../widgets/app_notification.dart';
@@ -23,6 +24,8 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   final PdfSeriesRepository _pdfSeriesRepository = PdfSeriesRepository();
   final SantaFeSeriesRepository _santaFeSeriesRepository =
       SantaFeSeriesRepository();
+  final CordobaSeriesRepository _cordobaSeriesRepository =
+      CordobaSeriesRepository();
   final PdfSoilSheetFavoritesService _favoritesService =
       PdfSoilSheetFavoritesService();
   List<PdfSoilSheetFavorite>? _favorites;
@@ -111,9 +114,8 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               padding: const EdgeInsets.all(4),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: Theme.of(
-                  context,
-                ).colorScheme.primaryContainer.withValues(alpha: 0.55),
+                color: Theme.of(context).colorScheme.primaryContainer
+                    .withValues(alpha: 0.55),
               ),
               child: Icon(
                 AppIcons.star,
@@ -138,6 +140,32 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       );
       final entry = await _santaFeSeriesRepository.findByCode(code);
       final pdfAsset = await _santaFeSeriesRepository.pdfAsset;
+      if (!mounted) return;
+      if (entry == null) {
+        AppNotification.show(
+          context,
+          message: 'Memoria descriptiva no disponible.',
+          type: AppNotificationType.warning,
+        );
+        return;
+      }
+      await openLocalPdfViewer(
+        context,
+        title: favorite.title,
+        assetPath: pdfAsset,
+        unavailableMessage: 'Memoria descriptiva no disponible.',
+        initialPage: entry.startPage,
+        lastPage: entry.endPage,
+      );
+      return;
+    }
+
+    if (savedIdentifier.startsWith(SoilCard.cordobaFavoriteIdentifierPrefix)) {
+      final name = savedIdentifier.substring(
+        SoilCard.cordobaFavoriteIdentifierPrefix.length,
+      );
+      final entry = await _cordobaSeriesRepository.findByName(name);
+      final pdfAsset = await _cordobaSeriesRepository.pdfAsset;
       if (!mounted) return;
       if (entry == null) {
         AppNotification.show(
@@ -187,9 +215,15 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   /// (bare PDF filenames) are shown unchanged, exactly as before.
   String _displayIdentifier(PdfSoilSheetFavorite favorite) {
     final identifier = favorite.pdfIdentifier;
-    return identifier.startsWith(SoilCard.santaFeFavoriteIdentifierPrefix)
-        ? identifier.substring(SoilCard.santaFeFavoriteIdentifierPrefix.length)
-        : identifier;
+    for (final prefix in const [
+      SoilCard.santaFeFavoriteIdentifierPrefix,
+      SoilCard.cordobaFavoriteIdentifierPrefix,
+    ]) {
+      if (identifier.startsWith(prefix)) {
+        return identifier.substring(prefix.length);
+      }
+    }
+    return identifier;
   }
 
   List<PdfSoilSheetFavorite> _filterFavorites(

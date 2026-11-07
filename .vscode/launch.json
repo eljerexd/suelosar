@@ -44,6 +44,48 @@
         "beta",
         "--dart-define-from-file=.vscode/supabase.env.json"
       ]
+    },
+    {
+      "name": "SuelosAR Alpha - Windows MapLibre (Debug)",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "cwd": "${workspaceFolder}",
+      "deviceId": "windows",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--dart-define=SUelosAR_MAPLIBRE_NATIVE=true",
+        "--dart-define-from-file=C:\\Users\\jerem\\suelosar\\.vscode\\supabase.env.json"
+      ]
+    },
+    {
+      "name": "SuelosAR Alpha - Android MapLibre (Debug)",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "cwd": "${workspaceFolder}",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--flavor",
+        "beta",
+        "--dart-define=SUelosAR_MAPLIBRE_NATIVE=true",
+        "--dart-define-from-file=C:\\Users\\jerem\\suelosar\\.vscode\\supabase.env.json"
+      ]
+    },
+    {
+      "name": "SuelosAR Alpha - Android MapLibre (Local PMTiles)",
+      "request": "launch",
+      "type": "dart",
+      "program": "${workspaceFolder}/lib/main.dart",
+      "cwd": "${workspaceFolder}",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--flavor",
+        "beta",
+        "--dart-define=SUelosAR_MAPLIBRE_NATIVE=true",
+        "--dart-define=SUelosAR_DEBUG_LOCAL_PMTILES=true",
+        "--dart-define-from-file=C:\\Users\\jerem\\suelosar\\.vscode\\supabase.env.json"
+      ]
     }
   ]
 }

@@ -1,8 +1,12 @@
+import 'dart:math' as math;
+
 import 'package:flutter/widgets.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../gis_feature.dart';
 import '../gis_layer.dart';
+import '../native_map_source.dart';
+import '../../models/saved_measurement.dart';
 
 /// Snapshot of the map camera (center, zoom, rotation) exposed by a
 /// [SoilMapEngine], independent of the concrete rendering engine.
@@ -12,11 +16,13 @@ class SoilMapCameraState {
     required this.center,
     required this.zoom,
     required this.rotation,
+    this.visibleBounds,
   });
 
   final LatLng center;
   final double zoom;
   final double rotation;
+  final SoilMapVisibleBounds? visibleBounds;
 
   @override
   bool operator ==(Object other) {
@@ -30,6 +36,37 @@ class SoilMapCameraState {
   @override
   int get hashCode =>
       Object.hash(center.latitude, center.longitude, zoom, rotation);
+}
+
+@immutable
+class SoilMapVisibleBounds {
+  const SoilMapVisibleBounds({
+    required this.west,
+    required this.south,
+    required this.east,
+    required this.north,
+  });
+
+  static SoilMapVisibleBounds? fromCorners(Iterable<LatLng> corners) {
+    final points = corners.toList(growable: false);
+    if (points.isEmpty ||
+        points.any(
+          (point) => !point.latitude.isFinite || !point.longitude.isFinite,
+        )) {
+      return null;
+    }
+    return SoilMapVisibleBounds(
+      west: points.map((point) => point.longitude).reduce(math.min),
+      south: points.map((point) => point.latitude).reduce(math.min),
+      east: points.map((point) => point.longitude).reduce(math.max),
+      north: points.map((point) => point.latitude).reduce(math.max),
+    );
+  }
+
+  final double west;
+  final double south;
+  final double east;
+  final double north;
 }
 
 /// Details of a tap on the map surface, independent of the concrete
@@ -47,8 +84,10 @@ class SoilMapTapDetails {
 
 typedef SoilMapReadyCallback = void Function();
 
-typedef SoilMapPositionChangedCallback =
-    void Function(SoilMapCameraState camera, {required bool hasGesture});
+typedef SoilMapPositionChangedCallback = void Function(
+  SoilMapCameraState camera, {
+  required bool hasGesture,
+});
 
 typedef SoilMapTapCallback = void Function(SoilMapTapDetails details);
 
@@ -59,40 +98,72 @@ class SoilMapMarkerPin {
     required this.id,
     required this.point,
     required this.icon,
+    this.categoryId = 'other',
+    this.properties = const {},
   });
 
   final String id;
   final LatLng point;
 
   /// The category icon `GisMapScreen` already resolves via
-  /// `personalMarkerCategoryIcon` — passed through so engines that render
-  /// markers independently of a `children` widget (MapLibreEngine) can
-  /// match the personal-marker icon/category visual FlutterMapEngine
-  /// already shows via its own `Icon(personalMarkerCategoryIcon(...))`.
-  /// FlutterMapEngine itself ignores this (its markers come from
-  /// `children`, unaffected by this field).
+  /// `personalMarkerCategoryIcon`. MapLibre registers it as a local style
+  /// image; FlutterMapEngine renders it from the existing child layer.
   final IconData icon;
+  final String categoryId;
+  final Map<String, Object?> properties;
+}
+
+/// A Flutter interaction widget projected at a geographic measurement point
+/// by a map engine. Measurement lines and polygons remain engine-rendered.
+@immutable
+class SoilMapMeasurementMarker {
+  const SoilMapMeasurementMarker({
+    required this.point,
+    required this.size,
+    required this.child,
+    this.label = '',
+    this.radius = 15,
+    this.fillColor = const Color(0xFF0000FF),
+    this.textColor = const Color(0xFFFFFFFF),
+    this.strokeColor = const Color(0xFFFFFFFF),
+    this.strokeWidth = 3,
+    this.alignment = Alignment.center,
+    this.useFlutterOverlay = false,
+  });
+
+  final LatLng point;
+  final Size size;
+  final Widget child;
+  final String label;
+  final double radius;
+  final Color fillColor;
+  final Color textColor;
+  final Color strokeColor;
+  final double strokeWidth;
+  final Alignment alignment;
+  final bool useFlutterOverlay;
 }
 
 /// Abstraction over the concrete map-rendering engine used by
 /// [GisMapScreen].
 ///
-/// Covers camera/navigation (Etapa 2), soil-polygon rendering/selection, and
-/// personal markers / GPS visual / distance & area measurement rendering
-/// (Etapa 3 continuation) — the capabilities needed for functional parity
-/// between [FlutterMapEngine] and [MapLibreEngine]. `flutter_map`-specific
-/// layer widgets are still accepted via [children] for FlutterMapEngine;
-/// MapLibreEngine ignores them (it draws everything through the methods
-/// below instead, since MapLibre has no per-frame layer-widget model).
+/// Covers camera/navigation and native soil-polygon rendering/selection.
+/// [FlutterMapEngine] renders the screen's map children directly. The current
+/// [MapLibreEngine] renders geographic data natively and hosts ordinary
+/// Flutter UI overlays above its single native map viewport.
 ///
-/// Not covered: interactive measurement editing (dragging an existing
-/// vertex, or inserting a new point mid-edge instead of at the end) needs
-/// synchronous screen<->geo projection, which MapLibre's plugin only
-/// exposes asynchronously. See the Etapa 3 continuation report for the full
-/// analysis — [latLngToScreenOffset]/[screenOffsetToLatLng] were kept
-/// synchronous rather than reshaping them (and every FlutterMapEngine
-/// call-site) around MapLibre's async API.
+/// MapLibre measurement markers use the engine's synchronous projection
+/// methods for screen-position interactions; calculations and state remain
+/// owned by [GisMapScreen].
 abstract interface class SoilMapEngine {
+  /// Whether soil polygons are drawn by the engine instead of Flutter
+  /// children. The screen still loads decoded tiles for search and fallback.
+  bool get rendersSoilPolygonsInternally;
+
+  /// Notifies screen-space overlays that the engine camera has moved or the
+  /// viewport has changed. Geographic native layers do not need this signal.
+  Listenable get cameraChanges;
+
   /// Builds the widget that hosts the map surface plus everything composed
   /// on top of it via [children].
   Widget buildMapSurface({
@@ -103,10 +174,12 @@ abstract interface class SoilMapEngine {
     required double maxZoom,
     required Color backgroundColor,
     required bool gesturesEnabled,
+    required bool annotationGesturesEnabled,
     required SoilMapReadyCallback onReady,
     required SoilMapPositionChangedCallback onPositionChanged,
     SoilMapTapCallback? onTap,
     required List<Widget> children,
+    List<Widget> mapFrameChildren = const [],
   });
 
   /// Current camera snapshot. Only meaningful after [SoilMapReadyCallback]
@@ -115,6 +188,10 @@ abstract interface class SoilMapEngine {
 
   /// Moves the camera immediately (no animation) to [center]/[zoom].
   void move(LatLng center, double zoom);
+
+  /// Applies a mouse-wheel zoom around [screenPoint], local to the map
+  /// surface. Used by interactive measurement overlays above the map.
+  void zoomAtScreenPoint(Offset screenPoint, double scrollDeltaY);
 
   /// Rotates the camera to an absolute [degrees] heading (0 = north up).
   void rotate(double degrees);
@@ -149,12 +226,13 @@ abstract interface class SoilMapEngine {
     required String layerName,
     required Color normalFillColor,
     required Color selectedFillColor,
+    required List<GisNativeMapSource> sources,
   });
 
   /// Highlights [featureId] in the soil-polygon layer for engines that draw
   /// it internally. No-op for FlutterMapEngine, whose selection highlight is
   /// driven directly by [GisMapScreen] through its `children` widgets.
-  void setSelectedSoilFeature(String? featureId);
+  void setSelectedSoilFeature(String? featureId, {GisFeature? feature});
 
   /// Resolves the soil feature under [screenOffset], for engines that own
   /// their rendering and hit-testing internally (MapLibre's
@@ -172,27 +250,34 @@ abstract interface class SoilMapEngine {
   /// internally. No-op for FlutterMapEngine, same reasoning as above.
   void setReferenceBasemapVisible(bool visible);
 
-  /// Loads the offline agronomic reference basemap (roads, rivers,
-  /// boundaries, city labels) for engines that render it internally.
-  /// No-op for FlutterMapEngine, which already renders it via
-  /// `OfflineReferenceMapLayer` as a `children` widget.
-  Future<void> loadReferenceBasemap();
+  /// Loads the offline agronomic reference basemap for engines that own its
+  /// rendering. [assetPaths] are the EPSG:4326 reference-map datasets selected
+  /// by the active province coverages.
+  Future<void> loadReferenceBasemap({required List<String> assetPaths});
 
-  /// Replaces the set of rendered personal-marker pins. [onMarkerTap] is
-  /// invoked with a pin's [SoilMapMarkerPin.id] when tapped. No-op for
-  /// FlutterMapEngine, which renders markers via its `children` widgets.
+  /// Replaces personal-marker pins for engines that render them as geographic
+  /// annotations. [onMarkerTap] receives a pin's [SoilMapMarkerPin.id].
   void setPersonalMarkers(
     List<SoilMapMarkerPin> markers, {
     required ValueChanged<String> onMarkerTap,
   });
 
-  /// Shows/updates/hides the current-location marker. Pass `point: null` to
-  /// hide it. No-op for FlutterMapEngine, which renders GPS via its
-  /// `children` widgets (`_CurrentLocationLayer`).
+  /// Shows, updates, or hides a current-location marker for engines that
+  /// render it as a geographic annotation. Pass `point: null` to hide it.
   void setCurrentLocationMarker({
     LatLng? point,
     double? accuracyMeters,
     required bool showAccuracyCircle,
+  });
+
+  /// Replaces the visible saved-measurement geometry rendered by engines
+  /// that own native geographic layers. FlutterMapEngine keeps rendering the
+  /// corresponding children passed to [buildMapSurface].
+  void setSavedMeasurementGeometry({
+    required List<SavedMeasurement> measurements,
+    String? highlightedId,
+    String? hoveredId,
+    ValueChanged<String?>? onHoverChanged,
   });
 
   /// Replaces the rendered in-progress measurement geometry — at most one of
@@ -200,34 +285,26 @@ abstract interface class SoilMapEngine {
   /// mirroring `_MeasurementMode`. Vertices are rendered numbered, matching
   /// `_MeasurementLayer._buildEditableVertexMarker`.
   ///
-  /// [onVertexTap] fires with the vertex index and the tap's screen offset
-  /// (for positioning the same `showMenu` delete/cancel popup
-  /// FlutterMapEngine already uses — see `_showVertexMenuAt` in
-  /// `GisMapScreen`). [onVertexDragStart]/[onVertexDragUpdate]/
-  /// [onVertexDragEnd] mirror `_startAreaVertexDrag`/`_moveAreaVertex`/
-  /// `_endAreaVertexDrag` — MapLibre delivers the dragged LatLng directly via
-  /// its native draggable-annotation API, so no screen<->geo projection is
-  /// involved (see the Etapa 3 measurement architecture note).
+  /// [markers] provide measurement vertex styling and Flutter hit targets.
+  /// Native engines render the marker features together with active geometry
+  /// from one GeoJSON snapshot; the child is used only for pointer handling.
   ///
-  /// No-op for FlutterMapEngine, which renders measurements via
-  /// `_MeasurementLayer` as a `children` widget and ignores every callback
-  /// here (its own gesture handling in `_AreaVertexHandle` is unchanged).
-  ///
-  /// [draggedVertexIndex] is the index currently being dragged (matching
-  /// `GisMapScreen._draggedAreaVertexIndex`), or null when no vertex is
-  /// being dragged — mirrors `_AreaVertexHandle`'s `isDragged` visual state
-  /// (44x44, error-colored) for engines that render vertices themselves.
-  /// No-op for FlutterMapEngine, whose `_AreaVertexHandle` already reads
-  /// `_draggedAreaVertexIndex` directly.
+  /// No-op for FlutterMapEngine, which renders geometry and marker widgets in
+  /// `_MeasurementLayer` as before.
   void setMeasurementGeometry({
     required List<LatLng> distancePoints,
     required List<LatLng> areaPoints,
     required Color color,
-    required void Function(int index, Offset screenPosition) onVertexTap,
-    required void Function(int index) onVertexDragStart,
-    required void Function(int index, LatLng newPoint) onVertexDragUpdate,
-    required void Function(int index) onVertexDragEnd,
-    int? draggedVertexIndex,
+    List<SoilMapMeasurementMarker> markers = const [],
+  });
+
+  /// Replaces an on-demand province highlight with one immutable geographic
+  /// snapshot shared by its fill and boundary rendering.
+  void setProvinceBoundaryHighlight({
+    required String coverageId,
+    required List<List<LatLng>>? rings,
+    required Color fillColor,
+    required Color borderColor,
   });
 
   void dispose();

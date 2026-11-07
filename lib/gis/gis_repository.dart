@@ -12,6 +12,7 @@ import 'package:vector_tile/vector_tile.dart' as vector_tile;
 
 import 'gis_feature.dart';
 import 'gis_layer.dart';
+import 'native_map_source.dart';
 
 /// Storage-independent access to spatial map tiles.
 abstract interface class GisRepository {
@@ -42,7 +43,8 @@ class GisTileCacheMetrics {
 }
 
 /// Reads vector features and their attributes from a local PMTiles archive.
-class PmTilesGisRepository implements GisRepository {
+class PmTilesGisRepository
+    implements GisRepository, GisNativeMapSourceProvider {
   PmTilesGisRepository._({
     required this._archiveFileResolver,
     required this.layerName,
@@ -112,6 +114,7 @@ class PmTilesGisRepository implements GisRepository {
 
   Future<GisArchiveInfo>? _initialization;
   PmTilesArchive? _archive;
+  File? _archiveFile;
   int _decodedTileCount = 0;
   int _cacheHitCount = 0;
   int _coalescedRequestCount = 0;
@@ -201,6 +204,7 @@ class PmTilesGisRepository implements GisRepository {
     _tileCache.clear();
     final archive = _archive;
     _archive = null;
+    _archiveFile = null;
     _initialization = null;
     await archive?.close();
   }
@@ -215,12 +219,26 @@ class PmTilesGisRepository implements GisRepository {
     }
 
     _archive = archive;
+    _archiveFile = archiveFile;
     return GisArchiveInfo(
       minZoom: archive.minZoom,
       maxZoom: archive.maxZoom,
       centerLatitude: archive.centerPosition.latitude,
       centerLongitude: archive.centerPosition.longitude,
     );
+  }
+
+  @override
+  Future<List<GisNativeMapSource>> getNativeMapSources() async {
+    final archiveFile = _archiveFile ?? await _archiveFileResolver();
+    return [
+      GisNativeMapSource(
+        id: 'soil-${layerName.toLowerCase().replaceAll(RegExp(r'[^a-z0-9_-]'), '-')}',
+        coverageId: '',
+        layerName: layerName,
+        archivePath: archiveFile.path,
+      ),
+    ];
   }
 
   Future<GisLayer> _readAndDecodeTile(GisTileCoordinates coordinates) async {
@@ -293,10 +311,10 @@ class PmTilesGisRepository implements GisRepository {
     // "assets/maps/santa_fe_soil_polygons.pmtiles" and
     // "assets/maps/soil_polygons.pmtiles" now cache under different
     // filenames instead of both racing for "soil_polygons-<hash>.pmtiles".
-    final assetStem = assetPath.split('/').last.replaceAll(
-      RegExp(r'\.pmtiles$'),
-      '',
-    );
+    final assetStem = assetPath
+        .split('/')
+        .last
+        .replaceAll(RegExp(r'\.pmtiles$'), '');
     final target = File(
       '${mapDirectory.path}${Platform.pathSeparator}'
       '$assetStem-$version.pmtiles',
@@ -388,15 +406,14 @@ Future<bool> pmtilesAssetIsCachedLocally({
   );
   if (!await mapDirectory.exists()) return false;
 
-  final assetStem = assetPath.split('/').last.replaceAll(
-    RegExp(r'\.pmtiles$'),
-    '',
-  );
+  final assetStem = assetPath
+      .split('/')
+      .last
+      .replaceAll(RegExp(r'\.pmtiles$'), '');
   await for (final entity in mapDirectory.list()) {
     if (entity is! File) continue;
     final filename = entity.uri.pathSegments.last;
-    if (!filename.startsWith('$assetStem-') ||
-        !filename.endsWith('.pmtiles')) {
+    if (!filename.startsWith('$assetStem-') || !filename.endsWith('.pmtiles')) {
       continue;
     }
     // Matches `_prepareAssetArchive`'s own validity check — an empty or

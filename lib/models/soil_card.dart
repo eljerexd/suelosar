@@ -1,11 +1,12 @@
 import '../gis/series_resolver.dart' show SeriesPdfLocation;
 import '../repositories/santa_fe_series_repository.dart';
+import '../repositories/cordoba_series_repository.dart';
 import 'soil_map.dart';
 
 /// Which province a [SoilCard] belongs to. Purely a catalog label for the
 /// "Memorias descriptivas" screen's filter — unrelated to `ProvinceConfig`
 /// (the GIS map's own province switch) and never read by the GIS code.
-enum SoilCardProvince { buenosAires, santaFe }
+enum SoilCardProvince { buenosAires, santaFe, cordoba }
 
 /// One entry in the unified "Memorias descriptivas" catalog (Santa Fe Fase
 /// 7): a descriptive PDF sheet, regardless of whether it lives in its own
@@ -45,6 +46,7 @@ class SoilCard {
   /// than a Buenos Aires PDF filename. Read back by `FavoritesScreen` to
   /// resolve a saved favorite to its page range instead of a bare asset.
   static const String santaFeFavoriteIdentifierPrefix = 'santa_fe:';
+  static const String cordobaFavoriteIdentifierPrefix = 'cordoba:';
 
   factory SoilCard.buenosAires(SoilMap soilMap) => SoilCard(
     title: soilMap.name,
@@ -53,15 +55,31 @@ class SoilCard {
     location: SeriesPdfLocation(assetPath: soilMap.assetPath),
   );
 
-  factory SoilCard.santaFe(SantaFeSeriesEntry entry, {required String pdfAsset}) =>
-      SoilCard(
-        title: entry.name,
-        province: SoilCardProvince.santaFe,
-        favoriteIdentifier: '$santaFeFavoriteIdentifierPrefix${entry.code}',
-        location: SeriesPdfLocation(
-          assetPath: pdfAsset,
-          startPage: entry.startPage,
-          endPage: entry.endPage,
-        ),
-      );
+  factory SoilCard.santaFe(
+    SantaFeSeriesEntry entry, {
+    required String pdfAsset,
+  }) => SoilCard(
+    title: entry.name,
+    province: SoilCardProvince.santaFe,
+    favoriteIdentifier: '$santaFeFavoriteIdentifierPrefix${entry.code}',
+    location: SeriesPdfLocation(
+      assetPath: pdfAsset,
+      startPage: entry.startPage,
+      endPage: entry.endPage,
+    ),
+  );
+
+  factory SoilCard.cordoba(
+    CordobaSeriesEntry entry, {
+    required String pdfAsset,
+  }) => SoilCard(
+    title: entry.name,
+    province: SoilCardProvince.cordoba,
+    favoriteIdentifier: '$cordobaFavoriteIdentifierPrefix${entry.name}',
+    location: SeriesPdfLocation(
+      assetPath: pdfAsset,
+      startPage: entry.startPage,
+      endPage: entry.endPage,
+    ),
+  );
 }

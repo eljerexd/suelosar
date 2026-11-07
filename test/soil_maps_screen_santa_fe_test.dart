@@ -8,6 +8,7 @@ import 'package:suelosar/models/pdf_soil_sheet_favorite.dart';
 import 'package:suelosar/models/soil_card.dart';
 import 'package:suelosar/models/soil_map.dart';
 import 'package:suelosar/repositories/santa_fe_series_repository.dart';
+import 'package:suelosar/repositories/cordoba_series_repository.dart';
 import 'package:suelosar/screens/favorites_screen.dart';
 import 'package:suelosar/screens/pdf_viewer_screen.dart';
 import 'package:suelosar/screens/soil_maps_screen.dart';
@@ -40,7 +41,10 @@ List<SoilCard> _santaFeFixture() => [
   ),
 ];
 
-Future<void> _pumpCatalog(WidgetTester tester) async {
+Future<void> _pumpCatalog(
+  WidgetTester tester, {
+  Future<List<SoilCard>> Function()? cordobaCardsLoader,
+}) async {
   SharedPreferences.setMockInitialValues(<String, Object>{});
   // Tall enough that every fixture card (4 total) is actually built by the
   // sliver list without scrolling — the default 800x600 test window only
@@ -53,6 +57,7 @@ Future<void> _pumpCatalog(WidgetTester tester) async {
       home: SoilMapsScreen(
         soilMapsLoader: () async => _buenosAiresFixture(),
         santaFeCardsLoader: () async => _santaFeFixture(),
+        cordobaCardsLoader: cordobaCardsLoader ?? () async => const [],
       ),
     ),
   );
@@ -68,6 +73,24 @@ Future<void> _waitForText(WidgetTester tester, String text) async {
 }
 
 void main() {
+  testWidgets('Córdoba series are available in the shared catalog', (
+    tester,
+  ) async {
+    final repository = CordobaSeriesRepository();
+    final entries = await repository.loadAllSeries();
+    final pdfAsset = await repository.pdfAsset;
+
+    await _pumpCatalog(
+      tester,
+      cordobaCardsLoader: () async => [
+        SoilCard.cordoba(entries.first, pdfAsset: pdfAsset),
+      ],
+    );
+
+    expect(find.text(entries.first.name), findsOneWidget);
+    expect(find.text('Córdoba'), findsWidgets);
+  });
+
   testWidgets(
     'Santa Fe series show their real name, never the raw code, and default '
     'filter (Todas) shows both provinces',
@@ -230,63 +253,57 @@ void main() {
     },
   );
 
-  testWidgets(
-    'opening a Buenos Aires carta keeps initialPage/lastPage null',
-    (tester) async {
-      await _pumpCatalog(tester);
+  testWidgets('opening a Buenos Aires carta keeps initialPage/lastPage null', (
+    tester,
+  ) async {
+    await _pumpCatalog(tester);
 
-      await tester.tap(find.text('Lincoln'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Lincoln'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
 
-      final viewer = tester.widget<PdfViewerScreen>(
-        find.byType(PdfViewerScreen),
-      );
-      expect(viewer.assetPath, 'assets/pdfs/Lincoln.pdf');
-      expect(viewer.initialPage, isNull);
-      expect(viewer.lastPage, isNull);
-    },
-  );
+    final viewer = tester.widget<PdfViewerScreen>(find.byType(PdfViewerScreen));
+    expect(viewer.assetPath, 'assets/pdfs/Lincoln.pdf');
+    expect(viewer.initialPage, isNull);
+    expect(viewer.lastPage, isNull);
+  });
 
-  testWidgets(
-    'toggling favorites keeps Buenos Aires and Santa Fe identifiers '
-    'distinct even for same-named series',
-    (tester) async {
-      await _pumpCatalog(tester);
+  testWidgets('toggling favorites keeps Buenos Aires and Santa Fe identifiers '
+      'distinct even for same-named series', (tester) async {
+    await _pumpCatalog(tester);
 
-      final lincolnTile = find.ancestor(
-        of: find.text('Lincoln'),
-        matching: find.byType(ListTile),
-      );
-      final lincolnFavorite = find.descendant(
-        of: lincolnTile,
-        matching: find.byTooltip('Agregar a favoritos'),
-      );
-      expect(lincolnFavorite, findsOneWidget);
-      await tester.tap(lincolnFavorite);
-      await tester.pumpAndSettle();
+    final lincolnTile = find.ancestor(
+      of: find.text('Lincoln'),
+      matching: find.byType(ListTile),
+    );
+    final lincolnFavorite = find.descendant(
+      of: lincolnTile,
+      matching: find.byTooltip('Agregar a favoritos'),
+    );
+    expect(lincolnFavorite, findsOneWidget);
+    await tester.tap(lincolnFavorite);
+    await tester.pumpAndSettle();
 
-      final favorites = await SharedPreferences.getInstance();
-      final stored = favorites.getStringList(PdfSoilSheetFavorite.storageKey);
-      expect(stored, isNotNull);
-      final decoded = stored!
-          .map((raw) => PdfSoilSheetFavorite.fromJson(jsonDecode(raw)))
-          .toList();
-      expect(decoded, hasLength(1));
-      expect(decoded.single.pdfIdentifier, 'Lincoln.pdf');
+    final favorites = await SharedPreferences.getInstance();
+    final stored = favorites.getStringList(PdfSoilSheetFavorite.storageKey);
+    expect(stored, isNotNull);
+    final decoded = stored!
+        .map((raw) => PdfSoilSheetFavorite.fromJson(jsonDecode(raw)))
+        .toList();
+    expect(decoded, hasLength(1));
+    expect(decoded.single.pdfIdentifier, 'Lincoln.pdf');
 
-      // The Santa Fe "Río Salado" card remains unfavorited and unaffected.
-      final rioSaladoTile = find.ancestor(
-        of: find.text('Río Salado'),
-        matching: find.byType(ListTile),
-      );
-      final rioSaladoFavorite = find.descendant(
-        of: rioSaladoTile,
-        matching: find.byTooltip('Agregar a favoritos'),
-      );
-      expect(rioSaladoFavorite, findsOneWidget);
-    },
-  );
+    // The Santa Fe "Río Salado" card remains unfavorited and unaffected.
+    final rioSaladoTile = find.ancestor(
+      of: find.text('Río Salado'),
+      matching: find.byType(ListTile),
+    );
+    final rioSaladoFavorite = find.descendant(
+      of: rioSaladoTile,
+      matching: find.byTooltip('Agregar a favoritos'),
+    );
+    expect(rioSaladoFavorite, findsOneWidget);
+  });
 
   testWidgets(
     'a favorited carta is shown only in "Favoritos" and disappears from '
@@ -294,9 +311,7 @@ void main() {
     (tester) async {
       await _pumpCatalog(tester);
 
-      final lincolnCard = find.byKey(
-        const ValueKey('soil-card-Lincoln.pdf'),
-      );
+      final lincolnCard = find.byKey(const ValueKey('soil-card-Lincoln.pdf'));
       expect(lincolnCard, findsOneWidget);
       expect(find.text('Favoritos (0)'), findsOneWidget);
 
@@ -311,7 +326,10 @@ void main() {
       // Still exactly one "Lincoln" card on screen — not duplicated — and
       // the favorites count went up, proving it moved into "Favoritos"
       // rather than just also appearing there.
-      expect(find.byKey(const ValueKey('soil-card-Lincoln.pdf')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('soil-card-Lincoln.pdf')),
+        findsOneWidget,
+      );
       expect(find.text('Favoritos (1)'), findsOneWidget);
 
       await tester.tap(
@@ -322,7 +340,10 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const ValueKey('soil-card-Lincoln.pdf')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('soil-card-Lincoln.pdf')),
+        findsOneWidget,
+      );
       expect(find.text('Favoritos (0)'), findsOneWidget);
     },
   );
@@ -385,7 +406,10 @@ void main() {
 
       // Only the "Favoritos" copy remains — search doesn't resurrect it in
       // "Todas las cartas".
-      expect(find.byKey(const ValueKey('soil-card-Lincoln.pdf')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('soil-card-Lincoln.pdf')),
+        findsOneWidget,
+      );
       expect(find.text('Favoritos (1)'), findsOneWidget);
     },
   );
@@ -414,6 +438,7 @@ void main() {
           home: SoilMapsScreen(
             soilMapsLoader: () async => _buenosAiresFixture(),
             santaFeCardsLoader: () async => _santaFeFixture(),
+            cordobaCardsLoader: () async => const [],
           ),
         ),
       );
@@ -422,42 +447,38 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Favoritos (1)'), findsOneWidget);
-      expect(find.byKey(const ValueKey('soil-card-Lincoln.pdf')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('soil-card-Lincoln.pdf')),
+        findsOneWidget,
+      );
     },
   );
 
-  testWidgets(
-    'FavoritesScreen resolves a saved Santa Fe favorite to its real page '
-    'range in the consolidated PDF',
-    (tester) async {
-      final favorite = PdfSoilSheetFavorite(
-        id: '${PdfSoilSheetFavorite.idPrefix}${SoilCard.santaFeFavoriteIdentifierPrefix}RSA',
-        title: 'Río Salado',
-        pdfIdentifier: '${SoilCard.santaFeFavoriteIdentifierPrefix}RSA',
-        createdAt: DateTime.utc(2026, 1, 1),
-      );
-      SharedPreferences.setMockInitialValues(<String, Object>{
-        PdfSoilSheetFavorite.storageKey: <String>[
-          jsonEncode(favorite.toJson()),
-        ],
-      });
+  testWidgets('FavoritesScreen resolves a saved Santa Fe favorite to its real page '
+      'range in the consolidated PDF', (tester) async {
+    final favorite = PdfSoilSheetFavorite(
+      id: '${PdfSoilSheetFavorite.idPrefix}${SoilCard.santaFeFavoriteIdentifierPrefix}RSA',
+      title: 'Río Salado',
+      pdfIdentifier: '${SoilCard.santaFeFavoriteIdentifierPrefix}RSA',
+      createdAt: DateTime.utc(2026, 1, 1),
+    );
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      PdfSoilSheetFavorite.storageKey: <String>[jsonEncode(favorite.toJson())],
+    });
 
-      await tester.pumpWidget(const MaterialApp(home: FavoritesScreen()));
-      await tester.pumpAndSettle();
+    await tester.pumpWidget(const MaterialApp(home: FavoritesScreen()));
+    await tester.pumpAndSettle();
 
-      expect(find.text('Río Salado'), findsOneWidget);
-      // The raw "santa_fe:" prefix must never leak into the UI.
-      expect(find.textContaining('santa_fe:'), findsNothing);
+    expect(find.text('Río Salado'), findsOneWidget);
+    // The raw "santa_fe:" prefix must never leak into the UI.
+    expect(find.textContaining('santa_fe:'), findsNothing);
 
-      await tester.tap(find.text('Río Salado'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Río Salado'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
 
-      final viewer = tester.widget<PdfViewerScreen>(
-        find.byType(PdfViewerScreen),
-      );
-      expect(viewer.initialPage, 517);
-      expect(viewer.lastPage, 519);
-    },
-  );
+    final viewer = tester.widget<PdfViewerScreen>(find.byType(PdfViewerScreen));
+    expect(viewer.initialPage, 517);
+    expect(viewer.lastPage, 519);
+  });
 }
