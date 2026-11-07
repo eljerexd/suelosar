@@ -707,16 +707,28 @@ enum _CartographyStatus { available, notDownloaded, downloading, error }
 /// One real directory scan on first build (via [_mapsCacheSizeByStem]),
 /// never polled — refreshed only after an action this widget itself
 /// performs actually changes what's on disk.
-class _ProvinceCartographyManager extends StatefulWidget {
-  const _ProvinceCartographyManager();
+class ProvinceCartographyManager extends StatefulWidget {
+  const ProvinceCartographyManager({super.key})
+    : _testCoverages = null,
+      _forceAndroid = false;
+
+  @visibleForTesting
+  const ProvinceCartographyManager.forTesting({
+    super.key,
+    required List<MapCoverage> coverages,
+  }) : _testCoverages = coverages,
+       _forceAndroid = true;
+
+  final List<MapCoverage>? _testCoverages;
+  final bool _forceAndroid;
 
   @override
-  State<_ProvinceCartographyManager> createState() =>
+  State<ProvinceCartographyManager> createState() =>
       _ProvinceCartographyManagerState();
 }
 
 class _ProvinceCartographyManagerState
-    extends State<_ProvinceCartographyManager> {
+    extends State<ProvinceCartographyManager> {
   Map<String, int>? _sizesByStem;
   final Set<String> _downloadingIds = {};
   final Set<String> _deletingIds = {};
@@ -725,9 +737,12 @@ class _ProvinceCartographyManagerState
   @override
   void initState() {
     super.initState();
-    if (Platform.isAndroid) {
-      for (final coverage in MapCoverage.all) {
-        coverage.onDemandDelivery?.addListener(_handleDeliveryChanged);
+    if (_isAndroid) {
+      for (final coverage in _coverages) {
+        final delivery = coverage.onDemandDelivery;
+        if (delivery == null) continue;
+        delivery.addListener(_handleDeliveryChanged);
+        unawaited(_checkDeliveryStatus(coverage, delivery));
       }
       unawaited(_refreshSizes());
     }
@@ -735,8 +750,8 @@ class _ProvinceCartographyManagerState
 
   @override
   void dispose() {
-    if (Platform.isAndroid) {
-      for (final coverage in MapCoverage.all) {
+    if (_isAndroid) {
+      for (final coverage in _coverages) {
         coverage.onDemandDelivery?.removeListener(_handleDeliveryChanged);
       }
     }
@@ -747,13 +762,33 @@ class _ProvinceCartographyManagerState
     if (mounted) setState(() {});
   }
 
+  bool get _isAndroid => widget._forceAndroid || Platform.isAndroid;
+  List<MapCoverage> get _coverages => widget._testCoverages ?? MapCoverage.all;
+
+  Future<void> _checkDeliveryStatus(
+    MapCoverage coverage,
+    PmtilesDelivery delivery,
+  ) async {
+    try {
+      await delivery.checkStatus();
+      if (mounted && _erroredIds.remove(coverage.id)) setState(() {});
+    } catch (_) {
+      if (mounted) setState(() => _erroredIds.add(coverage.id));
+    }
+  }
+
   Future<void> _refreshSizes() async {
+    if (widget._testCoverages != null) {
+      if (mounted) setState(() => _sizesByStem = const {});
+      return;
+    }
     await _autoTrimMapsCacheIfNeeded();
     final sizes = await _mapsCacheSizeByStem();
     if (mounted) setState(() => _sizesByStem = sizes);
   }
 
   _CartographyStatus _statusFor(MapCoverage coverage) {
+    if (_erroredIds.contains(coverage.id)) return _CartographyStatus.error;
     final delivery = coverage.onDemandDelivery;
     if (delivery != null) {
       return switch (delivery.status) {
@@ -785,6 +820,7 @@ class _ProvinceCartographyManagerState
   }
 
   Future<void> _download(MapCoverage coverage) async {
+    _erroredIds.remove(coverage.id);
     final delivery = coverage.onDemandDelivery;
     if (delivery != null) {
       await delivery.download();
@@ -858,7 +894,7 @@ class _ProvinceCartographyManagerState
 
   @override
   Widget build(BuildContext context) {
-    if (!Platform.isAndroid) return const SizedBox.shrink();
+    if (!_isAndroid) return const SizedBox.shrink();
 
     final textTheme = Theme.of(context).textTheme;
     final colorScheme = Theme.of(context).colorScheme;
@@ -891,11 +927,13 @@ class _ProvinceCartographyManagerState
               ],
             ),
           ),
-          for (final coverage in MapCoverage.all)
+          for (final coverage in _coverages)
             _ProvinceCartographyCard(
+              key: ValueKey('cartography-${coverage.id}'),
               displayName: _cartographyProvinceDisplayName(coverage.id),
               status: _statusFor(coverage),
               busy: _isBusy(coverage),
+              progress: coverage.onDemandDelivery?.downloadBytes,
               sizeBytes: sizes?[_provinceCacheStem(coverage)],
               onDownload: () => unawaited(_download(coverage)),
               onDelete: () => unawaited(_delete(coverage)),
@@ -908,9 +946,11 @@ class _ProvinceCartographyManagerState
 
 class _ProvinceCartographyCard extends StatelessWidget {
   const _ProvinceCartographyCard({
+    super.key,
     required this.displayName,
     required this.status,
     required this.busy,
+    required this.progress,
     required this.sizeBytes,
     required this.onDownload,
     required this.onDelete,
@@ -919,6 +959,7 @@ class _ProvinceCartographyCard extends StatelessWidget {
   final String displayName;
   final _CartographyStatus status;
   final bool busy;
+  final PmtilesDownloadBytes? progress;
   final int? sizeBytes;
   final VoidCallback onDownload;
   final VoidCallback onDelete;
@@ -949,7 +990,7 @@ class _ProvinceCartographyCard extends StatelessWidget {
       _CartographyStatus.downloading => (
         AppIcons.download,
         colorScheme.onSurfaceVariant,
-        'Descargando…',
+        progress == null ? 'Descargando…' : '${progress!.percent}%',
       ),
       _CartographyStatus.error => (
         AppIcons.error,
@@ -975,7 +1016,9 @@ class _ProvinceCartographyCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'Datos de suelos · $sizeLabel',
+                  progress == null
+                      ? 'Datos de suelos · $sizeLabel'
+                      : 'Descargando · ${progress!.label}',
                   style: textTheme.bodySmall?.copyWith(
                     color: colorScheme.onSurfaceVariant,
                   ),
@@ -1005,6 +1048,7 @@ class _ProvinceCartographyCard extends StatelessWidget {
           _CartographyActionButton(
             status: status,
             busy: busy,
+            progress: progress,
             onDownload: onDownload,
             onDelete: onDelete,
           ),
@@ -1018,22 +1062,27 @@ class _CartographyActionButton extends StatelessWidget {
   const _CartographyActionButton({
     required this.status,
     required this.busy,
+    required this.progress,
     required this.onDownload,
     required this.onDelete,
   });
 
   final _CartographyStatus status;
   final bool busy;
+  final PmtilesDownloadBytes? progress;
   final VoidCallback onDownload;
   final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
     if (busy) {
-      return const SizedBox(
+      return SizedBox(
         width: 20,
         height: 20,
-        child: CircularProgressIndicator(strokeWidth: 2),
+        child: CircularProgressIndicator(
+          value: progress?.fraction,
+          strokeWidth: 2,
+        ),
       );
     }
 
@@ -1347,7 +1396,7 @@ class ProvincialMapsScreen extends StatelessWidget {
             child: _CardShell(
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 10),
-                child: _ProvinceCartographyManager(),
+                child: ProvinceCartographyManager(),
               ),
             ),
           ),

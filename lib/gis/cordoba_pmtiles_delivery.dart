@@ -151,21 +151,12 @@ class CordobaPmtilesDelivery extends PmtilesDelivery {
     // poll must not overwrite it. [download] deliberately does not route
     // through here for exactly that reason — it probes directly.
     if (_status == CordobaPmtilesStatus.downloading) return;
-    if (await _isComponentInstalled()) {
-      // Present, but the user asked for it to go and Play has not caught up
-      // yet — see [_uninstallPendingKey].
-      _setStatus(
-        await _isUninstallPending()
-            ? CordobaPmtilesStatus.notInstalled
-            : CordobaPmtilesStatus.available,
-      );
-      return;
-    }
-    // Really gone now, so there is nothing left to suppress.
-    await _setUninstallPending(false);
-    if (_status != CordobaPmtilesStatus.available) {
-      _setStatus(CordobaPmtilesStatus.notInstalled);
-    }
+    await reconcileInstalledModule(
+      isComponentInstalled: _isComponentInstalled,
+      isUninstallPending: _isUninstallPending,
+      clearUninstallPending: () => _setUninstallPending(false),
+      setStatus: _setStatus,
+    );
   }
 
   /// Requests the download. No-op on non-Android platforms, where the data
@@ -180,6 +171,7 @@ class CordobaPmtilesDelivery extends PmtilesDelivery {
   Future<void> download() async {
     if (!usesOnDemandPmtilesDelivery) return;
     if (_status == CordobaPmtilesStatus.downloading) return;
+    invalidateStatusChecks();
     if (kDebugMode) {
       await _simulateDevDownload();
       return;
@@ -307,6 +299,7 @@ class CordobaPmtilesDelivery extends PmtilesDelivery {
   Future<void> uninstall() async {
     if (!usesOnDemandPmtilesDelivery) return;
     if (_status == CordobaPmtilesStatus.downloading) return;
+    invalidateStatusChecks();
     if (kDebugMode) {
       _setStatus(CordobaPmtilesStatus.notInstalled);
       return;

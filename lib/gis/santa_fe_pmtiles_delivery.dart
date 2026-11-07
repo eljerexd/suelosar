@@ -31,7 +31,6 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   SantaFePmtilesStatus _status = usesOnDemandPmtilesDelivery
       ? SantaFePmtilesStatus.notInstalled
       : SantaFePmtilesStatus.available;
-  Future<void>? _statusCheck;
 
   @override
   SantaFePmtilesStatus get status => _status;
@@ -153,36 +152,12 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
     // poll must not overwrite it. [download] deliberately does not route
     // through here for exactly that reason — it probes directly.
     if (_status == SantaFePmtilesStatus.downloading) return;
-    final inFlight = _statusCheck;
-    if (inFlight != null) {
-      await inFlight;
-      return;
-    }
-    final check = _checkBundledAsset();
-    _statusCheck = check;
-    try {
-      await check;
-    } finally {
-      if (identical(_statusCheck, check)) _statusCheck = null;
-    }
-  }
-
-  Future<void> _checkBundledAsset() async {
-    if (await _isComponentInstalled()) {
-      // Present, but the user asked for it to go and Play has not caught up
-      // yet — see [_uninstallPendingKey].
-      _setStatus(
-        await _isUninstallPending()
-            ? SantaFePmtilesStatus.notInstalled
-            : SantaFePmtilesStatus.available,
-      );
-      return;
-    }
-    // Really gone now, so there is nothing left to suppress.
-    await _setUninstallPending(false);
-    if (_status != SantaFePmtilesStatus.available) {
-      _setStatus(SantaFePmtilesStatus.notInstalled);
-    }
+    await reconcileInstalledModule(
+      isComponentInstalled: _isComponentInstalled,
+      isUninstallPending: _isUninstallPending,
+      clearUninstallPending: () => _setUninstallPending(false),
+      setStatus: _setStatus,
+    );
   }
 
   /// Requests the download. No-op on non-Android platforms, where the data
@@ -197,6 +172,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   Future<void> download() async {
     if (!usesOnDemandPmtilesDelivery) return;
     if (_status == SantaFePmtilesStatus.downloading) return;
+    invalidateStatusChecks();
     if (kDebugMode) {
       await _simulateDevDownload();
       return;
@@ -324,6 +300,7 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   Future<void> uninstall() async {
     if (!usesOnDemandPmtilesDelivery) return;
     if (_status == SantaFePmtilesStatus.downloading) return;
+    invalidateStatusChecks();
     if (kDebugMode) {
       _setStatus(SantaFePmtilesStatus.notInstalled);
       return;

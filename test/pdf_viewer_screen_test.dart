@@ -100,25 +100,96 @@ void main() {
     sizeDelegate.dispose();
   });
 
+  testWidgets('initialPage/lastPage are additive: omitting them keeps existing '
+      'Buenos Aires behavior (no initial page jump attempted)', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.windows),
+        home: const PdfViewerScreen(title: 'Junín', assetPath: assetPath),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final screen = tester.widget<PdfViewerScreen>(find.byType(PdfViewerScreen));
+    expect(screen.initialPage, isNull);
+    expect(screen.lastPage, isNull);
+    expect(
+      tester.widget<PdfViewer>(find.byType(PdfViewer)).initialPageNumber,
+      1,
+    );
+  });
+
   testWidgets(
-    'initialPage/lastPage are additive: omitting them keeps existing '
-    'Buenos Aires behavior (no initial page jump attempted)',
+    'Santa Fe opening page is passed to pdfrx before the initial layout',
     (tester) async {
       await tester.pumpWidget(
         MaterialApp(
-          theme: ThemeData(platform: TargetPlatform.windows),
-          home: const PdfViewerScreen(title: 'Junín', assetPath: assetPath),
+          theme: ThemeData(platform: TargetPlatform.android),
+          home: const PdfViewerScreen(
+            title: 'Rafaela (Santa Fe)',
+            assetPath: assetPath,
+            initialPage: 493,
+            lastPage: 496,
+          ),
         ),
       );
       await tester.pump(const Duration(milliseconds: 600));
 
-      final screen = tester.widget<PdfViewerScreen>(
-        find.byType(PdfViewerScreen),
+      final viewer = tester.widget<PdfViewer>(find.byType(PdfViewer));
+      expect(viewer.initialPageNumber, 493);
+      expect(
+        viewer.params.behaviorControlParams.loadPageDimensionsOnDemand,
+        isTrue,
       );
-      expect(screen.initialPage, isNull);
-      expect(screen.lastPage, isNull);
+
+      final delegate = viewer.params.sizeDelegateProvider!.create();
+      final pageLayouts = List<Rect>.generate(
+        493,
+        (index) =>
+            Rect.fromLTWH(0, index * 820.0, index == 492 ? 612 : 595, 820),
+      );
+      final metrics = delegate.calculateMetrics(
+        viewSize: const Size(400, 700),
+        layout: PdfPageLayout(
+          pageLayouts: pageLayouts,
+          documentSize: const Size(612, 493 * 820.0),
+        ),
+        pageNumber: 493,
+        pageMargin: 8,
+        boundaryMargin: null,
+      );
+      expect(metrics.minScale, closeTo(400 / 628, 0.0001));
+      delegate.dispose();
     },
   );
+
+  testWidgets('another Santa Fe chart and a reopened viewer keep their page', (
+    tester,
+  ) async {
+    Future<void> openAt(int page) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.android),
+          home: PdfViewerScreen(
+            key: ValueKey('pdf-page-$page'),
+            title: 'Santa Fe chart',
+            assetPath: assetPath,
+            initialPage: page,
+            lastPage: page + 2,
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(
+        tester.widget<PdfViewer>(find.byType(PdfViewer)).initialPageNumber,
+        page,
+      );
+    }
+
+    await openAt(493);
+    await openAt(510);
+    await openAt(493);
+  });
 
   testWidgets(
     'initialPage/lastPage/onPageChanged are stored on the widget and wired '
@@ -242,8 +313,16 @@ void main() {
       final insideRange = matrixAt(
         Offset(pageWidth / 2, pageLayouts[493].center.dy),
       );
-      final clampedInside = normalizeMatrix(insideRange, viewSize, layout, null);
-      expect(clampedInside.calcPosition(viewSize).dy, insideRange.calcPosition(viewSize).dy);
+      final clampedInside = normalizeMatrix(
+        insideRange,
+        viewSize,
+        layout,
+        null,
+      );
+      expect(
+        clampedInside.calcPosition(viewSize).dy,
+        insideRange.calcPosition(viewSize).dy,
+      );
     },
   );
 

@@ -31,7 +31,6 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   PmtilesDeliveryStatus _status = usesOnDemandPmtilesDelivery
       ? PmtilesDeliveryStatus.notInstalled
       : PmtilesDeliveryStatus.available;
-  Future<void>? _statusCheck;
 
   @override
   PmtilesDeliveryStatus get status => _status;
@@ -174,37 +173,12 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
     // poll must not overwrite it. [download] deliberately does not route
     // through here for exactly that reason — it probes directly.
     if (_status == PmtilesDeliveryStatus.downloading) return;
-    final inFlight = _statusCheck;
-    if (inFlight != null) {
-      await inFlight;
-      return;
-    }
-    final check = _checkBundledAsset();
-    _statusCheck = check;
-    try {
-      await check;
-    } finally {
-      if (identical(_statusCheck, check)) _statusCheck = null;
-    }
-  }
-
-  Future<void> _checkBundledAsset() async {
-    if (await _isComponentInstalled()) {
-      // Present, but the user asked for it to go and Play has not caught up
-      // yet — see [_uninstallPendingKey]. Deleted is what the user decided;
-      // still-readable is only where Play's queue happens to be.
-      _setStatus(
-        await _isUninstallPending()
-            ? PmtilesDeliveryStatus.notInstalled
-            : PmtilesDeliveryStatus.available,
-      );
-      return;
-    }
-    // Really gone now, so there is nothing left to suppress.
-    await _setUninstallPending(false);
-    if (_status != PmtilesDeliveryStatus.available) {
-      _setStatus(PmtilesDeliveryStatus.notInstalled);
-    }
+    await reconcileInstalledModule(
+      isComponentInstalled: _isComponentInstalled,
+      isUninstallPending: _isUninstallPending,
+      clearUninstallPending: () => _setUninstallPending(false),
+      setStatus: _setStatus,
+    );
   }
 
   /// Requests the download. No-op on non-Android platforms, where the data
@@ -219,6 +193,7 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   Future<void> download() async {
     if (!usesOnDemandPmtilesDelivery) return;
     if (_status == PmtilesDeliveryStatus.downloading) return;
+    invalidateStatusChecks();
     if (kDebugMode) {
       await _simulateDevDownload();
       return;
@@ -345,6 +320,7 @@ class BuenosAiresPmtilesDelivery extends PmtilesDelivery {
   Future<void> uninstall() async {
     if (!usesOnDemandPmtilesDelivery) return;
     if (_status == PmtilesDeliveryStatus.downloading) return;
+    invalidateStatusChecks();
     if (kDebugMode) {
       _setStatus(PmtilesDeliveryStatus.notInstalled);
       return;

@@ -3,8 +3,16 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show appFlavor;
 
-bool get usesOnDemandPmtilesDelivery =>
-    Platform.isAndroid && appFlavor != 'web';
+bool get usesOnDemandPmtilesDelivery => usesOnDemandPmtilesDeliveryFor(
+  isAndroid: Platform.isAndroid,
+  flavor: appFlavor,
+);
+
+@visibleForTesting
+bool usesOnDemandPmtilesDeliveryFor({
+  required bool isAndroid,
+  required String? flavor,
+}) => isAndroid && flavor != 'web';
 
 /// Availability of an on-demand provincial PMTiles archive — shared shape
 /// for every province delivered this way (Santa Fe, Buenos Aires). Unlike
@@ -68,6 +76,8 @@ const bool useLocalPmtilesAssetsInDebug = bool.fromEnvironment(
 /// code that drives the download banner and the provincial maps manager can
 /// be written once against this interface instead of once per province.
 abstract class PmtilesDelivery extends ChangeNotifier {
+  int _statusCheckRevision = 0;
+
   PmtilesDeliveryStatus get status;
   double? get downloadProgress => null;
   PmtilesDownloadBytes? get downloadBytes => null;
@@ -75,6 +85,53 @@ abstract class PmtilesDelivery extends ChangeNotifier {
   /// Checks whether the component is already installed, without triggering
   /// a download.
   Future<void> checkStatus();
+
+  /// Invalidates a pending installed-state probe when a newer user operation
+  /// takes ownership of this delivery's state.
+  @protected
+  void invalidateStatusChecks() => _statusCheckRevision++;
+
+  /// Starts a fresh probe and makes every older pending probe obsolete.
+  @protected
+  int beginStatusCheck() => ++_statusCheckRevision;
+
+  @protected
+  bool isStatusCheckCurrent(int revision) => revision == _statusCheckRevision;
+
+  @protected
+  Future<void> reconcileInstalledModule({
+    required Future<bool> Function() isComponentInstalled,
+    required Future<bool> Function() isUninstallPending,
+    required Future<void> Function() clearUninstallPending,
+    required ValueChanged<PmtilesDeliveryStatus> setStatus,
+  }) async {
+    final revision = beginStatusCheck();
+    final installed = await isComponentInstalled();
+    if (!isStatusCheckCurrent(revision) ||
+        status == PmtilesDeliveryStatus.downloading) {
+      return;
+    }
+
+    if (installed) {
+      final uninstallPending = await isUninstallPending();
+      if (!isStatusCheckCurrent(revision) ||
+          status == PmtilesDeliveryStatus.downloading) {
+        return;
+      }
+      setStatus(
+        uninstallPending
+            ? PmtilesDeliveryStatus.notInstalled
+            : PmtilesDeliveryStatus.available,
+      );
+      return;
+    }
+
+    await clearUninstallPending();
+    if (isStatusCheckCurrent(revision) &&
+        status != PmtilesDeliveryStatus.downloading) {
+      setStatus(PmtilesDeliveryStatus.notInstalled);
+    }
+  }
 
   /// Requests the download (a no-op on non-Android platforms, where the
   /// data is already bundled).

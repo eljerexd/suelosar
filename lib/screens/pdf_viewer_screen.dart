@@ -13,9 +13,8 @@ import '../widgets/app_notification.dart';
 import '../widgets/responsive_desktop_shell.dart';
 
 final Future<Set<String>> _bundledAssetPaths =
-    AssetManifest.loadFromAssetBundle(
-      rootBundle,
-    ).then((manifest) => manifest.listAssets().toSet());
+    AssetManifest.loadFromAssetBundle(rootBundle)
+        .then((manifest) => manifest.listAssets().toSet());
 
 class PdfViewerScreen extends StatefulWidget {
   const PdfViewerScreen({
@@ -70,7 +69,6 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     false,
   );
   bool _pdfOpenLogged = false;
-  bool _initialPageApplied = false;
   Timer? _mobileScrollbarHideTimer;
 
   // FASE 9 — prueba de hipótesis (Windows Release PDF en blanco): PdfViewer
@@ -116,19 +114,9 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 
   void _handleViewerReady() {
     _handleControllerChanged();
-    _applyInitialPageIfNeeded();
     if (_pdfOpenLogged) return;
     _pdfOpenLogged = true;
     unawaited(AnalyticsService.instance.logPdfOpened());
-  }
-
-  void _applyInitialPageIfNeeded() {
-    final initialPage = widget.initialPage;
-    if (initialPage == null || _initialPageApplied) return;
-    _initialPageApplied = true;
-    unawaited(
-      _pdfController.goToPage(pageNumber: initialPage, duration: Duration.zero),
-    );
   }
 
   void _handlePageChanged(int? pageNumber) {
@@ -139,7 +127,8 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   /// are both set, so navigation should be confined to that page range.
   /// Buenos Aires callers never set either, so this is always false there
   /// and the viewer behaves exactly as before.
-  bool get _hasPageRange => widget.initialPage != null && widget.lastPage != null;
+  bool get _hasPageRange =>
+      widget.initialPage != null && widget.lastPage != null;
 
   /// Restricts the viewer's pan/scroll matrix to the vertical span of pages
   /// `[initialPage, lastPage]`. Every matrix change — swipe/scroll, arrow
@@ -242,9 +231,8 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
     Size thumbSize, {
     required bool desktop,
   }) {
-    final color = Theme.of(
-      context,
-    ).colorScheme.onSurfaceVariant.withValues(alpha: 0.62);
+    final color = Theme.of(context).colorScheme.onSurfaceVariant
+        .withValues(alpha: 0.62);
     final thumb = Center(
       child: SizedBox(
         width: 4,
@@ -301,15 +289,22 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
             },
           ),
           controller: _pdfController,
+          // Resolve the requested page during pdfrx's first layout. Applying
+          // it from onViewerReady paints page 1 (the index) before jumping.
+          initialPageNumber: widget.initialPage ?? 1,
           params: PdfViewerParams(
             backgroundColor: const Color(0xFFF5F5F5),
             underflowAnchor: PdfPageAnchor.center,
             sizeDelegateProvider: _SuelosArPdfSizeDelegateProvider(
               desktop: desktop,
+              openingPageNumber: widget.initialPage ?? 1,
             ),
             onViewerReady: (_, _) => _handleViewerReady(),
             onPageChanged: _handlePageChanged,
             normalizeMatrix: _hasPageRange ? _clampToPageRange : null,
+            behaviorControlParams: PdfViewerBehaviorControlParams(
+              loadPageDimensionsOnDemand: _hasPageRange,
+            ),
             viewerOverlayBuilder: showScrollThumb
                 ? (context, _, _) => [
                     PdfViewerScrollThumb(
@@ -367,32 +362,44 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 }
 
 class _SuelosArPdfSizeDelegateProvider extends PdfViewerSizeDelegateProvider {
-  const _SuelosArPdfSizeDelegateProvider({required this.desktop});
+  const _SuelosArPdfSizeDelegateProvider({
+    required this.desktop,
+    required this.openingPageNumber,
+  });
 
   final bool desktop;
+  final int openingPageNumber;
 
   @override
-  PdfViewerSizeDelegate create() => _SuelosArPdfSizeDelegate(desktop: desktop);
+  PdfViewerSizeDelegate create() => _SuelosArPdfSizeDelegate(
+    desktop: desktop,
+    openingPageNumber: openingPageNumber,
+  );
 
   @override
   bool operator ==(Object other) =>
-      other is _SuelosArPdfSizeDelegateProvider && other.desktop == desktop;
+      other is _SuelosArPdfSizeDelegateProvider &&
+      other.desktop == desktop &&
+      other.openingPageNumber == openingPageNumber;
 
   @override
-  int get hashCode => desktop.hashCode;
+  int get hashCode => Object.hash(desktop, openingPageNumber);
 }
 
 class _SuelosArPdfSizeDelegate extends PdfViewerSizeDelegateSmart {
-  _SuelosArPdfSizeDelegate({required this.desktop})
-    : super(
-        minScale: desktop ? 0.25 : 0.01,
-        maxScale: desktop ? 5 : 3,
-        smartMaxScale: desktop ? 5 : 3,
-        maxPagesVisible: 1,
-        onePassRenderingScaleThreshold: 200 / 72,
-      );
+  _SuelosArPdfSizeDelegate({
+    required this.desktop,
+    required this.openingPageNumber,
+  }) : super(
+         minScale: desktop ? 0.25 : 0.01,
+         maxScale: desktop ? 5 : 3,
+         smartMaxScale: desktop ? 5 : 3,
+         maxPagesVisible: 1,
+         onePassRenderingScaleThreshold: 200 / 72,
+       );
 
   final bool desktop;
+  final int openingPageNumber;
   PdfViewerController? _controller;
 
   static const double _desktopMinimumZoom = 0.25;
@@ -436,7 +443,11 @@ class _SuelosArPdfSizeDelegate extends PdfViewerSizeDelegateSmart {
       );
     }
 
-    final page = layout.pageLayouts.first;
+    final page =
+        layout.pageLayouts[(openingPageNumber - 1).clamp(
+          0,
+          layout.pageLayouts.length - 1,
+        )];
     final openingScale = _openingScale(
       viewSize: viewSize,
       page: page,

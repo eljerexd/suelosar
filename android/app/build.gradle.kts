@@ -69,6 +69,15 @@ android {
             versionNameSuffix = "-beta"
             resValue("string", "app_name", "SuelosAR Beta")
         }
+        // Standalone APK distributed outside Google Play. Dart uses the
+        // `web` flavor to keep Play Feature Delivery APIs disabled; the APK
+        // packages provincial archives as regular assets.
+        create("web") {
+            dimension = "env"
+            // Reuse the existing province module variants when assembling a
+            // standalone APK. The modules remain on-demand in prodRelease.
+            matchingFallbacks += listOf("prod")
+        }
     }
 
     signingConfigs {
