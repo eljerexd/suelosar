@@ -162,8 +162,12 @@ powershell -File scripts/build_android_release.ps1 -Flavor beta
 
 Equivalente manual, por si no se usa el script:
 
-flutter build apk --release --flavor prod --dart-define-from-file=.vscode/supabase.env.json
+flutter build apk --release --flavor prod --dart-define=SUelosAR_MAPLIBRE_NATIVE=true --dart-define-from-file=.vscode/supabase.env.json
 flutter build apk --release --flavor beta --dart-define-from-file=.vscode/supabase.env.json
+
+El AAB de Google Play de producción usa el mismo flavor y define de MapLibre:
+
+flutter build appbundle --release --flavor prod --dart-define=SUelosAR_MAPLIBRE_NATIVE=true --dart-define-from-file=.vscode/supabase.env.json
 
 flutter run -d windows
 

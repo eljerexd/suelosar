@@ -8,7 +8,7 @@ if not exist ".vscode\supabase.env.json" goto missing_config
 
 echo Building SuelosAR Android APK...
 echo.
-call flutter build apk --release --dart-define-from-file=.vscode/supabase.env.json
+call flutter build apk --release --flavor prod --dart-define=SUelosAR_MAPLIBRE_NATIVE=true --dart-define-from-file=.vscode/supabase.env.json
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 
 if not "%BUILD_EXIT_CODE%"=="0" goto build_failed

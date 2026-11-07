@@ -104,6 +104,12 @@ No dependencies are added to the SuelosAR project, and no code in the
 SuelosAR project is touched. The isolated experimental project is
 separate from SuelosAR.
 
+> The staged migration notes below describe the pre-1.8 rollout plan. They
+> are historical for Android `prodRelease` 1.8.0: that production flavor now
+> explicitly selects MapLibre Native, while FlutterMap remains available as
+> a fallback. This does not imply that the documented parity blockers have
+> been resolved.
+
 **ETAPA 2 — Separar UI del motor**
 Introduce an abstraction boundary between the GIS screen's UI/business
 logic and the concrete rendering engine (flutter_map today), so the
@@ -127,20 +133,20 @@ Switch the default engine over, only after Etapa 4 validation is
 complete and explicitly approved. Keep a rollback path until the new
 engine has proven itself in production use.
 
-## Current Status (reverted to FlutterMap as default)
+## Current Status (Android 1.8.0 production renderer)
 
-MapLibre was briefly wired as the Android default (no-override case of
-`_useMapLibreEngineForDiagnostic` in `gis_map_screen.dart`) during Etapa
-3/4 evaluation, then **reverted** — FlutterMap is the default and
-1:1-reference engine on every platform again, with no explicit
-override needed. `--dart-define=USE_MAPLIBRE_ENGINE=true` still forces
-MapLibre for experimental use (see `.vscode/launch.json`'s "SuelosAR
-Beta (MapLibre)" config, which passes that flag; the plain "SuelosAR"
-config does not, so F5 there runs FlutterMap).
+For the SuelosAR 1.8.0 Google Play `prodRelease`, MapLibre Native is the
+selected production renderer. The official Android release entry points
+must pass `--dart-define=SUelosAR_MAPLIBRE_NATIVE=true`; builds that omit
+the define still use the supported FlutterMap fallback. The 1.8.0
+production decision supersedes the earlier staged-migration default for
+this Android release, but does not authorize removing the fallback or
+claiming unverified rendering parity. The MapLibre F5 profile also passes
+the same define.
 
 `trackCameraPosition: true` (in `MapLibreEngine.buildMapSurface`'s
 `MapLibreMap` widget) is a confirmed, validated fix — kept regardless of
-which engine is default. Without it, `maplibre_gl`'s native
+the production renderer. Without it, `maplibre_gl`'s native
 `MapLibreMapController.onCameraMove()` discards every camera-move event
 before it reaches Dart, so the zoom badge, scale bar, and any
 zoom-dependent layer visibility never update after the initial camera.

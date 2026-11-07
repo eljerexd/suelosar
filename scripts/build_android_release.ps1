@@ -89,7 +89,12 @@ try {
 
     $buildStart = Get-Date
 
-    flutter build apk --release --flavor $Flavor "--dart-define-from-file=.vscode/supabase.env.json"
+    $flutterArguments = @("build", "apk", "--release", "--flavor", $Flavor)
+    if ($Flavor -eq "prod") {
+        $flutterArguments += "--dart-define=SUelosAR_MAPLIBRE_NATIVE=true"
+    }
+    $flutterArguments += "--dart-define-from-file=.vscode/supabase.env.json"
+    flutter @flutterArguments
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }

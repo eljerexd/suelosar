@@ -1,8 +1,15 @@
 # MapLibre Native Alpha: Acceptance Status (2026-11-04)
 
+> Historical assessment of the earlier `148d0980` candidate. For the
+> SuelosAR 1.8.0 Android production candidate, the user has since selected
+> MapLibre Native via `SUelosAR_MAPLIBRE_NATIVE=true`; FlutterMap remains a
+> supported fallback. The findings below are not evidence that those
+> issues are resolved in the current Alpha source and must be revalidated
+> against the 1.8.0 candidate.
+
 ## Verdict
 
-**NOT ACCEPTED — integration remains experimental.** The MapLibre candidate is connected to `GisMapScreen`, but the acceptance conditions for interaction, visual parity, offline behavior, Android, Release packaging, and comparative performance have not been demonstrated. FlutterMap remains the default renderer.
+**NOT ACCEPTED — historical assessment of the 148d0980 candidate.** At that time, the integration remained experimental and the acceptance conditions for interaction, visual parity, offline behavior, Android, Release packaging, and comparative performance had not been demonstrated. This verdict predates the 1.8.0 production build configuration and does not describe the current production renderer.
 
 ## Repository state
 
@@ -55,6 +62,6 @@ The current composition keeps reference and annotation layers in synchronized Fl
 
 No performance improvement is claimed. The available Windows Debug compile is not a Release or runtime acceptance result.
 
-## Preserve current rollout gate
+## Historical rollout recommendation (2026-11-04)
 
-Keep FlutterMap as the default. Keep MapLibre opt-in only. Do not remove the FlutterMap fallback, publish, or describe the migration as complete until the blockers above have been tested and resolved.
+At the time of this assessment, keep FlutterMap as the default and MapLibre opt-in; do not remove the fallback or describe the migration as complete until the blockers above are tested. For the 1.8.0 Android production candidate, the renderer selection is now explicit in the release build configuration. The runtime and feature-parity blockers listed above still require validation against that candidate.
