@@ -436,6 +436,66 @@ class MapLibreEngine implements SoilMapEngine {
     );
   }
 
+  @visibleForTesting
+  bool get debugReferenceBasemapLoaded => _referenceLoaded;
+
+  @visibleForTesting
+  bool get debugReferenceLabelSpritesReady {
+    if (_referenceCities.isEmpty || _cityLabelImageFuture != null) return false;
+    for (final city in _referenceCities) {
+      final variants = city.provinceId == 'buenos_aires'
+          ? const [false, true]
+          : const [false];
+      for (final enhanced in variants) {
+        final imageId = city.isAdministrative
+            ? MapLibreGeographicAnnotationData.administrativeLabelImageId(
+                city.id,
+                enhancedForSoilPolygons: enhanced,
+              )
+            : MapLibreGeographicAnnotationData.cityLabelImageId(
+                city.id,
+                enhancedForSoilPolygons: enhanced,
+              );
+        if (!_registeredAnnotationImages.contains(imageId)) return false;
+      }
+    }
+    return true;
+  }
+
+  @visibleForTesting
+  List<double?> get debugAdministrativeLabelOpacities => [
+    for (final id in _departmentLabelLayerIds)
+      _literalLayerOpacity(_style?.layers[id]),
+  ];
+
+  @visibleForTesting
+  List<bool?> get debugAdministrativeBoundaryVisibility => [
+    for (final id in _administrativeBoundaryLayerIds.values)
+      _style?.layers[id]?.visible,
+  ];
+
+  @visibleForTesting
+  Future<int> debugRenderedReferenceSymbolCount() async {
+    final controller = _controller;
+    final size = _size;
+    if (controller == null || size.width <= 0 || size.height <= 0) return 0;
+    final rendered = await controller.featuresInRect(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      layerIds: [
+        _cityLabelLayerId,
+        _citySecondaryLabelLayerId,
+        ..._departmentLabelLayerIds,
+      ],
+    );
+    return rendered.length;
+  }
+
+  double? _literalLayerOpacity(ml.StyleLayer? layer) {
+    if (layer is! ml.SymbolStyleLayer) return null;
+    final opacity = layer.iconOpacity;
+    return opacity is ml.Literal<num> ? opacity.value.toDouble() : null;
+  }
+
   SoilMapVisibleBounds? _visibleBounds(ml.MapController controller) {
     final size = _size;
     if (!size.width.isFinite ||
@@ -604,6 +664,13 @@ class MapLibreEngine implements SoilMapEngine {
       _onPositionChanged?.call(camera, hasGesture: _moveIsGesture);
     } else if (event is ml.MapEventCameraIdle) {
       _moveIsGesture = false;
+      final controller = _controller;
+      if (controller != null && _referenceLoaded) {
+        // Reconcile against the settled native camera as the final move event
+        // can precede an asynchronous camera animation's actual end state.
+        _lastReferenceZoom = null;
+        _updateReferenceLayerVisibility(controller.getCamera().zoom + 1);
+      }
     } else if (event is ml.MapEventClick) {
       unawaited(_routeMapClick(event));
     }

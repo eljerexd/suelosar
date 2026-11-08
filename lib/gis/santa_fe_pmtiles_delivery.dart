@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -223,30 +222,10 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
   /// "still working"; only [PmtilesInstallStatus.isTerminal] ends the wait,
   /// and the timeout bounds everything else.
   Future<void> _runInstall() async {
-    final completer = Completer<void>();
-    var sessionId = -1;
-
-    void settle(PmtilesInstallUpdate update) {
-      if (completer.isCompleted) return;
-      if (update.status == PmtilesInstallStatus.installed) {
-        completer.complete();
-      } else {
-        completer.completeError(
-          PmtilesInstallException(update.status.name, update.errorCode),
-        );
-      }
-    }
-
-    // Updates that arrive before the session id is known are matched by
-    // module name instead, which is what makes the early-completion case
-    // above work.
-    final pending = <PmtilesInstallUpdate>[];
-    final subscription = PmtilesDeliveryChannel.updates.listen(
-      (update) {
-        if (!update.modules.contains(_componentName)) return;
-        // Play's own byte counts, passed straight through — nothing here is
-        // estimated or interpolated. See [BuenosAiresPmtilesDelivery] for why
-        // INSTALLED is included and the other terminal states are not.
+    await PmtilesDeliveryChannel.installAndWait(
+      module: _componentName,
+      timeout: _installTimeout,
+      onUpdate: (update) {
         if (!update.status.isTerminal ||
             update.status == PmtilesInstallStatus.installed) {
           _setDownloadBytes(
@@ -256,31 +235,8 @@ class SantaFePmtilesDelivery extends PmtilesDelivery {
             ),
           );
         }
-        if (sessionId == -1) {
-          pending.add(update);
-          if (update.status.isTerminal) settle(update);
-          return;
-        }
-        if (update.sessionId == sessionId && update.status.isTerminal) {
-          settle(update);
-        }
-      },
-      onError: (Object error) {
-        if (!completer.isCompleted) completer.completeError(error);
       },
     );
-
-    try {
-      sessionId = await PmtilesDeliveryChannel.install(_componentName);
-      // 0 means the module was already installed and Play opened no session.
-      if (sessionId == 0) return;
-      for (final update in pending) {
-        if (update.status.isTerminal) settle(update);
-      }
-      await completer.future.timeout(_installTimeout);
-    } finally {
-      await subscription.cancel();
-    }
   }
 
   /// Requests removal of the installed component, freeing the device

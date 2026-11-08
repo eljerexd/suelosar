@@ -97,14 +97,22 @@ abstract final class PmtilesDeliveryChannel {
   static const EventChannel _events = EventChannel(
     'ar.com.suelosar/pmtiles_delivery/events',
   );
-
-  /// Session updates for every module, straight from
-  /// `SplitInstallStateUpdatedListener`. Callers filter by module name.
-  static Stream<PmtilesInstallUpdate> get updates => _events
+  static final Stream<PmtilesInstallUpdate> _updates = _events
       .receiveBroadcastStream()
       .map(
-        (event) => PmtilesInstallUpdate._fromMap(event as Map<Object?, Object?>),
+        (event) =>
+            PmtilesInstallUpdate._fromMap(event as Map<Object?, Object?>),
       );
+  static Future<void> _installQueue = Future<void>.value();
+  static final Map<String, Future<void>> _moduleInstalls = {};
+
+  /// Session updates for every module, straight from
+  /// `SplitInstallStateUpdatedListener`. This must stay one shared stream:
+  /// each call to `receiveBroadcastStream()` installs a platform handler for
+  /// the same channel name, while the native bridge owns a single EventSink.
+  /// Callers subscribe here and filter by module/session without replacing
+  /// each other's native listener.
+  static Stream<PmtilesInstallUpdate> get updates => _updates;
 
   static Future<void>? _assetsVisible;
 
@@ -168,6 +176,132 @@ abstract final class PmtilesDeliveryChannel {
     }
   }
 
+  /// Starts one module install and waits for the matching Play session to
+  /// reach a terminal state. Multiple modules can observe the shared event
+  /// stream concurrently; every update is matched against both module and the
+  /// session id returned by `startInstall`.
+  static Future<void> installAndWait({
+    required String module,
+    required void Function(PmtilesInstallUpdate update) onUpdate,
+    required Duration timeout,
+  }) {
+    final existing = _moduleInstalls[module];
+    if (existing != null) return existing;
+
+    final previous = _installQueue;
+    final releaseQueue = Completer<void>();
+    _installQueue = releaseQueue.future;
+    final request = () async {
+      await previous;
+      try {
+        await _installAndWaitNow(
+          module: module,
+          onUpdate: onUpdate,
+          timeout: timeout,
+        );
+      } finally {
+        releaseQueue.complete();
+      }
+    }();
+    _moduleInstalls[module] = request;
+    unawaited(
+      request.then<void>(
+        (_) => _clearModuleInstall(module, request),
+        onError: (Object _, StackTrace _) =>
+            _clearModuleInstall(module, request),
+      ),
+    );
+    return request;
+  }
+
+  static void _clearModuleInstall(String module, Future<void> request) {
+    if (identical(_moduleInstalls[module], request)) {
+      _moduleInstalls.remove(module);
+    }
+  }
+
+  static Future<void> _installAndWaitNow({
+    required String module,
+    required void Function(PmtilesInstallUpdate update) onUpdate,
+    required Duration timeout,
+  }) async {
+    final completed = Completer<void>();
+    int? sessionId;
+    final pending = <PmtilesInstallUpdate>[];
+    Object? pendingStreamError;
+    StackTrace? pendingStreamStack;
+
+    void process(PmtilesInstallUpdate update) {
+      final serviceDied =
+          update.sessionId == -1 &&
+          update.status == PmtilesInstallStatus.failed;
+      if (completed.isCompleted ||
+          (!serviceDied && update.sessionId != sessionId)) {
+        return;
+      }
+      try {
+        onUpdate(update);
+      } catch (error, stackTrace) {
+        completed.completeError(error, stackTrace);
+        return;
+      }
+      if (!update.status.isTerminal) return;
+      if (update.status == PmtilesInstallStatus.installed) {
+        completed.complete();
+      } else {
+        completed.completeError(
+          PmtilesInstallException(update.status.name, update.errorCode),
+        );
+      }
+    }
+
+    final subscription = updates.listen(
+      (update) {
+        final serviceDied =
+            update.sessionId == -1 &&
+            update.status == PmtilesInstallStatus.failed;
+        if (!serviceDied && !update.modules.contains(module)) return;
+        final activeSessionId = sessionId;
+        if (activeSessionId == null) {
+          pending.add(update);
+        } else if (serviceDied || update.sessionId == activeSessionId) {
+          process(update);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (sessionId == null) {
+          pendingStreamError = error;
+          pendingStreamStack = stackTrace;
+        } else if (!completed.isCompleted) {
+          completed.completeError(error, stackTrace);
+        }
+      },
+    );
+
+    try {
+      sessionId = await install(module);
+      // Zero means Play found the module already installed and opened no
+      // session, so no event can be required to complete this request.
+      if (sessionId == 0) return;
+      if (pendingStreamError != null && !completed.isCompleted) {
+        completed.completeError(
+          pendingStreamError!,
+          pendingStreamStack ?? StackTrace.current,
+        );
+      }
+      for (final update in pending) {
+        if (update.sessionId == sessionId ||
+            (update.sessionId == -1 &&
+                update.status == PmtilesInstallStatus.failed)) {
+          process(update);
+        }
+      }
+      await completed.future.timeout(timeout);
+    } finally {
+      await subscription.cancel();
+    }
+  }
+
   /// Requests removal of [module]. Play defers the actual deletion to an idle
   /// moment, so this resolving means the request was accepted, not that the
   /// files are already gone.
@@ -175,10 +309,7 @@ abstract final class PmtilesDeliveryChannel {
     try {
       await _methods.invokeMethod<bool>('uninstall', {'module': module});
     } on PlatformException catch (error) {
-      throw PmtilesInstallException(
-        error.message ?? 'uninstall failed',
-        null,
-      );
+      throw PmtilesInstallException(error.message ?? 'uninstall failed', null);
     }
   }
 
