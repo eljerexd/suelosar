@@ -15,6 +15,7 @@ import 'package:suelosar/gis/gis_feature.dart';
 import 'package:suelosar/gis/gis_map_screen.dart';
 import 'package:suelosar/gis/gis_layer.dart';
 import 'package:suelosar/gis/gis_location_service.dart';
+import 'package:suelosar/gis/measurement_render_style.dart';
 import 'package:suelosar/gis/gis_repository.dart';
 import 'package:suelosar/gis/gis_soil_series.dart';
 import 'package:suelosar/models/soil_map.dart';
@@ -22,6 +23,7 @@ import 'package:suelosar/models/favorite_soil_feature.dart';
 import 'package:suelosar/models/measurement_color_option.dart';
 import 'package:suelosar/models/personal_marker.dart';
 import 'package:suelosar/models/saved_measurement.dart';
+import 'package:suelosar/models/soil_card.dart';
 import 'package:suelosar/repositories/pdf_series_repository.dart';
 import 'package:suelosar/repositories/soil_map_repository.dart';
 import 'package:suelosar/screens/favorites_screen.dart';
@@ -29,6 +31,7 @@ import 'package:suelosar/screens/gis_favorites_screen.dart';
 import 'package:suelosar/screens/measurements_screen.dart';
 import 'package:suelosar/screens/pdf_viewer_screen.dart';
 import 'package:suelosar/screens/personal_markers_screen.dart';
+import 'package:suelosar/screens/soil_maps_screen.dart';
 import 'package:suelosar/services/settings_service.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -798,7 +801,7 @@ void main() {
     final map = tester.widget<FlutterMap>(find.byType(FlutterMap));
     expect(map.mapController!.camera.zoom, 12);
     expect(find.byType(BottomSheet), findsOneWidget);
-    expect(find.text('Arroyo Dulce'), findsOneWidget);
+    expect(_bottomSheetTitle('Arroyo Dulce'), findsOneWidget);
     expect(find.text('70%'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('Abrir PDF'),
@@ -909,6 +912,7 @@ void main() {
       find.byKey(const ValueKey('selection-preview-measurement-feature')),
       findsOneWidget,
     );
+    map = tester.widget<FlutterMap>(find.byType(FlutterMap));
     map.options.onTap!(
       const TapPosition(Offset.zero, Offset.zero),
       const LatLng(-36.5, -60),
@@ -918,7 +922,7 @@ void main() {
       find.byKey(const ValueKey('selection-preview-measurement-feature')),
       findsNothing,
     );
-    expect(find.text('Unidad medida'), findsOneWidget);
+    expect(_bottomSheetTitle('Unidad cartográfica'), findsOneWidget);
   });
 
   testWidgets('GIS measurement color updates and persists', (
@@ -1687,12 +1691,7 @@ void main() {
     );
     await tester.pump();
     expect(find.byKey(const ValueKey('area-vertex-0')), findsNothing);
-    await _tapSavedMeasurementEditAction(tester);
-    expect(find.byKey(const ValueKey('area-vertex-0')), findsOneWidget);
-    expect(find.byKey(const ValueKey('save-measurement')), findsOneWidget);
-    expect(find.byTooltip('Ocultar'), findsOneWidget);
-    expect(find.byTooltip('Eliminar medición'), findsOneWidget);
-    final selectedAreas = tester
+    var selectedAreas = tester
         .widgetList<PolygonLayer>(find.byType(PolygonLayer))
         .expand((layer) => layer.polygons)
         .where((polygon) => polygon.points.length == 3)
@@ -1700,14 +1699,45 @@ void main() {
     expect(
       selectedAreas.any(
         (polygon) =>
-            polygon.color == Colors.orange.withValues(alpha: 0.42) &&
-            polygon.borderStrokeWidth == 6,
+            polygon.color ==
+                Colors.orange.withValues(
+                  alpha: MeasurementRenderStyles.selectedSaved.areaFillOpacity,
+                ) &&
+            polygon.borderStrokeWidth ==
+                MeasurementRenderStyles.selectedSaved.areaOutline.width,
       ),
       isTrue,
     );
+
+    await _tapSavedMeasurementEditAction(tester);
+    expect(find.byKey(const ValueKey('area-vertex-0')), findsOneWidget);
+    expect(find.byKey(const ValueKey('save-measurement')), findsOneWidget);
+    expect(find.byTooltip('Ocultar'), findsOneWidget);
+    expect(find.byTooltip('Eliminar medición'), findsOneWidget);
+    selectedAreas = tester
+        .widgetList<PolygonLayer>(find.byType(PolygonLayer))
+        .expand((layer) => layer.polygons)
+        .where((polygon) => polygon.points.length == 3)
+        .toList();
     expect(
       selectedAreas.any(
-        (polygon) => polygon.color == Colors.orange.withValues(alpha: 0.25),
+        (polygon) =>
+            polygon.color ==
+            Colors.orange.withValues(
+              alpha: MeasurementRenderStyles.activeAreaFillOpacity,
+            ),
+      ),
+      isTrue,
+    );
+    final activeAreaOutlines = tester
+        .widgetList<PolylineLayer>(find.byType(PolylineLayer))
+        .expand((layer) => layer.polylines);
+    expect(
+      activeAreaOutlines.any(
+        (line) =>
+            line.strokeWidth ==
+                MeasurementRenderStyles.activeAreaOutline.width &&
+            line.color == Colors.orange,
       ),
       isTrue,
     );
@@ -2222,6 +2252,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Complejo Junín 18'), findsOneWidget);
+    expect(find.text('Ju18'), findsOneWidget);
     expect(
       tester.getTopLeft(find.text('Ju18')).dy,
       lessThan(tester.getTopLeft(find.text('Ju180')).dy),
@@ -2237,7 +2268,14 @@ void main() {
     final state = tester.state(find.byType(GisMapScreen)) as dynamic;
     expect(state.searchSelectedFeature?.id, 'exact-symbol');
     expect(find.byType(BottomSheet), findsOneWidget);
-    expect(find.text('Complejo Junín 18'), findsOneWidget);
+    expect(_bottomSheetTitle('Junín'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.text('Ju18'),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('GIS search groups results and orders series units', (
@@ -2353,7 +2391,11 @@ void main() {
     await tester.pumpAndSettle();
     final state = tester.state(find.byType(GisMapScreen)) as dynamic;
     expect(state.searchSelectedFeature?.id, 'unit-c');
-    expect(find.text('Unidad C'), findsOneWidget);
+    expect(_bottomSheetTitle('Junín'), findsOneWidget);
+    expect(
+      find.descendant(of: find.byType(BottomSheet), matching: find.text('C3')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('GIS bottom sheet toggles and persists a favorite feature', (
@@ -2391,17 +2433,79 @@ void main() {
 
     await _selectMapSearchResult(tester, 'arroyo', 'Arroyo Dulce');
     await tester.tap(find.byTooltip('Agregar a favoritos'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 110));
+
+    final starDuringSelection = tester.widget<Icon>(
+      find.byKey(const ValueKey('gis-favorite-star-icon')),
+    );
+    expect(
+      find.byKey(const ValueKey('gis-favorite-star-icon')),
+      findsOneWidget,
+    );
+    expect(starDuringSelection.fill, greaterThan(0));
+    expect(starDuringSelection.fill, lessThan(1));
+    expect(
+      find.ancestor(
+        of: find.byKey(const ValueKey('gis-favorite-star-icon')),
+        matching: find.byType(ScaleTransition),
+      ),
+      findsNothing,
+    );
     await tester.pumpAndSettle();
 
     final preferences = await SharedPreferences.getInstance();
     final favorites = preferences.getStringList('gis.favorite_soil_features');
 
     expect(find.byTooltip('Quitar de favoritos'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('gis-favorite-star-icon')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<Icon>(find.byKey(const ValueKey('gis-favorite-star-icon')))
+          .fill,
+      1,
+    );
     expect(favorites, isNotNull);
     expect(favorites!.single, contains('favorite-feature'));
     expect(favorites.single, contains('Favorite unit'));
     expect(favorites.single, contains('Arroyo Dulce'));
     expect(favorites.single, contains('favorite.pdf'));
+
+    await tester.tap(find.byTooltip('Quitar de favoritos'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 110));
+    final starDuringRemoval = tester.widget<Icon>(
+      find.byKey(const ValueKey('gis-favorite-star-icon')),
+    );
+    expect(
+      find.byKey(const ValueKey('gis-favorite-star-icon')),
+      findsOneWidget,
+    );
+    expect(starDuringRemoval.fill, greaterThan(0));
+    expect(starDuringRemoval.fill, lessThan(1));
+    expect(
+      find.ancestor(
+        of: find.byKey(const ValueKey('gis-favorite-star-icon')),
+        matching: find.byType(ScaleTransition),
+      ),
+      findsNothing,
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<Icon>(find.byKey(const ValueKey('gis-favorite-star-icon')))
+          .fill,
+      0,
+    );
+    expect(
+      preferences.getStringList('gis.favorite_soil_features') ??
+          const <String>[],
+      isEmpty,
+    );
   });
 
   testWidgets('GIS favorite reuses search centering and selection workflow', (
@@ -2454,7 +2558,7 @@ void main() {
     final state = tester.state(find.byType(GisMapScreen)) as dynamic;
     expect(state.searchSelectedFeature?.id, feature.id);
     expect(find.byType(BottomSheet), findsOneWidget);
-    expect(find.text('Unidad favorita'), findsOneWidget);
+    expect(_bottomSheetTitle('Arroyo Dulce'), findsOneWidget);
   });
 
   testWidgets('GIS reports a favorite whose feature is unavailable', (
@@ -2674,25 +2778,29 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     await tester.tap(find.byKey(const ValueKey('module-soil-maps')));
-    await tester.pump();
-
-    // Both Buenos Aires and Santa Fe catalogs are real assets here (no
-    // loader override), so wait for the actual combined load to finish
-    // rather than a fixed delay. Waiting for the spinner to disappear
-    // (rather than a specific sliver's text) avoids depending on how much
-    // of the list happens to be built within this viewport. The bound is
-    // generous because this runs deep into the full suite, where CPU
-    // contention can make a real asset read take noticeably longer than in
-    // isolation.
-    for (var attempt = 0; attempt < 1500; attempt++) {
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 20)),
-      );
-      await tester.pump();
-      if (find.byType(CircularProgressIndicator).evaluate().isEmpty) break;
+    for (var frame = 0; frame < 10; frame++) {
+      await tester.pump(const Duration(milliseconds: 50));
     }
 
-    expect(find.text('Cartas de suelo'), findsWidgets);
+    expect(find.byType(SoilMapsScreen), findsOneWidget);
+
+    // Keep this catalog interaction deterministic: navigation through the
+    // real app is covered above, while the search/favorite assertions use a
+    // small fixture instead of three unrelated rootBundle reads.
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SoilMapsScreen(
+          soilMapsLoader: () async => const <SoilMap>[
+            SoilMap(name: 'Junín', pdf: 'Junín.pdf'),
+            SoilMap(name: 'Villa Cañás', pdf: 'Villa Cañás.pdf'),
+          ],
+          santaFeCardsLoader: () async => const <SoilCard>[],
+          cordobaCardsLoader: () async => const <SoilCard>[],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
     expect(find.byIcon(AppIcons.search), findsOneWidget);
     expect(find.text('Buscar carta de suelo...'), findsOneWidget);
 
@@ -2861,6 +2969,14 @@ void main() {
     }
   });
 }
+
+Finder _bottomSheetTitle(String title) => find.descendant(
+  of: find.byType(BottomSheet),
+  matching: find.byWidgetPredicate(
+    (widget) =>
+        widget is Text && widget.data == title && widget.style?.fontSize == 22,
+  ),
+);
 
 class _DeferredGisRepository implements GisRepository {
   final Completer<GisArchiveInfo> _initialization = Completer<GisArchiveInfo>();

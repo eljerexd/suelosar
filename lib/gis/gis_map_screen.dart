@@ -8089,31 +8089,35 @@ class _GisFavoriteStarButton extends StatelessWidget {
     return IconButton(
       tooltip: isFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos',
       onPressed: onPressed,
-      icon: AnimatedSwitcher(
+      icon: TweenAnimationBuilder<double>(
+        key: const ValueKey('gis-favorite-star-animation'),
+        tween: Tween<double>(end: isFavorite ? 1 : 0),
         duration: AppMotion.duration(
           context,
           const Duration(milliseconds: 220),
           reduced: const Duration(milliseconds: 60),
         ),
-        switchInCurve: Curves.easeOutBack,
-        switchOutCurve: Curves.easeIn,
-        transitionBuilder: (child, animation) =>
-            ScaleTransition(scale: animation, child: child),
-        child: Container(
-          key: ValueKey(isFavorite),
+        curve: Curves.easeInOut,
+        builder: (context, fill, _) => Container(
+          key: const ValueKey('gis-favorite-star-container'),
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: isFavorite
-                ? colorScheme.primaryContainer.withValues(alpha: 0.55)
-                : Colors.transparent,
+            color: Color.lerp(
+              Colors.transparent,
+              colorScheme.primaryContainer.withValues(alpha: 0.55),
+              fill,
+            ),
           ),
           child: Icon(
             AppIcons.star,
-            color: isFavorite
-                ? colorScheme.primary
-                : colorScheme.onSurfaceVariant,
-            fill: isFavorite ? 1 : 0,
+            key: const ValueKey('gis-favorite-star-icon'),
+            color: Color.lerp(
+              colorScheme.onSurfaceVariant,
+              colorScheme.primary,
+              fill,
+            ),
+            fill: fill,
           ),
         ),
       ),

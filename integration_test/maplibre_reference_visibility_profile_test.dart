@@ -35,6 +35,21 @@ void main() {
     expect(initialSymbols, greaterThan(0));
     await _holdForCapture(tester);
 
+    final resumeCountBeforePdf = engine.debugRenderingResumeCount;
+    final navigator = Navigator.of(tester.element(find.byType(GisMapScreen)));
+    final coveredRoute = navigator.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const Scaffold(body: Center(child: Text('PDF'))),
+      ),
+    );
+    await tester.pumpAndSettle();
+    navigator.pop();
+    await coveredRoute;
+    await tester.pumpAndSettle();
+    expect(engine.debugRenderingResumeCount, greaterThan(resumeCountBeforePdf));
+    final symbolsAfterPdfReturn = await _waitForRenderedSymbols(tester, engine);
+    expect(symbolsAfterPdfReturn, greaterThan(0));
+
     late Map<String, Object?> zoomed;
     late Map<String, Object?> returned;
     var returnedSymbols = 0;
@@ -74,6 +89,9 @@ void main() {
       'zoom14AfterPan': zoomed,
       'returnedZoom7': returned,
       'initialRenderedSymbols': initialSymbols,
+      'symbolsAfterPdfReturn': symbolsAfterPdfReturn,
+      'renderingResumesAfterPdf':
+          engine.debugRenderingResumeCount - resumeCountBeforePdf,
       'returnedRenderedSymbols': returnedSymbols,
     };
     debugPrint(

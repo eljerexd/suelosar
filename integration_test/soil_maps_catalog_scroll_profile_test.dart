@@ -47,7 +47,7 @@ void main() {
 
         final previousOffset = position.pixels;
         await tester.fling(catalog, Offset(0, bottom ? -700 : 700), 2400);
-        await tester.pumpAndSettle();
+        await _pumpUntilScrollStops(tester, position);
         flingCount++;
         expect(position.pixels, isNot(previousOffset));
       }
@@ -73,7 +73,9 @@ void main() {
         .map((timing) => timing.rasterDuration.inMicroseconds / 1000)
         .toList(growable: false);
     final result = <String, Object>{
-      'device': 'emulator-5554 Android API 37 x86_64 1280x2856 @480dpi',
+      'device':
+          'emulator-5556 sdk_gphone16k_x86_64 Android 17/API 37 '
+          '1080x2424 @420dpi',
       'catalog_scroll_extent_logical_px': maxScrollExtent,
       'flings_for_full_down_and_up_traversal': flingCount,
       'frame_count': timings.length,
@@ -88,6 +90,24 @@ void main() {
     debugPrint('SOIL_MAP_SCROLL_PROFILE ${jsonEncode(result)}');
     binding.reportData = <String, dynamic>{'soil_map_scroll': result};
   });
+}
+
+Future<void> _pumpUntilScrollStops(
+  WidgetTester tester,
+  ScrollPosition position,
+) async {
+  var stableFrames = 0;
+  var previousOffset = position.pixels;
+  for (var frame = 0; frame < 120 && stableFrames < 3; frame++) {
+    await tester.pump(const Duration(milliseconds: 16));
+    if (!position.isScrollingNotifier.value &&
+        (position.pixels - previousOffset).abs() < 0.01) {
+      stableFrames++;
+    } else {
+      stableFrames = 0;
+    }
+    previousOffset = position.pixels;
+  }
 }
 
 Future<void> _waitForCatalog(WidgetTester tester) async {

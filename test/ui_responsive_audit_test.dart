@@ -100,9 +100,8 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: const TextScaler.linear(2)),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(2)),
           child: child!,
         ),
         home: const GisMapScreen(repository: _EmptyGisRepository()),
@@ -148,6 +147,7 @@ void main() {
             // inset layout, not catalog content, and doesn't need a real
             // `rootBundle` read.
             santaFeCardsLoader: () async => const <SoilCard>[],
+            cordobaCardsLoader: () async => const <SoilCard>[],
           ),
         ),
       );
@@ -208,6 +208,7 @@ void main() {
               SoilMap(name: 'Azul', pdf: 'Azul.pdf'),
             ],
             santaFeCardsLoader: () async => const <SoilCard>[],
+            cordobaCardsLoader: () async => const <SoilCard>[],
           ),
         ),
       );
@@ -241,9 +242,8 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: const TextScaler.linear(1.3)),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(1.3)),
           child: child!,
         ),
         home: const GisMapScreen(repository: _EmptyGisRepository()),
@@ -1428,9 +1428,8 @@ Future<void> _pumpNarrowScreen(WidgetTester tester, Widget screen) async {
   await tester.pumpWidget(
     MaterialApp(
       builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(
-          context,
-        ).copyWith(textScaler: const TextScaler.linear(2)),
+        data: MediaQuery.of(context)
+            .copyWith(textScaler: const TextScaler.linear(2)),
         child: child!,
       ),
       home: screen,

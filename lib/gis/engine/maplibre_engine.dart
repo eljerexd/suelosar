@@ -283,6 +283,7 @@ class MapLibreEngine implements SoilMapEngine {
   String? _lastPersonalMarkerData;
   String? _lastLocationData;
   bool _nativeAnnotationLayersReady = false;
+  int _renderingResumeCount = 0;
   Future<void>? _nativeAnnotationSyncFuture;
   bool _nativeAnnotationSyncRequested = false;
   Stopwatch? _referenceBasemapClock;
@@ -294,6 +295,9 @@ class MapLibreEngine implements SoilMapEngine {
 
   @visibleForTesting
   bool get debugNativeAnnotationLayersReady => _nativeAnnotationLayersReady;
+
+  @visibleForTesting
+  int get debugRenderingResumeCount => _renderingResumeCount;
 
   @visibleForTesting
   Set<String> get debugNativeAnnotationLayerIds =>
@@ -657,7 +661,14 @@ class MapLibreEngine implements SoilMapEngine {
 
   void _handleMapEvent(ml.MapEvent event) {
     if (_disposed) return;
-    if (event is ml.MapEventStartMoveCamera) {
+    if (event is ml.MapEventRenderingChanged && !event.paused) {
+      _renderingResumeCount++;
+      _lastReferenceZoom = null;
+      _updateReferenceLayerVisibility(camera.zoom);
+      unawaited(_syncNativeAnnotationSources());
+      unawaited(_syncProvinceHighlights());
+      unawaited(_syncMeasurementSources());
+    } else if (event is ml.MapEventStartMoveCamera) {
       _moveIsGesture = event.reason == ml.CameraChangeReason.apiGesture;
     } else if (event is ml.MapEventMoveCamera) {
       _updateReferenceLayerVisibility(event.camera.zoom + 1);
@@ -1031,6 +1042,10 @@ class MapLibreEngine implements SoilMapEngine {
 
     await _ensureNativeAnnotationImages(style);
     if (_disposed || !identical(_style, style)) return;
+    final missingCitySource = style.sources[_cityAnnotationSourceId] == null;
+    final missingPersonalMarkerSource =
+        style.sources[_personalMarkerSourceId] == null;
+    final missingLocationSource = style.sources[_locationSourceId] == null;
     for (final entry in [
       MapEntry(_cityAnnotationSourceId, _emptyFeatureCollection),
       MapEntry(_personalMarkerSourceId, _emptyFeatureCollection),
@@ -1054,7 +1069,7 @@ class MapLibreEngine implements SoilMapEngine {
       _referenceCities,
       enhancedAdministrativeProvinceIds: enhancedAdministrativeProvinceIds,
     );
-    if (_lastCityAnnotationData != cityData) {
+    if (missingCitySource || _lastCityAnnotationData != cityData) {
       await style.sources.updateGeoJsonData(_cityAnnotationSourceId, cityData);
       if (_disposed || !identical(_style, style)) return;
       _lastCityAnnotationData = cityData;
@@ -1063,7 +1078,8 @@ class MapLibreEngine implements SoilMapEngine {
     final personalData = MapLibreGeographicAnnotationData.personalMarkers(
       _personalMarkers,
     );
-    if (_lastPersonalMarkerData != personalData) {
+    if (missingPersonalMarkerSource ||
+        _lastPersonalMarkerData != personalData) {
       await style.sources.updateGeoJsonData(
         _personalMarkerSourceId,
         personalData,
@@ -1081,7 +1097,7 @@ class MapLibreEngine implements SoilMapEngine {
       accuracyMeters: hasAccuracy ? _currentLocationAccuracyMeters! : 0,
       hasAccuracy: hasAccuracy,
     );
-    if (_lastLocationData != locationData) {
+    if (missingLocationSource || _lastLocationData != locationData) {
       await style.sources.updateGeoJsonData(_locationSourceId, locationData);
       if (_disposed || !identical(_style, style)) return;
       _lastLocationData = locationData;
@@ -1333,7 +1349,10 @@ class MapLibreEngine implements SoilMapEngine {
   }
 
   Future<void> _ensureNativeAnnotationLayers(ml.StyleController style) async {
-    if (_nativeAnnotationLayersReady) return;
+    if (_nativeAnnotationLayersReady &&
+        _annotationStyleLayerIds.every((id) => style.layers[id] != null)) {
+      return;
+    }
     if (style.layers[_cityDotLayerId] == null) {
       await style.layers.add(
         ml.CircleStyleLayer(
@@ -2365,6 +2384,10 @@ class MapLibreEngine implements SoilMapEngine {
       );
     }
     _referenceCities = data.cities;
+    // Sprite generation depends only on the decoded labels and loaded style,
+    // not on the GeoJSON line sources. Start it while those sources/layers
+    // are being installed so first labels do not wait for unrelated setup.
+    _scheduleCityLabelImageRegistration(style);
     final belowLayerId = _referenceLayerInsertionPoint;
 
     for (final entry in data.featureCollections.entries) {
