@@ -225,6 +225,24 @@ Never mix multiple unrelated changes.
 
 Avoid large refactors.
 
+## Application Build Numbering
+
+Before every new Flutter compilation that produces or replaces an application
+binary (Debug, Profile, Release, APK, or Windows executable/installer input),
+increment the numeric build suffix in `pubspec.yaml` while keeping the
+`major.minor.patch` version unchanged unless the semantic version itself is
+being released. For example, change `1.8.0+25` to `1.8.0+26` before compiling.
+Do not reuse a build number for a new compilation; this lets the Windows
+updater detect fixes published under the same semantic version and keeps
+Android build identifiers increasing. Keep the build number at or below
+65535 for Windows version metadata. Tests, static analysis, hot reload, and
+hot restart do not produce a new app build number.
+
+For Windows releases, keep the GitHub tag, installer filename, and checksum
+sidecar on the same complete version, including the build suffix; for example:
+`v1.8.0+26`, `SuelosAR-Setup-1.8.0+26.exe`, and
+`SuelosAR-Setup-1.8.0+26.exe.sha256`.
+
 ## Windows MapLibre Debug Workflow
 
 Use the VS Code launch configuration `SuelosAR Alpha - Windows MapLibre (Debug)` for the alpha Windows desktop workflow. It runs `lib/main.dart` in Flutter Debug mode, selects the Windows device, enables `SUelosAR_MAPLIBRE_NATIVE=true`, and loads the local Supabase defines file. Do not replace this with a Release build for ordinary Dart iteration; use F5, Hot Reload, and Hot Restart.

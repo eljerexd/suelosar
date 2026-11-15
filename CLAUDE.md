@@ -51,6 +51,23 @@ Hasta nuevo aviso del usuario, Claude debe:
    etapa introduce una alternativa, la alternativa convive con
    flutter_map hasta estar validada — no lo reemplaza.
 
+## Numeración de compilaciones de la aplicación
+
+Antes de cada nueva compilación Flutter que genere o reemplace un binario de
+la aplicación (Debug, Profile, Release, APK o ejecutable de Windows),
+incrementar el sufijo numérico de `version` en `pubspec.yaml`, manteniendo
+`major.minor.patch` igual salvo que también se esté cambiando la versión
+SemVer. Ejemplo: `1.8.0+25` pasa a `1.8.0+26`. No reutilizar el número para
+una nueva compilación: permite detectar arreglos publicados bajo la misma
+versión SemVer y mantiene crecientes los identificadores de Android. Para
+Windows, el build no debe superar 65535 por el límite de metadatos de versión.
+Tests, análisis estático, hot reload y hot restart no generan un nuevo build.
+
+Al preparar un release de Windows, usar la misma versión completa —incluido
+el build— en el tag de GitHub, el instalador y su checksum; por ejemplo:
+`v1.8.0+26`, `SuelosAR-Setup-1.8.0+26.exe` y
+`SuelosAR-Setup-1.8.0+26.exe.sha256`.
+
 ## Qué SÍ está permitido sin pedir permiso adicional
 
 - Investigación, lectura de documentación, y validación experimental en un
