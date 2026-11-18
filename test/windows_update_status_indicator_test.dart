@@ -342,6 +342,10 @@ void main() {
         find.byKey(const ValueKey('update-popover-retry')),
         findsOneWidget,
       );
+      expect(
+        find.byKey(const ValueKey('windows-update-status-popover')),
+        findsOneWidget,
+      );
 
       await tester.pumpWidget(const SizedBox.shrink());
       controller.dispose();
