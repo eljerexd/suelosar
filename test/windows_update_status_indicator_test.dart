@@ -87,7 +87,7 @@ void main() {
   });
 
   testWidgets(
-    'manual up-to-date check confirms and update click emits release',
+    'manual check keeps the popover open when an update is available',
     (tester) async {
       var response = _upToDate();
       final controller = _controller(() async => response);
@@ -105,8 +105,8 @@ void main() {
       await tester.tap(find.text('Aplicación actualizada'));
       await tester.pumpAndSettle();
       expect(find.text('Ya tenés la última versión'), findsOneWidget);
-      expect(find.text('SuelosAR está actualizado.'), findsOneWidget);
-      expect(find.text('1.7.0'), findsOneWidget);
+      expect(find.text('SuelosAR 1.7.0 está actualizado.'), findsOneWidget);
+      expect(find.textContaining(RegExp(r'\+\d+')), findsNothing);
       expect(find.byType(SnackBar), findsNothing);
       expect(
         find.byKey(const ValueKey('update-popover-check')),
@@ -120,9 +120,24 @@ void main() {
         findsNothing,
       );
 
+      await tester.tap(find.text('Aplicación actualizada'));
+      await tester.pumpAndSettle();
       response = _updateAvailable('1.8.0');
-      await controller.checkManually();
-      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('update-popover-check')).last);
+      await tester.pumpAndSettle();
+      expect(find.text('Nueva actualización disponible'), findsNWidgets(2));
+      expect(
+        find.text('Hay una actualización disponible para SuelosAR.'),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('windows-update-status-popover')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('update-popover-view-update')),
+        findsOneWidget,
+      );
       final selected = expectLater(
         controller.onUpdateAvailableSelected,
         emits(
@@ -131,18 +146,24 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.text('Nueva versión 1.8.0'));
+      await tester.tap(
+        find.byKey(const ValueKey('update-popover-view-update')),
+      );
       await selected;
-      expect(find.text('Nueva versión 1.8.0'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('windows-update-status-popover')),
+        findsOneWidget,
+      );
       await tester.pumpWidget(const SizedBox.shrink());
       controller.dispose();
     },
   );
 
   testWidgets(
-    'manual failure replaces checking feedback with offline feedback',
+    'manual check button stays disabled until a successful check ends',
     (tester) async {
       final pending = Completer<WindowsUpdateCheckResult>();
+      var checkCalls = 0;
       SharedPreferences.setMockInitialValues({
         WindowsUpdateIndicatorController.lastAttemptedAtKey: DateTime.now()
             .toUtc()
@@ -150,7 +171,10 @@ void main() {
             .toIso8601String(),
         WindowsUpdateIndicatorController.lastStatusKey: 'upToDate',
       });
-      final controller = _controller(() => pending.future);
+      final controller = _controller(() {
+        checkCalls++;
+        return checkCalls == 1 ? Future.value(_upToDate()) : pending.future;
+      }, installedVersion: '1.8.2+27');
       await controller.initialize();
       await tester.pumpWidget(
         MaterialApp(
@@ -162,6 +186,121 @@ void main() {
       );
 
       await tester.tap(find.text('Aplicación actualizada'));
+      await tester.pumpAndSettle();
+      expect(checkCalls, 1);
+      await tester.tap(
+        find.byKey(const ValueKey('update-popover-check')).last,
+        warnIfMissed: false,
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final checkButton = tester.widget<OutlinedButton>(
+        find.byKey(const ValueKey('update-popover-check')).last,
+      );
+      expect(checkCalls, 2);
+      expect(checkButton.onPressed, isNull);
+      expect(
+        find.byKey(const ValueKey('update-popover-check-spinner')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('windows-update-status-popover')),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('update-popover-check')).last,
+        warnIfMissed: false,
+      );
+      await tester.pump();
+      expect(checkCalls, 2);
+
+      pending.complete(_upToDate(installedVersion: '1.8.2+27'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('windows-update-status-popover')),
+        findsOneWidget,
+      );
+      expect(find.text('SuelosAR 1.8.2 está actualizado.'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('update-popover-check-spinner')),
+        findsNothing,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    },
+  );
+
+  testWidgets('up-to-date popover shows only the semantic installed version', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    for (final (installedVersion, semanticVersion) in <(String, String)>[
+      ('1.8.2+27', '1.8.2'),
+      ('1.9.0+30', '1.9.0'),
+    ]) {
+      final controller = _controller(
+        () async => _upToDate(installedVersion: installedVersion),
+        installedVersion: installedVersion,
+      );
+      await controller.initialize();
+      await controller.checkCompletion;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.windows),
+          home: Scaffold(
+            body: WindowsUpdateStatusIndicator(controller: controller),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Aplicación actualizada'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('SuelosAR $semanticVersion está actualizado.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining(RegExp(r'\+\d+')), findsNothing);
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    }
+  });
+  testWidgets(
+    'manual failure replaces checking feedback with offline feedback',
+    (tester) async {
+      final pending = Completer<WindowsUpdateCheckResult>();
+      var checkCalls = 0;
+      SharedPreferences.setMockInitialValues({
+        WindowsUpdateIndicatorController.lastAttemptedAtKey: DateTime.now()
+            .toUtc()
+            .subtract(const Duration(minutes: 1))
+            .toIso8601String(),
+        WindowsUpdateIndicatorController.lastStatusKey: 'upToDate',
+      });
+      final controller = _controller(() {
+        checkCalls++;
+        return checkCalls == 1 ? Future.value(_upToDate()) : pending.future;
+      });
+      await controller.initialize();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.windows),
+          home: Scaffold(
+            body: WindowsUpdateStatusIndicator(controller: controller),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Aplicación actualizada'));
+      await tester.pumpAndSettle();
+      expect(checkCalls, 1);
+      await tester.tap(find.byKey(const ValueKey('update-popover-check')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(
@@ -174,6 +313,14 @@ void main() {
       expect(
         find.byKey(const ValueKey('windows-update-status-popover')),
         findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const ValueKey('update-popover-check')).last,
+            )
+            .onPressed,
+        isNull,
       );
 
       pending.complete(
@@ -716,18 +863,21 @@ WindowsUpdateIndicatorController _controller(
   clock: () => DateTime.utc(2026, 11, 1),
 );
 
-WindowsUpdateCheckResult _upToDate() => WindowsUpdateCheckResult(
-  status: WindowsUpdateStatus.upToDate,
-  installedVersion: const SemanticVersion(major: 1, minor: 7, patch: 0),
-  release: _release('1.7.0'),
-);
-
-WindowsUpdateCheckResult _updateAvailable(String version) =>
+WindowsUpdateCheckResult _upToDate({String installedVersion = '1.7.0'}) =>
     WindowsUpdateCheckResult(
-      status: WindowsUpdateStatus.installerAssetMissing,
-      installedVersion: const SemanticVersion(major: 1, minor: 7, patch: 0),
-      release: _release(version),
+      status: WindowsUpdateStatus.upToDate,
+      installedVersion: SemanticVersion.tryParse(installedVersion),
+      release: _release(installedVersion),
     );
+
+WindowsUpdateCheckResult _updateAvailable(
+  String version, {
+  String installedVersion = '1.7.0',
+}) => WindowsUpdateCheckResult(
+  status: WindowsUpdateStatus.installerAssetMissing,
+  installedVersion: SemanticVersion.tryParse(installedVersion),
+  release: _release(version),
+);
 
 WindowsUpdateCheckResult _verifiedUpdateAvailable(String version) {
   final name = 'SuelosAR-Setup-$version.exe';

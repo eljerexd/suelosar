@@ -30,6 +30,7 @@ class _WindowsUpdateStatusIndicatorState
   final GlobalKey _indicatorKey = GlobalKey();
   WindowsUpdatePopoverState? _popoverState;
   String? _installedVersion;
+  bool _manualCheckInProgress = false;
 
   LayerLink get _indicatorLink => widget.layerLink ?? _localIndicatorLink;
 
@@ -56,29 +57,52 @@ class _WindowsUpdateStatusIndicatorState
       controller.selectAvailableUpdate();
       return;
     }
-    await _runManualCheck(context);
+    await _runManualCheck(context, selectAvailableWhenDone: true);
   }
 
-  Future<void> _runManualCheck(BuildContext context) async {
+  Future<void> _runManualCheck(
+    BuildContext context, {
+    bool selectAvailableWhenDone = false,
+  }) async {
     final controller = widget.controller;
+    if (_manualCheckInProgress || controller.isChecking) return;
+    _manualCheckInProgress = true;
     _showPopover(WindowsUpdatePopoverState.checking);
-    final result = await controller.checkManually();
-    if (!mounted || !context.mounted) return;
-    if (result?.status == WindowsUpdateStatus.upToDate) {
-      final version = await controller.installedVersion;
+    try {
+      final result = await controller.checkManually();
       if (!mounted || !context.mounted) return;
-      setState(() {
-        _installedVersion = version;
-        _popoverState = WindowsUpdatePopoverState.upToDate;
-      });
-      return;
-    }
-    if (controller.state == WindowsUpdateIndicatorState.error) {
-      setState(() => _popoverState = WindowsUpdatePopoverState.error);
-    } else if (controller.state ==
-        WindowsUpdateIndicatorState.updateAvailable) {
-      _dismissPopover();
-      controller.selectAvailableUpdate();
+
+      if (result?.status == WindowsUpdateStatus.upToDate &&
+          controller.state == WindowsUpdateIndicatorState.upToDate) {
+        try {
+          final version = await controller.installedVersion;
+          if (!mounted || !context.mounted) return;
+          setState(() {
+            _installedVersion = version;
+            _popoverState = WindowsUpdatePopoverState.upToDate;
+          });
+        } catch (_) {
+          if (mounted && context.mounted) {
+            setState(() => _popoverState = WindowsUpdatePopoverState.error);
+          }
+        }
+        return;
+      }
+
+      if (controller.state == WindowsUpdateIndicatorState.updateAvailable) {
+        setState(
+          () => _popoverState = WindowsUpdatePopoverState.updateAvailable,
+        );
+        if (selectAvailableWhenDone) controller.selectAvailableUpdate();
+      } else if (controller.state == WindowsUpdateIndicatorState.error) {
+        setState(() => _popoverState = WindowsUpdatePopoverState.error);
+      }
+    } catch (_) {
+      if (mounted && context.mounted) {
+        setState(() => _popoverState = WindowsUpdatePopoverState.error);
+      }
+    } finally {
+      _manualCheckInProgress = false;
     }
   }
 
@@ -134,37 +158,43 @@ class _WindowsUpdateStatusIndicatorState
               ),
             ),
           ),
-          TweenAnimationBuilder<double>(
-            tween: Tween(begin: 0, end: 1),
-            duration: reduceAnimations
-                ? Duration.zero
-                : const Duration(milliseconds: 170),
-            curve: Curves.easeOutCubic,
-            builder: (context, value, child) => Opacity(
-              opacity: value,
-              child: Transform.translate(
-                offset: Offset(0, -4 * (1 - value)),
-                child: child,
-              ),
-            ),
-            child: CompositedTransformFollower(
-              link: _indicatorLink,
-              showWhenUnlinked: false,
-              targetAnchor: Alignment.bottomLeft,
-              followerAnchor: Alignment.topLeft,
-              offset: Offset(horizontalOffset, 3),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: popoverWidth,
-                  maxHeight: availableHeight,
+          Positioned.fill(
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: 1),
+              duration: reduceAnimations
+                  ? Duration.zero
+                  : const Duration(milliseconds: 170),
+              curve: Curves.easeOutCubic,
+              builder: (context, value, child) => Opacity(
+                opacity: value,
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: Transform.translate(
+                    offset: Offset(0, -4 * (1 - value)),
+                    child: child,
+                  ),
                 ),
-                child: SingleChildScrollView(
-                  child: WindowsUpdateStatusPopover(
-                    state: _popoverState!,
-                    installedVersion: _installedVersion,
-                    reduceAnimations: reduceAnimations,
-                    anchorX: anchorX,
-                    onCheck: () => _runManualCheck(context),
+              ),
+              child: CompositedTransformFollower(
+                link: _indicatorLink,
+                showWhenUnlinked: false,
+                targetAnchor: Alignment.bottomLeft,
+                followerAnchor: Alignment.topLeft,
+                offset: Offset(horizontalOffset, 3),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: popoverWidth,
+                    maxHeight: availableHeight,
+                  ),
+                  child: SingleChildScrollView(
+                    child: WindowsUpdateStatusPopover(
+                      state: _popoverState!,
+                      installedVersion: _installedVersion,
+                      reduceAnimations: reduceAnimations,
+                      anchorX: anchorX,
+                      onCheck: () => _runManualCheck(context),
+                      onViewUpdate: widget.controller.selectAvailableUpdate,
+                    ),
                   ),
                 ),
               ),

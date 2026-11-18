@@ -8,6 +8,7 @@ import '../services/windows_update_models.dart';
 enum WindowsUpdatePopoverState {
   checking,
   upToDate,
+  updateAvailable,
   error,
   previewDownloadDisabled,
   downloading,
@@ -27,6 +28,7 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
     required this.reduceAnimations,
     this.anchorX = 26,
     required this.onCheck,
+    this.onViewUpdate,
     super.key,
     this.downloadProgress,
     this.downloadSpeedBytesPerSecond,
@@ -45,6 +47,7 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
   final bool reduceAnimations;
   final double anchorX;
   final VoidCallback onCheck;
+  final VoidCallback? onViewUpdate;
   final WindowsUpdateProgress? downloadProgress;
   final double? downloadSpeedBytesPerSecond;
   final String? downloadErrorMessage;
@@ -115,6 +118,13 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
     if (_isDownloadState) return _downloadContent(theme);
     final isUpToDate = state == WindowsUpdatePopoverState.upToDate;
     final isChecking = state == WindowsUpdatePopoverState.checking;
+    final hasUpdate = state == WindowsUpdatePopoverState.updateAvailable;
+    final semanticVersion = isUpToDate && installedVersion != null
+        ? SemanticVersion.tryParse(installedVersion!)?.toDisplayString()
+        : null;
+    final subtitle = semanticVersion == null
+        ? presentation.subtitle
+        : 'SuelosAR $semanticVersion está actualizado.';
     return Column(
       key: ValueKey(state),
       mainAxisSize: MainAxisSize.min,
@@ -157,10 +167,10 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                  if (presentation.subtitle != null) ...[
+                  if (subtitle != null) ...[
                     const SizedBox(height: 3),
                     Text(
-                      presentation.subtitle!,
+                      subtitle,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: const Color(0xFF66685E),
                       ),
@@ -171,43 +181,24 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
             ),
           ],
         ),
-        if (isUpToDate) ...[
-          const Padding(
-            padding: EdgeInsets.only(top: 13),
-            child: Divider(height: 1, color: Color(0xFFE3E2D9)),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 11),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Versión instalada',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: const Color(0xFF66685E),
-                    ),
-                  ),
-                ),
-                Text(
-                  formatWindowsUpdateVersion(installedVersion ?? '—'),
-                  key: const ValueKey('update-installed-version'),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFF41443B),
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ),
+        if (isUpToDate || isChecking) ...[
           Align(
             alignment: Alignment.centerRight,
             child: Padding(
               padding: const EdgeInsets.only(top: 12),
               child: OutlinedButton.icon(
                 key: const ValueKey('update-popover-check'),
-                onPressed: onCheck,
-                icon: const Icon(Icons.refresh_rounded, size: 17),
-                label: const Text('Buscar actualizaciones'),
+                onPressed: isChecking ? null : onCheck,
+                icon: isChecking
+                    ? const SizedBox.square(
+                        key: ValueKey('update-popover-check-spinner'),
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh_rounded, size: 17),
+                label: Text(
+                  isChecking ? 'Buscando...' : 'Buscar actualizaciones',
+                ),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: const Color(0xFF4E693A),
                   backgroundColor: const Color(0xFFE8EFE2),
@@ -218,6 +209,23 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
                     vertical: 9,
                   ),
                   visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ),
+          ),
+        ],
+        if (hasUpdate) ...[
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: TextButton.icon(
+                key: const ValueKey('update-popover-view-update'),
+                onPressed: onViewUpdate,
+                icon: const Icon(Icons.info_outline_rounded, size: 17),
+                label: const Text('Ver detalles'),
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF4E693A),
                 ),
               ),
             ),
@@ -534,6 +542,13 @@ class WindowsUpdateStatusPopover extends StatelessWidget {
       title: 'Ya tenés la última versión',
       subtitle: 'SuelosAR está actualizado.',
       icon: Icons.check_circle_outline_rounded,
+      accent: Color(0xFF547A3A),
+      iconSurface: Color(0xFFE2EBDD),
+    ),
+    WindowsUpdatePopoverState.updateAvailable => const _PopoverPresentation(
+      title: 'Nueva actualización disponible',
+      subtitle: 'Hay una actualización disponible para SuelosAR.',
+      icon: Icons.system_update_alt_rounded,
       accent: Color(0xFF547A3A),
       iconSurface: Color(0xFFE2EBDD),
     ),
