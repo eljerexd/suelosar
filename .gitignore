@@ -12,6 +12,10 @@
 .swiftpm/
 migrate_working_dir/
 
+# Local AI assistant instructions
+/AGENTS.md
+/CLAUDE.md
+
 # IntelliJ related
 *.iml
 *.ipr
