@@ -47,12 +47,32 @@ class MapLibreGeographicAnnotationData {
             'isAdministrative': cities[index].isAdministrative,
             'provinceId': cities[index].provinceId,
             'minZoomTier': cities[index].minZoomTier,
+            'minZoom': cities[index].minZoom,
+            if (cities[index].fadeInEndZoom != null)
+              'fadeInEndZoom': cities[index].fadeInEndZoom,
+            'importance': cities[index].importance,
+            if (cities[index].sourceCategory != null)
+              'sourceCategory': cities[index].sourceCategory,
+            'importanceRank': switch (cities[index].importance) {
+              'primary' => 0,
+              'secondary' => 1,
+              'tertiary' => 2,
+              'quaternary' => 3,
+              _ => 1,
+            },
             'sortKey':
                 (cities[index].isPrimary
                     ? 0
                     : cities[index].isAdministrative
                     ? 200000
-                    : 100000) +
+                    : 100000 +
+                          switch (cities[index].importance) {
+                            'primary' => 0,
+                            'secondary' => 1000,
+                            'tertiary' => 2000,
+                            'quaternary' => 3000,
+                            _ => 1000,
+                          }) +
                 index,
             'labelImage': cities[index].isAdministrative
                 ? administrativeLabelImageId(

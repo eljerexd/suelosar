@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -72,6 +73,15 @@ class MapLibreEngine implements SoilMapEngine {
   static const String _cityLabelLayerId = 'suelosar-city-labels';
   static const String _citySecondaryLabelLayerId =
       'suelosar-city-secondary-labels';
+  static const List<double> _progressiveLocalityMinZooms = [9.5, 11.5];
+  static const List<String> _progressiveLocalityDotLayerIds = [
+    'suelosar-city-dots-zoom-95',
+    'suelosar-city-dots-zoom-115',
+  ];
+  static const List<String> _progressiveLocalityLabelLayerIds = [
+    'suelosar-city-labels-zoom-95',
+    'suelosar-city-labels-zoom-115',
+  ];
   static const List<String> _departmentLabelLayerIds = [
     'suelosar-department-labels',
     'suelosar-department-labels-zoom-77',
@@ -207,6 +217,7 @@ class MapLibreEngine implements SoilMapEngine {
   static const String _transparentStyle = '''
 {"version":8,"sources":{},"layers":[{"id":"suelosar-transparent","type":"background","paint":{"background-color":"rgba(250,250,248,0)"}}]}
 ''';
+  static const int _maxLocalityDiagnosticEntries = 64;
 
   final Completer<void> _styleReady = Completer<void>();
   final Map<String, ml.FillStyleLayer> _fillLayers = {};
@@ -223,6 +234,10 @@ class MapLibreEngine implements SoilMapEngine {
   late final LatestValueAsyncPump<MapLibreProvinceHighlightData>
   _provinceHighlightUpdatePump = LatestValueAsyncPump(
     _applyProvinceHighlightData,
+  );
+  late final LatestValueAsyncPump<_LocalitySpriteRefreshRequest>
+  _localitySpriteRefreshPump = LatestValueAsyncPump(
+    _refreshLocalitySpritesForViewport,
   );
 
   ml.MapController? _controller;
@@ -284,11 +299,25 @@ class MapLibreEngine implements SoilMapEngine {
   String? _lastLocationData;
   bool _nativeAnnotationLayersReady = false;
   int _renderingResumeCount = 0;
+  int _styleLoadCount = 0;
+  bool _debugRenderingPaused = false;
+  int _citySourceUpdateCount = 0;
+  final List<Map<String, Object?>> _debugCitySourceUpdates = [];
   Future<void>? _nativeAnnotationSyncFuture;
   bool _nativeAnnotationSyncRequested = false;
   Stopwatch? _referenceBasemapClock;
   bool _reportedFirstLocalitySprite = false;
   bool _reportedFirstAdministrativeSprite = false;
+  SoilMapCameraState? _lastLocalitySpriteRefreshCamera;
+  final Set<String> _renderedLocalityLabelIds = {};
+  final Map<String, Map<String, Object?>> _pendingLocalityRefreshDiagnostics =
+      {};
+  final List<Map<String, Object?>> _debugLocalitySpriteRefreshes = [];
+  final List<Map<String, Object?>> _debugLocalitySpriteReconciliations = [];
+  int _localitySpriteReconciliationSequence = 0;
+  int _debugNativeMapIdleCount = 0;
+  int _localityCameraIdleSequence = 0;
+  int _pendingLocalitySpriteReconciliations = 0;
 
   @override
   bool get rendersSoilPolygonsInternally => true;
@@ -298,6 +327,26 @@ class MapLibreEngine implements SoilMapEngine {
 
   @visibleForTesting
   int get debugRenderingResumeCount => _renderingResumeCount;
+
+  @visibleForTesting
+  int get debugRenderResumeCount => _renderingResumeCount;
+
+  @visibleForTesting
+  int get debugStyleLoadCount => _styleLoadCount;
+
+  @visibleForTesting
+  int get debugCameraIdleCount => _debugNativeMapIdleCount;
+
+  @visibleForTesting
+  bool get debugCitySourcePresent =>
+      _style?.sources[_cityAnnotationSourceId] != null;
+
+  @visibleForTesting
+  bool get debugCityLabelLayerVisible =>
+      _style?.layers[_cityLabelLayerId]?.visible ?? false;
+
+  @visibleForTesting
+  bool get debugRenderingPaused => _debugRenderingPaused;
 
   @visibleForTesting
   Set<String> get debugNativeAnnotationLayerIds =>
@@ -312,6 +361,375 @@ class MapLibreEngine implements SoilMapEngine {
 
   @visibleForTesting
   int get debugCityAnnotationCount => _referenceCities.length;
+
+  @visibleForTesting
+  Map<String, Object?> get debugLocalityRuntimeSnapshot {
+    final nativeCamera = _controller?.getCamera();
+    final decoded = _lastCityAnnotationData == null
+        ? null
+        : jsonDecode(_lastCityAnnotationData!);
+    final features = decoded is Map<String, Object?>
+        ? decoded['features']
+        : null;
+    final localityCount = _referenceCities
+        .where((city) => !city.isAdministrative)
+        .length;
+    final sourceFeatures = features is List ? features : const <Object?>[];
+    final sourceLocalityCount = sourceFeatures.where((feature) {
+      if (feature is! Map<String, Object?>) return false;
+      final properties = feature['properties'];
+      return properties is Map<String, Object?> &&
+          properties['isAdministrative'] != true;
+    }).length;
+    final primaryLayer = _style?.layers[_cityLabelLayerId];
+    final secondaryLayer = _style?.layers[_citySecondaryLabelLayerId];
+    final bounds = camera.visibleBounds;
+    final nativeBounds = _controller?.getVisibleRegion();
+    final localitiesInViewport = bounds == null
+        ? const <MapLibreReferenceCity>[]
+        : _referenceCities
+              .where(
+                (city) =>
+                    !city.isAdministrative &&
+                    city.point.longitude >= bounds.west &&
+                    city.point.longitude <= bounds.east &&
+                    city.point.latitude >= bounds.south &&
+                    city.point.latitude <= bounds.north,
+              )
+              .toList(growable: false);
+    return {
+      'referenceCount': _referenceCities.length,
+      'localityCount': localityCount,
+      'sourceFeatureCount': sourceFeatures.length,
+      'sourceLocalityCount': sourceLocalityCount,
+      'localityCandidatesInViewport': localitiesInViewport.length,
+      'localityCandidateIdsInViewport': localitiesInViewport
+          .map((city) => city.id)
+          .toList(growable: false),
+      'localityCandidateNamesInViewport': localitiesInViewport
+          .map((city) => city.name)
+          .toList(growable: false),
+      'viewportBounds': bounds == null
+          ? null
+          : {
+              'west': bounds.west,
+              'south': bounds.south,
+              'east': bounds.east,
+              'north': bounds.north,
+            },
+      'nativeVisibleRegion': nativeBounds == null
+          ? null
+          : {
+              'west': nativeBounds.west,
+              'south': nativeBounds.south,
+              'east': nativeBounds.east,
+              'north': nativeBounds.north,
+            },
+      'sourcePresent': _style?.sources[_cityAnnotationSourceId] != null,
+      'sourceId': _cityAnnotationSourceId,
+      'sourceUpdateCount': _citySourceUpdateCount,
+      'nativeZoom': nativeCamera?.zoom,
+      'nativeCenterLatitude': nativeCamera?.center.lat,
+      'nativeCenterLongitude': nativeCamera?.center.lon,
+      'primaryLayerPresent': primaryLayer != null,
+      'primaryLayerVisible': primaryLayer?.visible,
+      'primaryLayerSourceId': primaryLayer is ml.SymbolStyleLayer
+          ? primaryLayer.sourceId
+          : null,
+      'secondaryLayerPresent': secondaryLayer != null,
+      'secondaryLayerVisible': secondaryLayer?.visible,
+      'secondaryLayerSourceId': secondaryLayer is ml.SymbolStyleLayer
+          ? secondaryLayer.sourceId
+          : null,
+      'registeredLocalitySprites': _registeredAnnotationImages
+          .where((id) => id.startsWith('suelosar-city-label-'))
+          .length,
+      'pendingSpriteRegistration': _cityLabelImageFuture != null,
+      'nativeLayersReady': _nativeAnnotationLayersReady,
+      'styleReady': _style != null,
+      'labelLayerPlacement': {
+        'primary': _localitySymbolLayerDiagnostic(primaryLayer),
+        'secondary': _localitySymbolLayerDiagnostic(secondaryLayer),
+      },
+    };
+  }
+
+  @visibleForTesting
+  List<Map<String, Object?>> get debugLocalityFeatures => [
+    for (final city in _referenceCities)
+      if (!city.isAdministrative)
+        {
+          'id': city.id,
+          'name': city.name,
+          'latitude': city.point.latitude,
+          'longitude': city.point.longitude,
+          'isPrimary': city.isPrimary,
+          'minZoom': city.minZoom,
+          'provinceId': city.provinceId,
+        },
+  ];
+
+  @visibleForTesting
+  List<Map<String, Object?>> get debugCitySourceUpdates =>
+      List.unmodifiable(_debugCitySourceUpdates);
+
+  @visibleForTesting
+  List<Map<String, Object?>> get debugLocalitySpriteRefreshes =>
+      List.unmodifiable(_debugLocalitySpriteRefreshes);
+
+  @visibleForTesting
+  int get debugLocalitySpriteReconciliationCount =>
+      _localitySpriteReconciliationSequence;
+
+  @visibleForTesting
+  int get debugNativeMapIdleCount => _debugNativeMapIdleCount;
+
+  @visibleForTesting
+  int get debugPendingLocalitySpriteReconciliations =>
+      _pendingLocalitySpriteReconciliations;
+
+  @visibleForTesting
+  List<Map<String, Object?>> get debugLocalitySpriteReconciliations =>
+      List.unmodifiable(_debugLocalitySpriteReconciliations);
+
+  @visibleForTesting
+  Future<Map<String, Object?>> debugRenderedLocalityAt(
+    MapLibreReferenceCity city,
+  ) async {
+    final controller = _controller;
+    if (controller == null) return {'queryAvailable': false};
+    final cityCollection = _lastCityAnnotationData == null
+        ? null
+        : jsonDecode(_lastCityAnnotationData!) as Map<String, dynamic>;
+    final sourceFeatures = cityCollection?['features'] as List<dynamic>? ?? [];
+    final sourceFeature = sourceFeatures
+        .whereType<Map<String, dynamic>>()
+        .where((feature) => feature['id'] == city.id)
+        .firstOrNull;
+    final sourceProperties = sourceFeature?['properties'];
+    final labelImage = sourceProperties is Map
+        ? sourceProperties['labelImage'] as String?
+        : null;
+    final registeredLabelImage =
+        MapLibreGeographicAnnotationData.cityLabelImageId(city.id);
+    final point = controller.toScreenLocation(
+      ml.Geographic(lon: city.point.longitude, lat: city.point.latitude),
+    );
+    final visibleRegion = controller.getVisibleRegion();
+    final targetWithinNativeBounds =
+        city.point.longitude >= visibleRegion.west &&
+        city.point.longitude <= visibleRegion.east &&
+        city.point.latitude >= visibleRegion.south &&
+        city.point.latitude <= visibleRegion.north;
+    final viewport = Rect.fromLTWH(0, 0, _size.width, _size.height);
+    final dots = await controller.featuresInRect(
+      viewport,
+      layerIds: [
+        _cityDotLayerId,
+        _citySecondaryDotLayerId,
+        ..._progressiveLocalityDotLayerIds,
+      ],
+    );
+    final labels = await controller.featuresInRect(
+      viewport,
+      layerIds: [
+        _cityLabelLayerId,
+        _citySecondaryLabelLayerId,
+        ..._progressiveLocalityLabelLayerIds,
+      ],
+    );
+    Map<String, Object?> feature(ml.RenderedFeature item) => {
+      'id': item.properties['cityId'] ?? item.id,
+      'name': item.properties['name'],
+      'layerId': item.layerId,
+      'sourceId': item.sourceId,
+      'isPrimary': item.properties['isPrimary'],
+    };
+    final labelIds = labels
+        .map((item) => item.properties['cityId'] ?? item.id)
+        .toSet();
+    final dotOnly = dots
+        .where(
+          (item) => !labelIds.contains(item.properties['cityId'] ?? item.id),
+        )
+        .map(feature)
+        .toList(growable: false);
+    return {
+      'queryAvailable': true,
+      'targetId': city.id,
+      'targetName': city.name,
+      'sourceFeaturePresent': sourceFeature != null,
+      'sourceProperties': sourceProperties,
+      'labelImageId': labelImage,
+      'expectedLabelImageRegistered': _registeredAnnotationImages.contains(
+        registeredLabelImage,
+      ),
+      'secondaryFilterEligible': !city.isPrimary && !city.isAdministrative,
+      'screenX': point.dx,
+      'screenY': point.dy,
+      'targetInsideViewport': targetWithinNativeBounds,
+      'projectedScreenInsideViewport':
+          point.dx >= 0 &&
+          point.dy >= 0 &&
+          point.dx <= _size.width &&
+          point.dy <= _size.height,
+      'renderedDotFeatureCount': dots.length,
+      'dotWithoutNameFeatures': dotOnly,
+      'dotWithoutNameCount': dotOnly.length,
+      'targetDotRendered': dots.any(
+        (item) => (item.properties['cityId'] ?? item.id) == city.id,
+      ),
+      'renderedNameFeatureCount': labels.length,
+      'targetLabelRendered': labels.any(
+        (item) => (item.properties['cityId'] ?? item.id) == city.id,
+      ),
+      'sourceUpdateCount': _citySourceUpdateCount,
+    };
+  }
+
+  @visibleForTesting
+  void debugSetSecondaryLocalityLabelPlacement({
+    required bool allowOverlap,
+    required bool ignorePlacement,
+    required bool forceOpaque,
+    String? targetCityId,
+    String? forcedImageId,
+  }) {
+    final layer = _style?.layers[_citySecondaryLabelLayerId];
+    if (layer is ml.SymbolStyleLayer) {
+      layer.iconAllowOverlap = ml.Literal(allowOverlap);
+      layer.iconIgnorePlacement = ml.Literal(ignorePlacement);
+      layer.iconOpacity = forceOpaque
+          ? const ml.Literal(1)
+          : _citySecondaryLabelOpacityExpression;
+      layer.filter = ml.Expression.raw(
+        targetCityId == null
+            ? [
+                'all',
+                [
+                  '==',
+                  ['get', 'isPrimary'],
+                  false,
+                ],
+                [
+                  '==',
+                  ['get', 'isAdministrative'],
+                  false,
+                ],
+              ]
+            : [
+                '==',
+                ['get', 'cityId'],
+                targetCityId,
+              ],
+      );
+      layer.iconImage = forcedImageId == null
+          ? ml.Expression.image(ml.Expression.get('labelImage').asString())
+          : ml.Expression.image(ml.Expression.literal(forcedImageId));
+    }
+  }
+
+  @visibleForTesting
+  void debugRefreshLocalityLabelLayers() {
+    final primary = _style?.layers[_cityLabelLayerId];
+    final secondary = _style?.layers[_citySecondaryLabelLayerId];
+    if (primary is ml.SymbolStyleLayer) primary.visible = false;
+    if (secondary is ml.SymbolStyleLayer) secondary.visible = false;
+    if (primary is ml.SymbolStyleLayer) primary.visible = _referenceVisible;
+    if (secondary is ml.SymbolStyleLayer) {
+      secondary.visible = _referenceVisible;
+    }
+  }
+
+  @visibleForTesting
+  Future<void> debugRefreshLocalityLabelImage(String cityId) async {
+    final style = _style;
+    if (style == null) return;
+    MapLibreReferenceCity? target;
+    for (final city in _referenceCities) {
+      if (city.id == cityId) {
+        target = city;
+        break;
+      }
+    }
+    if (target == null) return;
+    final enhanced =
+        target.provinceId == 'buenos_aires' &&
+        _sources.any((source) => source.coverageId == target!.provinceId);
+    final imageId = target.isAdministrative
+        ? MapLibreGeographicAnnotationData.administrativeLabelImageId(
+            target.id,
+            enhancedForSoilPolygons: enhanced,
+          )
+        : MapLibreGeographicAnnotationData.cityLabelImageId(
+            target.id,
+            enhancedForSoilPolygons: enhanced,
+          );
+    _registeredAnnotationImages.remove(imageId);
+    await _registerCityLabelImage(style, target, enhanced, imageId);
+  }
+
+  Map<String, Object?>? _localitySymbolLayerDiagnostic(Object? layer) {
+    if (layer is! ml.SymbolStyleLayer) return null;
+    return {
+      'id': layer.id,
+      'sourceId': layer.sourceId,
+      'visible': layer.visible,
+      'filter': layer.filter?.toJson(),
+      'iconImage': layer.iconImage?.toJson(),
+      'iconAllowOverlap': layer.iconAllowOverlap.toJson(),
+      'iconIgnorePlacement': layer.iconIgnorePlacement.toJson(),
+      'iconOptional': layer.iconOptional.toJson(),
+      'iconPadding': layer.iconPadding.toJson(),
+      'iconOpacity': layer.iconOpacity.toJson(),
+      'iconSize': layer.iconSize.toJson(),
+      'sortKey': layer.sortKey?.toJson(),
+      'minZoom': layer.minZoom,
+      'maxZoom': layer.maxZoom,
+    };
+  }
+
+  @visibleForTesting
+  Future<int> debugRenderedLocalityLabelCount() async {
+    return (await debugRenderedLocalityLabelNames()).length;
+  }
+
+  @visibleForTesting
+  Future<List<String>> debugRenderedLocalityLabelNames() async {
+    return (await debugRenderedLocalityFeatureRecords())
+        .map((feature) => feature['name'])
+        .whereType<String>()
+        .toList(growable: false);
+  }
+
+  @visibleForTesting
+  Future<List<Map<String, Object?>>>
+  debugRenderedLocalityFeatureRecords() async {
+    final controller = _controller;
+    final size = _size;
+    if (controller == null || size.width <= 0 || size.height <= 0) {
+      return const <Map<String, Object?>>[];
+    }
+    final rendered = await controller.featuresInRect(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      layerIds: [
+        _cityLabelLayerId,
+        _citySecondaryLabelLayerId,
+        ..._progressiveLocalityLabelLayerIds,
+      ],
+    );
+    return rendered
+        .map(
+          (feature) => <String, Object?>{
+            'id': feature.properties['cityId'] ?? feature.id,
+            'name': feature.properties['name'],
+            'layerId': feature.layerId,
+            'sourceId': feature.sourceId,
+            'isPrimary': feature.properties['isPrimary'],
+          },
+        )
+        .toList(growable: false);
+  }
 
   @visibleForTesting
   String? get debugCurrentLocationData => _lastLocationData;
@@ -635,6 +1053,7 @@ class MapLibreEngine implements SoilMapEngine {
 
   void _handleStyleLoaded(ml.StyleController style) {
     if (_disposed) return;
+    _styleLoadCount++;
     final styleChanged = _style != null && !identical(_style, style);
     _style = style;
     if (styleChanged) {
@@ -645,6 +1064,9 @@ class MapLibreEngine implements SoilMapEngine {
       _annotationStyleLayerIds.clear();
       _registeredAnnotationImages.clear();
       _cityLabelImageFuture = null;
+      _lastLocalitySpriteRefreshCamera = null;
+      _renderedLocalityLabelIds.clear();
+      _pendingLocalityRefreshDiagnostics.clear();
       _lastCityAnnotationData = null;
       _lastPersonalMarkerData = null;
       _lastLocationData = null;
@@ -661,13 +1083,16 @@ class MapLibreEngine implements SoilMapEngine {
 
   void _handleMapEvent(ml.MapEvent event) {
     if (_disposed) return;
-    if (event is ml.MapEventRenderingChanged && !event.paused) {
-      _renderingResumeCount++;
-      _lastReferenceZoom = null;
-      _updateReferenceLayerVisibility(camera.zoom);
-      unawaited(_syncNativeAnnotationSources());
-      unawaited(_syncProvinceHighlights());
-      unawaited(_syncMeasurementSources());
+    if (event is ml.MapEventRenderingChanged) {
+      _debugRenderingPaused = event.paused;
+      if (!event.paused) {
+        _renderingResumeCount++;
+        _lastReferenceZoom = null;
+        _updateReferenceLayerVisibility(camera.zoom);
+        unawaited(_syncNativeAnnotationSources());
+        unawaited(_syncProvinceHighlights());
+        unawaited(_syncMeasurementSources());
+      }
     } else if (event is ml.MapEventStartMoveCamera) {
       _moveIsGesture = event.reason == ml.CameraChangeReason.apiGesture;
     } else if (event is ml.MapEventMoveCamera) {
@@ -677,10 +1102,28 @@ class MapLibreEngine implements SoilMapEngine {
       _moveIsGesture = false;
       final controller = _controller;
       if (controller != null && _referenceLoaded) {
-        // Reconcile against the settled native camera as the final move event
-        // can precede an asynchronous camera animation's actual end state.
         _lastReferenceZoom = null;
         _updateReferenceLayerVisibility(controller.getCamera().zoom + 1);
+      }
+    } else if (event is ml.MapEventIdle) {
+      // Camera-idle can arrive before native symbol placement catches up.
+      // Wait for map-idle so rendered-feature queries describe the current
+      // settled viewport rather than the preceding frame.
+      _debugNativeMapIdleCount++;
+      final controller = _controller;
+      if (controller != null && _referenceLoaded) {
+        _localityCameraIdleSequence++;
+        final camera = controller.getCamera();
+        _emitLocalityDiagnostic('CAMERA_IDLE', {
+          'sequence': _localityCameraIdleSequence,
+          'centerLatitude': camera.center.lat,
+          'centerLongitude': camera.center.lon,
+          'nativeZoom': camera.zoom,
+          'applicationZoom': camera.zoom + 1,
+          'styleReady': _style != null,
+          'sourcePresent': _style?.sources[_cityAnnotationSourceId] != null,
+        });
+        _scheduleLocalitySpriteRefresh(controller);
       }
     } else if (event is ml.MapEventClick) {
       unawaited(_routeMapClick(event));
@@ -1070,9 +1513,61 @@ class MapLibreEngine implements SoilMapEngine {
       enhancedAdministrativeProvinceIds: enhancedAdministrativeProvinceIds,
     );
     if (missingCitySource || _lastCityAnnotationData != cityData) {
+      final updateSequence = _citySourceUpdateCount + 1;
+      final updateClock = Stopwatch()..start();
+      final updateCamera = camera;
+      final decodedCityData = jsonDecode(cityData) as Map<String, dynamic>;
+      final cityFeatures = decodedCityData['features'] as List<dynamic>;
+      final featureIds = <String>[];
+      var west = double.infinity;
+      var south = double.infinity;
+      var east = double.negativeInfinity;
+      var north = double.negativeInfinity;
+      var localityFeatureCount = 0;
+      for (final rawFeature in cityFeatures) {
+        if (rawFeature is! Map<String, dynamic>) continue;
+        final id = rawFeature['id'];
+        if (id != null) featureIds.add(id.toString());
+        final properties = rawFeature['properties'];
+        if (properties is Map && properties['isAdministrative'] != true) {
+          localityFeatureCount++;
+        }
+        final geometry = rawFeature['geometry'];
+        final coordinates = geometry is Map ? geometry['coordinates'] : null;
+        if (coordinates is List && coordinates.length >= 2) {
+          final longitude = (coordinates[0] as num).toDouble();
+          final latitude = (coordinates[1] as num).toDouble();
+          west = math.min(west, longitude);
+          east = math.max(east, longitude);
+          south = math.min(south, latitude);
+          north = math.max(north, latitude);
+        }
+      }
+      final updateRecord = <String, Object?>{
+        'sequence': updateSequence,
+        'featureCount': cityFeatures.length,
+        'localityFeatureCount': localityFeatureCount,
+        'geographicBounds': featureIds.isEmpty
+            ? null
+            : {'west': west, 'south': south, 'east': east, 'north': north},
+        'featureIds': featureIds,
+        'payloadBytes': utf8.encode(cityData).length,
+        'payloadSha256': sha256.convert(utf8.encode(cityData)).toString(),
+        'cameraLatitude': updateCamera.center.latitude,
+        'cameraLongitude': updateCamera.center.longitude,
+        'applicationZoom': updateCamera.zoom,
+        'nativeZoom': _controller?.getCamera().zoom,
+        'startedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      };
       await style.sources.updateGeoJsonData(_cityAnnotationSourceId, cityData);
       if (_disposed || !identical(_style, style)) return;
       _lastCityAnnotationData = cityData;
+      _citySourceUpdateCount++;
+      updateClock.stop();
+      updateRecord['completedAtUtc'] = DateTime.now().toUtc().toIso8601String();
+      updateRecord['completionOrder'] = _citySourceUpdateCount;
+      updateRecord['durationMs'] = updateClock.elapsedMilliseconds;
+      _debugCitySourceUpdates.add(updateRecord);
     }
     _scheduleCityLabelImageRegistration(style);
     final personalData = MapLibreGeographicAnnotationData.personalMarkers(
@@ -1185,6 +1680,356 @@ class MapLibreEngine implements SoilMapEngine {
     );
   }
 
+  void _scheduleLocalitySpriteRefresh(ml.MapController controller) {
+    final style = _style;
+    if (_disposed || style == null || !_referenceLoaded || !_referenceVisible) {
+      return;
+    }
+    final bounds = _visibleBounds(controller);
+    if (bounds == null) return;
+    final nativeCamera = controller.getCamera();
+    final cameraState = SoilMapCameraState(
+      center: LatLng(nativeCamera.center.lat, nativeCamera.center.lon),
+      zoom: nativeCamera.zoom + 1,
+      rotation: nativeCamera.bearing,
+      visibleBounds: bounds,
+    );
+    if (_lastLocalitySpriteRefreshCamera == cameraState) return;
+    _lastLocalitySpriteRefreshCamera = cameraState;
+
+    _pendingLocalitySpriteReconciliations++;
+    unawaited(
+      _reconcileLocalitySpritesForViewport(
+        controller: controller,
+        style: style,
+        camera: cameraState,
+        nativeZoom: nativeCamera.zoom,
+      ).whenComplete(() => _pendingLocalitySpriteReconciliations--),
+    );
+  }
+
+  Future<void> _reconcileLocalitySpritesForViewport({
+    required ml.MapController controller,
+    required ml.StyleController style,
+    required SoilMapCameraState camera,
+    required double nativeZoom,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final viewport = Rect.fromLTWH(0, 0, _size.width, _size.height);
+      if (viewport.isEmpty) return;
+      final dots = await controller.featuresInRect(
+        viewport,
+        layerIds: [_cityDotLayerId, _citySecondaryDotLayerId],
+      );
+      final labels = await controller.featuresInRect(
+        viewport,
+        layerIds: [_cityLabelLayerId, _citySecondaryLabelLayerId],
+      );
+      if (_disposed ||
+          !identical(_style, style) ||
+          _controller != controller ||
+          camera != _currentCameraState(controller)) {
+        return;
+      }
+
+      String? localityId(ml.RenderedFeature feature) {
+        final id = feature.properties['cityId'] ?? feature.id;
+        return id?.toString();
+      }
+
+      final renderedLabelIds = labels
+          .map(localityId)
+          .whereType<String>()
+          .toSet();
+      final renderedDotIds = dots.map(localityId).whereType<String>().toSet();
+      final evaluatedRefreshes = _pendingLocalityRefreshDiagnostics.entries
+          .where(
+            (entry) =>
+                renderedLabelIds.contains(entry.key) ||
+                renderedDotIds.contains(entry.key),
+          )
+          .toList(growable: false);
+      for (final entry in evaluatedRefreshes) {
+        final restored = renderedLabelIds.contains(entry.key);
+        final outcome = restored ? 'restored' : 'still_missing';
+        _emitLocalityDiagnostic('RECOVERY_RESULT', {
+          'stage': 'rendered_feature_query',
+          'outcome': outcome,
+          'id': entry.key,
+          ...entry.value,
+          'pointVisible': renderedDotIds.contains(entry.key),
+          'textRendered': restored,
+          'renderedDotCount': dots.length,
+          'renderedSymbolCount': labels.length,
+        });
+        _pendingLocalityRefreshDiagnostics.remove(entry.key);
+      }
+      final previouslyRenderedLabelIds = Set<String>.of(
+        _renderedLocalityLabelIds,
+      );
+      _renderedLocalityLabelIds.addAll(renderedLabelIds);
+      final missingLabelIds = dots
+          .map(localityId)
+          .whereType<String>()
+          .where(
+            (id) =>
+                previouslyRenderedLabelIds.contains(id) &&
+                !renderedLabelIds.contains(id),
+          )
+          .toSet();
+      final reconciliation = <String, Object?>{
+        'centerLatitude': camera.center.latitude,
+        'centerLongitude': camera.center.longitude,
+        'applicationZoom': camera.zoom,
+        'nativeZoom': nativeZoom,
+        'renderedDotCount': dots.length,
+        'renderedLabelCount': labels.length,
+        'dotWithoutNameIds': missingLabelIds.toList(growable: false),
+        'previouslyRenderedLabelCount': previouslyRenderedLabelIds.length,
+        'startedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      };
+      if (missingLabelIds.isEmpty) {
+        stopwatch.stop();
+        reconciliation['refreshedIds'] = const <String>[];
+        reconciliation['durationMs'] = stopwatch.elapsedMilliseconds;
+        _recordLocalitySpriteReconciliation(reconciliation);
+        return;
+      }
+
+      final localitiesById = {
+        for (final city in _referenceCities)
+          if (!city.isAdministrative && (city.isPrimary || nativeZoom > 6.7))
+            city.id: city,
+      };
+      final missingLocalities = missingLabelIds
+          .map((id) => localitiesById[id])
+          .whereType<MapLibreReferenceCity>()
+          .toList(growable: false);
+      if (missingLocalities.isEmpty) {
+        stopwatch.stop();
+        reconciliation['refreshedIds'] = const <String>[];
+        reconciliation['ignoredIds'] = missingLabelIds.toList(growable: false);
+        reconciliation['durationMs'] = stopwatch.elapsedMilliseconds;
+        _recordLocalitySpriteReconciliation(reconciliation);
+        return;
+      }
+
+      for (final city in missingLocalities) {
+        final enhanced =
+            city.provinceId == 'buenos_aires' &&
+            _soilVisible &&
+            _sources.any((source) => source.coverageId == city.provinceId);
+        final imageId = MapLibreGeographicAnnotationData.cityLabelImageId(
+          city.id,
+          enhancedForSoilPolygons: enhanced,
+        );
+        final primaryLayer = style.layers[_cityLabelLayerId];
+        final secondaryLayer = style.layers[_citySecondaryLabelLayerId];
+        _emitLocalityDiagnostic('RECOVERY_REQUEST', {
+          'id': city.id,
+          'name': city.name,
+          'provinceId': city.provinceId,
+          'latitude': city.point.latitude,
+          'longitude': city.point.longitude,
+          'isPrimary': city.isPrimary,
+          'minZoom': city.minZoom,
+          'previouslyRenderedName': true,
+          'pointVisible': renderedDotIds.contains(city.id),
+          'textVisible': false,
+          'cameraLatitude': camera.center.latitude,
+          'cameraLongitude': camera.center.longitude,
+          'applicationZoom': camera.zoom,
+          'nativeZoom': nativeZoom,
+          'sourceId': _cityAnnotationSourceId,
+          'sourcePresent': style.sources[_cityAnnotationSourceId] != null,
+          'sourceFeature': _localitySourceFeatureDiagnostic(city.id),
+          'pointLayerIds': [_cityDotLayerId, _citySecondaryDotLayerId],
+          'symbolLayerIds': [_cityLabelLayerId, _citySecondaryLabelLayerId],
+          'primarySymbolLayer': _localitySymbolLayerDiagnostic(primaryLayer),
+          'secondarySymbolLayer': _localitySymbolLayerDiagnostic(
+            secondaryLayer,
+          ),
+          'filterEligible': city.isPrimary || nativeZoom > 6.7,
+          'imageId': imageId,
+          'imageTrackedByApp': _registeredAnnotationImages.contains(imageId),
+          'renderedDotCount': dots.length,
+          'renderedSymbolCount': labels.length,
+        });
+      }
+
+      await _localitySpriteRefreshPump.submit(
+        _LocalitySpriteRefreshRequest(
+          style: style,
+          camera: camera,
+          nativeZoom: nativeZoom,
+          cities: missingLocalities,
+        ),
+      );
+      stopwatch.stop();
+      reconciliation['refreshedIds'] = missingLocalities
+          .map((city) => city.id)
+          .toList(growable: false);
+      reconciliation['durationMs'] = stopwatch.elapsedMilliseconds;
+      _recordLocalitySpriteReconciliation(reconciliation);
+    } catch (error) {
+      stopwatch.stop();
+      _recordLocalitySpriteReconciliation({
+        'centerLatitude': camera.center.latitude,
+        'centerLongitude': camera.center.longitude,
+        'applicationZoom': camera.zoom,
+        'nativeZoom': nativeZoom,
+        'error': error.toString(),
+        'durationMs': stopwatch.elapsedMilliseconds,
+      });
+      debugPrint('MapLibre locality viewport reconciliation failed: $error');
+    }
+  }
+
+  SoilMapCameraState _currentCameraState(ml.MapController controller) {
+    final current = controller.getCamera();
+    return SoilMapCameraState(
+      center: LatLng(current.center.lat, current.center.lon),
+      zoom: current.zoom + 1,
+      rotation: current.bearing,
+      visibleBounds: _visibleBounds(controller),
+    );
+  }
+
+  Future<void> _refreshLocalitySpritesForViewport(
+    _LocalitySpriteRefreshRequest request,
+  ) async {
+    final initialRegistration = _cityLabelImageFuture;
+    if (initialRegistration != null) await initialRegistration;
+    if (_disposed || !identical(_style, request.style)) return;
+
+    await _sourceInstallQueue.run(() async {
+      if (_disposed ||
+          !identical(_style, request.style) ||
+          _controller == null) {
+        return;
+      }
+      final stopwatch = Stopwatch()..start();
+      final enhancedAdministrativeProvinceIds = _soilVisible
+          ? _sources.map((source) => source.coverageId).toSet()
+          : const <String>{};
+      if (_currentCameraState(_controller!) != request.camera) return;
+      for (final city in request.cities) {
+        if (_disposed ||
+            !identical(_style, request.style) ||
+            _controller == null ||
+            _currentCameraState(_controller!) != request.camera) {
+          return;
+        }
+        final enhanced =
+            city.provinceId == 'buenos_aires' &&
+            enhancedAdministrativeProvinceIds.contains(city.provinceId);
+        final imageId = MapLibreGeographicAnnotationData.cityLabelImageId(
+          city.id,
+          enhancedForSoilPolygons: enhanced,
+        );
+        final styleImageCallReturned = await _registerCityLabelImage(
+          request.style,
+          city,
+          enhanced,
+          imageId,
+          forceRefresh: true,
+        );
+        final result = <String, Object?>{
+          'id': city.id,
+          'name': city.name,
+          'imageId': imageId,
+          'imageTrackedByApp': _registeredAnnotationImages.contains(imageId),
+          'styleImageCallReturned': styleImageCallReturned,
+          'cameraLatitude': request.camera.center.latitude,
+          'cameraLongitude': request.camera.center.longitude,
+          'applicationZoom': request.camera.zoom,
+          'nativeZoom': request.nativeZoom,
+        };
+        _pendingLocalityRefreshDiagnostics[city.id] = result;
+        if (_pendingLocalityRefreshDiagnostics.length > 32) {
+          _pendingLocalityRefreshDiagnostics.remove(
+            _pendingLocalityRefreshDiagnostics.keys.first,
+          );
+        }
+        _emitLocalityDiagnostic('RECOVERY_RESULT', {
+          'stage': 'style_image_api_returned',
+          ...result,
+        });
+      }
+      stopwatch.stop();
+      _appendBoundedLocalityDiagnostic(_debugLocalitySpriteRefreshes, {
+        'centerLatitude': request.camera.center.latitude,
+        'centerLongitude': request.camera.center.longitude,
+        'applicationZoom': request.camera.zoom,
+        'nativeZoom': request.nativeZoom,
+        'featureCount': request.cities.length,
+        'featureIds': request.cities.map((city) => city.id).toList(),
+        'completedAtUtc': DateTime.now().toUtc().toIso8601String(),
+        'durationMs': stopwatch.elapsedMilliseconds,
+      });
+    });
+  }
+
+  void _recordLocalitySpriteReconciliation(Map<String, Object?> entry) {
+    _localitySpriteReconciliationSequence++;
+    entry['sequence'] = _localitySpriteReconciliationSequence;
+    _appendBoundedLocalityDiagnostic(
+      _debugLocalitySpriteReconciliations,
+      entry,
+    );
+  }
+
+  void _emitLocalityDiagnostic(String marker, Map<String, Object?> fields) {
+    if (!kProfileMode && !kDebugMode) return;
+    debugPrint(
+      'LOCALITY_LABEL_DIAG_$marker '
+      '${jsonEncode({'atUtc': DateTime.now().toUtc().toIso8601String(), ...fields})}',
+    );
+  }
+
+  Map<String, Object?> _localitySourceFeatureDiagnostic(String localityId) {
+    try {
+      final decoded = jsonDecode(_lastCityAnnotationData ?? '');
+      final features = decoded is Map<String, Object?>
+          ? decoded['features']
+          : null;
+      if (features is! List) return {'sourceFeatureExists': false};
+      for (final feature in features) {
+        if (feature is! Map<String, Object?>) continue;
+        final properties = feature['properties'];
+        if (properties is! Map<String, Object?>) continue;
+        if (properties['cityId']?.toString() != localityId &&
+            feature['id']?.toString() != localityId) {
+          continue;
+        }
+        final name = properties['name'];
+        return {
+          'sourceFeatureExists': true,
+          'sourceFeatureName': name,
+          'sourceFeatureNameNonEmpty': name is String && name.isNotEmpty,
+          'sourceFeatureCityId': properties['cityId']?.toString(),
+          'sourceFeatureIsPrimary': properties['isPrimary'],
+          'sourceFeatureIsAdministrative': properties['isAdministrative'],
+          'sourceFeatureLabelImage': properties['labelImage'],
+        };
+      }
+    } catch (error) {
+      return {'sourceFeatureDiagnosticError': error.toString()};
+    }
+    return {'sourceFeatureExists': false};
+  }
+
+  void _appendBoundedLocalityDiagnostic(
+    List<Map<String, Object?>> records,
+    Map<String, Object?> entry,
+  ) {
+    records.add(entry);
+    if (records.length > _maxLocalityDiagnosticEntries) {
+      records.removeRange(0, records.length - _maxLocalityDiagnosticEntries);
+    }
+  }
+
   Future<void> _registerCityLabelImages(ml.StyleController style) async {
     final zoom = camera.zoom;
     final enhancedAdministrativeProvinceIds = _soilVisible
@@ -1229,24 +2074,25 @@ class MapLibreEngine implements SoilMapEngine {
     for (var start = 0; start < requests.length; start += batchSize) {
       if (_disposed || !identical(_style, style)) return;
       final end = math.min(start + batchSize, requests.length);
-      await Future.wait<void>([
+      await Future.wait<bool>([
         for (final (city, enhanced, imageId, _) in requests.sublist(start, end))
           _registerCityLabelImage(style, city, enhanced, imageId),
       ]);
     }
   }
 
-  Future<void> _registerCityLabelImage(
+  Future<bool> _registerCityLabelImage(
     ml.StyleController style,
     MapLibreReferenceCity city,
     bool enhanced,
-    String imageId,
-  ) async {
-    if (_disposed ||
-        !identical(_style, style) ||
-        !_registeredAnnotationImages.add(imageId)) {
-      return;
+    String imageId, {
+    bool forceRefresh = false,
+  }) async {
+    if (_disposed || !identical(_style, style)) {
+      return false;
     }
+    if (!forceRefresh && !_registeredAnnotationImages.add(imageId)) return true;
+    if (forceRefresh) _registeredAnnotationImages.add(imageId);
     final isAdministrative = city.isAdministrative;
     final label = isAdministrative ? city.name.toUpperCase() : city.name;
     final enhancedForSoilPolygons =
@@ -1340,11 +2186,22 @@ class MapLibreEngine implements SoilMapEngine {
           );
         }
       }
-    } catch (_) {
-      _registeredAnnotationImages.remove(imageId);
+      return true;
+    } catch (error) {
+      if (!forceRefresh) _registeredAnnotationImages.remove(imageId);
       if (kProfileMode) {
         debugPrint('GIS_LABEL_TIMING sprite_registration_failed=$imageId');
       }
+      if (forceRefresh) {
+        _emitLocalityDiagnostic('RECOVERY_RESULT', {
+          'stage': 'style_image_api_failed',
+          'id': city.id,
+          'name': city.name,
+          'imageId': imageId,
+          'error': error.toString(),
+        });
+      }
+      return false;
     }
   }
 
@@ -1391,6 +2248,11 @@ class MapLibreEngine implements SoilMapEngine {
               ['get', 'isAdministrative'],
               false,
             ],
+            [
+              '==',
+              ['get', 'minZoom'],
+              0,
+            ],
           ]),
           radius: const ml.Literal(2.3),
           color: const ml.Literal(Color(0xFF303632)),
@@ -1402,6 +2264,45 @@ class MapLibreEngine implements SoilMapEngine {
         ),
       );
       _annotationStyleLayerIds.add(_citySecondaryDotLayerId);
+    }
+    for (var tier = 0; tier < _progressiveLocalityMinZooms.length; tier++) {
+      final layerId = _progressiveLocalityDotLayerIds[tier];
+      if (style.layers[layerId] != null) continue;
+      final minZoom = _progressiveLocalityMinZooms[tier];
+      final fadeEndZoom = tier == 0 ? 10.3 : 12.3;
+      await style.layers.add(
+        ml.CircleStyleLayer(
+          id: layerId,
+          sourceId: _cityAnnotationSourceId,
+          minZoom: minZoom - 1,
+          filter: ml.Expression.raw([
+            'all',
+            [
+              '==',
+              ['get', 'isPrimary'],
+              false,
+            ],
+            [
+              '==',
+              ['get', 'isAdministrative'],
+              false,
+            ],
+            [
+              '==',
+              ['get', 'minZoom'],
+              minZoom,
+            ],
+          ]),
+          radius: const ml.Literal(2.3),
+          color: const ml.Literal(Color(0xFF303632)),
+          opacity: _progressiveLocalityOpacity(minZoom, fadeEndZoom),
+          strokeWidth: const ml.Literal(0.2),
+          strokeColor: const ml.Literal(Color(0xFF303632)),
+          strokeOpacity: _progressiveLocalityOpacity(minZoom, fadeEndZoom),
+          visible: _referenceVisible,
+        ),
+      );
+      _annotationStyleLayerIds.add(layerId);
     }
     if (style.layers[_cityLabelLayerId] == null) {
       await style.layers.add(
@@ -1447,13 +2348,20 @@ class MapLibreEngine implements SoilMapEngine {
               ['get', 'isAdministrative'],
               false,
             ],
+            [
+              '==',
+              ['get', 'minZoom'],
+              0,
+            ],
           ]),
           iconImage: ml.Expression.image(
             ml.Expression.get('labelImage').asString(),
           ),
           iconAnchor: const ml.Literal(ml.IconAnchor.left),
           iconOffset: const ml.Literal(Offset(5, 0)),
-          iconAllowOverlap: const ml.Literal(false),
+          // Keep ordinary locality names visible when labels collide, while
+          // reserving their footprint so high-priority labels retain placement.
+          iconAllowOverlap: const ml.Literal(true),
           iconIgnorePlacement: const ml.Literal(false),
           iconOptional: const ml.Literal(false),
           iconSize: const ml.Literal(1),
@@ -1464,6 +2372,51 @@ class MapLibreEngine implements SoilMapEngine {
         ),
       );
       _annotationStyleLayerIds.add(_citySecondaryLabelLayerId);
+    }
+    for (var tier = 0; tier < _progressiveLocalityMinZooms.length; tier++) {
+      final layerId = _progressiveLocalityLabelLayerIds[tier];
+      if (style.layers[layerId] != null) continue;
+      final minZoom = _progressiveLocalityMinZooms[tier];
+      final fadeEndZoom = tier == 0 ? 10.3 : 12.3;
+      await style.layers.add(
+        ml.SymbolStyleLayer(
+          id: layerId,
+          sourceId: _cityAnnotationSourceId,
+          minZoom: minZoom - 1,
+          filter: ml.Expression.raw([
+            'all',
+            [
+              '==',
+              ['get', 'isPrimary'],
+              false,
+            ],
+            [
+              '==',
+              ['get', 'isAdministrative'],
+              false,
+            ],
+            [
+              '==',
+              ['get', 'minZoom'],
+              minZoom,
+            ],
+          ]),
+          iconImage: ml.Expression.image(
+            ml.Expression.get('labelImage').asString(),
+          ),
+          iconAnchor: const ml.Literal(ml.IconAnchor.left),
+          iconOffset: const ml.Literal(Offset(5, 0)),
+          iconAllowOverlap: const ml.Literal(false),
+          iconIgnorePlacement: const ml.Literal(false),
+          iconOptional: const ml.Literal(false),
+          iconSize: const ml.Literal(1),
+          iconOpacity: _progressiveLocalityOpacity(minZoom, fadeEndZoom),
+          sortKey: ml.Expression.get('sortKey').asNumber(),
+          zOrder: const ml.Literal(ml.SymbolZOrder.source),
+          visible: _referenceVisible,
+        ),
+      );
+      _annotationStyleLayerIds.add(layerId);
     }
     for (var tier = 0; tier < _departmentLabelLayerIds.length; tier++) {
       final layerId = _departmentLabelLayerIds[tier];
@@ -1588,7 +2541,9 @@ class MapLibreEngine implements SoilMapEngine {
     for (final id in [
       _cityDotLayerId,
       _citySecondaryDotLayerId,
+      ..._progressiveLocalityDotLayerIds,
       _citySecondaryLabelLayerId,
+      ..._progressiveLocalityLabelLayerIds,
       ..._departmentLabelLayerIds,
       _cityLabelLayerId,
       _locationAccuracyLayerId,
@@ -1607,9 +2562,17 @@ class MapLibreEngine implements SoilMapEngine {
     final secondaryLabel = _style?.layers[_citySecondaryLabelLayerId];
     if (dot is ml.CircleStyleLayer) dot.visible = visible;
     if (secondaryDot is ml.CircleStyleLayer) secondaryDot.visible = visible;
+    for (final id in _progressiveLocalityDotLayerIds) {
+      final layer = _style?.layers[id];
+      if (layer is ml.CircleStyleLayer) layer.visible = visible;
+    }
     if (label is ml.SymbolStyleLayer) label.visible = visible;
     if (secondaryLabel is ml.SymbolStyleLayer) {
       secondaryLabel.visible = visible;
+    }
+    for (final id in _progressiveLocalityLabelLayerIds) {
+      final layer = _style?.layers[id];
+      if (layer is ml.SymbolStyleLayer) layer.visible = visible;
     }
     for (final id in _departmentLabelLayerIds) {
       final layer = _style?.layers[id];
@@ -1661,6 +2624,21 @@ class MapLibreEngine implements SoilMapEngine {
         24,
         0.96,
       ]);
+
+  static ml.Expression<num> _progressiveLocalityOpacity(
+    double minApplicationZoom,
+    double fadeInEndApplicationZoom,
+  ) => ml.Expression.raw([
+    'interpolate',
+    ['linear'],
+    ['zoom'],
+    minApplicationZoom - 1,
+    0,
+    fadeInEndApplicationZoom - 1,
+    0.96,
+    24,
+    0.96,
+  ]);
 
   void _updateAdministrativeLabelOpacity(double zoom) {
     for (var tier = 0; tier < _departmentLabelLayerIds.length; tier++) {
@@ -2424,6 +3402,42 @@ class MapLibreEngine implements SoilMapEngine {
     _updateReferenceLayerVisibility(camera.zoom);
     _updateAdministrativeLabelOpacity(camera.zoom);
     await _syncNativeAnnotationSources();
+    final sourceData = _lastCityAnnotationData == null
+        ? null
+        : jsonDecode(_lastCityAnnotationData!);
+    final sourceFeatures = sourceData is Map<String, Object?>
+        ? sourceData['features']
+        : null;
+    _emitLocalityDiagnostic('SOURCE_STATE', {
+      'sourceId': _cityAnnotationSourceId,
+      'sourcePresent': style.sources[_cityAnnotationSourceId] != null,
+      'sourceUpdateCount': _citySourceUpdateCount,
+      'referenceFeatureCount': _referenceCities.length,
+      'geoJsonFeatureCount': sourceFeatures is List
+          ? sourceFeatures.length
+          : null,
+      'geoJsonUtf8Length': _lastCityAnnotationData?.length,
+    });
+    _emitLocalityDiagnostic('SYMBOL_STATE', {
+      'primaryLayer': _localitySymbolLayerDiagnostic(
+        style.layers[_cityLabelLayerId],
+      ),
+      'secondaryLayer': _localitySymbolLayerDiagnostic(
+        style.layers[_citySecondaryLabelLayerId],
+      ),
+      'pointLayerIds': [_cityDotLayerId, _citySecondaryDotLayerId],
+      'registeredLocalityImages': _registeredAnnotationImages
+          .where((id) => id.startsWith('suelosar-city-label-'))
+          .length,
+    });
+    final currentCamera = camera;
+    _emitLocalityDiagnostic('GIS_READY', {
+      'cameraCenterLatitude': currentCamera.center.latitude,
+      'cameraCenterLongitude': currentCamera.center.longitude,
+      'applicationZoom': currentCamera.zoom,
+      'sourceReady': style.sources[_cityAnnotationSourceId] != null,
+      'nativeLayersReady': _nativeAnnotationLayersReady,
+    });
     if (kProfileMode) {
       debugPrint(
         'GIS_LABEL_TIMING sources_layers_ready_ms=${loadClock.elapsedMilliseconds}',
@@ -2683,6 +3697,20 @@ class MapLibreEngine implements SoilMapEngine {
     final n = math.pi * (1 - 2 * y);
     return math.atan((math.exp(n) - math.exp(-n)) / 2) * 180 / math.pi;
   }
+}
+
+class _LocalitySpriteRefreshRequest {
+  const _LocalitySpriteRefreshRequest({
+    required this.style,
+    required this.camera,
+    required this.nativeZoom,
+    required this.cities,
+  });
+
+  final ml.StyleController style;
+  final SoilMapCameraState camera;
+  final double nativeZoom;
+  final List<MapLibreReferenceCity> cities;
 }
 
 class _MapFrameProjectionRevisionBridge extends StatefulWidget {

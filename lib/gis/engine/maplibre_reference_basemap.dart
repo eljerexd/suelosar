@@ -134,6 +134,10 @@ class MapLibreReferenceBasemapData {
             point: LatLng(latitude, longitude),
             isPrimary: rawCity['importance'] == 'primary',
             provinceId: provinceId,
+            minZoom: (rawCity['minZoom'] as num?)?.toDouble() ?? 0,
+            fadeInEndZoom: (rawCity['fadeInEndZoom'] as num?)?.toDouble(),
+            importance: rawCity['importance'] as String? ?? 'secondary',
+            sourceCategory: rawCity['sourceCategory'] as String?,
           ),
         );
       }
@@ -312,6 +316,9 @@ class MapLibreReferenceCity {
     this.isAdministrative = false,
     this.provinceId = 'unknown',
     this.minZoom = 0,
+    this.fadeInEndZoom,
+    this.importance = 'secondary',
+    this.sourceCategory,
   });
 
   final String id;
@@ -321,5 +328,8 @@ class MapLibreReferenceCity {
   final bool isAdministrative;
   final String provinceId;
   final double minZoom;
+  final double? fadeInEndZoom;
+  final String importance;
+  final String? sourceCategory;
   int get minZoomTier => _jurisdictionMinZoomTier(minZoom);
 }

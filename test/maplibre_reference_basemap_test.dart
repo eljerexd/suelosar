@@ -108,6 +108,12 @@ void main() {
         expect(city.point.longitude, original['lon']);
         expect(city.isPrimary, original['importance'] == 'primary');
         expect(city.isAdministrative, category == 'departmentLabels');
+        if (category == 'majorCities') {
+          expect(city.minZoom, original['minZoom'] ?? 0);
+          expect(city.fadeInEndZoom, original['fadeInEndZoom']);
+          expect(city.importance, original['importance'] ?? 'secondary');
+          expect(city.sourceCategory, original['sourceCategory']);
+        }
         expect(city.provinceId, switch (sourceParts.first) {
           'assets/maps/agronomic_reference_map.json' => 'buenos_aires',
           'assets/maps/agronomic_reference_map_santa_fe.json' => 'santa_fe',
@@ -120,6 +126,25 @@ void main() {
         }
       }
       expect(converted.cities.first.isPrimary, isTrue);
+      final progressiveCordobaCities = converted.cities.where(
+        (city) =>
+            city.provinceId == 'cordoba' &&
+            !city.isAdministrative &&
+            city.minZoom > 0,
+      );
+      expect(progressiveCordobaCities, hasLength(450));
+      expect(
+        progressiveCordobaCities
+            .where((city) => city.minZoom == 9.5 && city.fadeInEndZoom == 10.3)
+            .length,
+        421,
+      );
+      expect(
+        progressiveCordobaCities
+            .where((city) => city.minZoom == 11.5 && city.fadeInEndZoom == 12.3)
+            .length,
+        29,
+      );
       expect(
         converted.cities.where((city) => city.isAdministrative),
         hasLength(26 + 135 + 19),

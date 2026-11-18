@@ -339,9 +339,8 @@ class _AgronomicReferencePainter extends CustomPainter {
           offset.dx <= size.width + 4 &&
           offset.dy >= -4 &&
           offset.dy <= size.height + 4) {
-        symbolPaint.color = const Color(
-          0xFF303632,
-        ).withValues(alpha: cityOpacity);
+        symbolPaint.color = const Color(0xFF303632)
+            .withValues(alpha: cityOpacity);
         canvas.drawCircle(offset, city.isPrimary ? 2.7 : 2.3, symbolPaint);
       }
     }
@@ -355,17 +354,11 @@ class _AgronomicReferencePainter extends CustomPainter {
       if (!_isFiniteOffset(offset)) {
         continue;
       }
-      // Cheap reject before paying for TextPainter.layout() (Fase 8 perf
-      // audit: this loop used to build+layout every city's label — up to
-      // two TextPainters each — before checking whether it was anywhere
-      // near the canvas, so panning/zooming with most of the 30 cities
-      // off-screen still paid full text-layout cost for all of them every
-      // frame). A label starts ~5px right of its point and is realistically
-      // well under 260px wide, so anything past these generous margins
-      // can't produce a visible label — margins are intentionally loose so
-      // this never culls a label that would actually be drawn.
-      if (offset.dx < -260 ||
-          offset.dx > size.width + 20 ||
+      // Avoid shaping labels whose anchor is far outside the viewport. Labels
+      // can now be placed on either side of a point or above/below it, so keep
+      // enough margin for long locality names in every direction.
+      if (offset.dx < -450 ||
+          offset.dx > size.width + 450 ||
           offset.dy < -40 ||
           offset.dy > size.height + 40) {
         continue;
@@ -387,7 +380,11 @@ class _AgronomicReferencePainter extends CustomPainter {
           city._cachedLabelPicture == null) {
         final style = TextStyle(
           color: const Color(0xFF29312C).withValues(alpha: cityOpacity),
-          fontSize: city.isPrimary ? 16 : city.isAdministrative ? 13.5 : 14.5,
+          fontSize: city.isPrimary
+              ? 16
+              : city.isAdministrative
+              ? 13.5
+              : 14.5,
           fontWeight: city.isPrimary ? FontWeight.w700 : FontWeight.w600,
           height: 1.05,
         );
@@ -399,9 +396,8 @@ class _AgronomicReferencePainter extends CustomPainter {
 
         final haloStyle = style.copyWith(
           foreground: Paint()
-            ..color = const Color(
-              0xFFFCFCFA,
-            ).withValues(alpha: cityOpacity * 0.98)
+            ..color = const Color(0xFFFCFCFA)
+                .withValues(alpha: cityOpacity * 0.98)
             ..style = PaintingStyle.stroke
             ..strokeWidth = city.isPrimary ? 5 : 4.2
             ..strokeJoin = StrokeJoin.round,
@@ -425,19 +421,29 @@ class _AgronomicReferencePainter extends CustomPainter {
       }
 
       final labelSize = city._cachedLabelSize!;
-      final labelOffset = Offset(
-        offset.dx + 5,
-        offset.dy - city._cachedLabelHeight! / 2,
-      );
-      final labelBounds = labelOffset & labelSize;
-      if (!labelBounds.overlaps(Offset.zero & size)) {
-        continue;
+      final labelHeight = city._cachedLabelHeight!;
+      final labelOffsets = <Offset>[
+        Offset(offset.dx + 5, offset.dy - labelHeight / 2),
+        Offset(offset.dx - labelSize.width - 5, offset.dy - labelHeight / 2),
+        Offset(offset.dx - labelSize.width / 2, offset.dy - labelHeight - 5),
+        Offset(offset.dx - labelSize.width / 2, offset.dy + 5),
+      ];
+      final viewportBounds = Offset.zero & size;
+      Offset? labelOffset;
+      Rect? labelBounds;
+      for (final candidateOffset in labelOffsets) {
+        final candidateBounds = candidateOffset & labelSize;
+        if (!candidateBounds.overlaps(viewportBounds) ||
+            occupiedLabels.any(
+              (bounds) => bounds.inflate(3).overlaps(candidateBounds),
+            )) {
+          continue;
+        }
+        labelOffset = candidateOffset;
+        labelBounds = candidateBounds;
+        break;
       }
-      if (occupiedLabels.any(
-        (bounds) => bounds.inflate(3).overlaps(labelBounds),
-      )) {
-        continue;
-      }
+      if (labelOffset == null || labelBounds == null) continue;
       occupiedLabels.add(labelBounds);
 
       canvas.save();
@@ -453,7 +459,15 @@ class _AgronomicReferencePainter extends CustomPainter {
 
   double _cityVisibility(_ReferenceCity city) {
     if (city.isAdministrative) return _zoomOpacity(camera.zoom, 6.2, 8.0);
-    return city.isPrimary ? 1 : _zoomOpacity(camera.zoom, 7.7, 9.4);
+    if (city.isPrimary) return 1;
+    if (city.minZoom > 0) {
+      return _zoomOpacity(
+        camera.zoom,
+        city.minZoom,
+        city.fadeInEndZoom ?? city.minZoom + 0.8,
+      );
+    }
+    return _zoomOpacity(camera.zoom, 7.7, 9.4);
   }
 
   static double _zoomOpacity(double zoom, double start, double end) {
@@ -566,9 +580,8 @@ class _AgronomicReferenceBasemap {
     final basemaps = await Future.wait(assetPaths.map(load));
     if (basemaps.length == 1) return basemaps.single;
 
-    final majorCities = [
-      for (final basemap in basemaps) ...basemap.majorCities,
-    ]..sort((first, second) => second.priority.compareTo(first.priority));
+    final majorCities = [for (final basemap in basemaps) ...basemap.majorCities]
+      ..sort((first, second) => second.priority.compareTo(first.priority));
 
     return _AgronomicReferenceBasemap(
       provincialBoundaries: [
@@ -578,9 +591,7 @@ class _AgronomicReferenceBasemap {
         for (final basemap in basemaps) ...basemap.departmentBoundaries,
       ],
       majorRivers: [for (final basemap in basemaps) ...basemap.majorRivers],
-      nationalRoads: [
-        for (final basemap in basemaps) ...basemap.nationalRoads,
-      ],
+      nationalRoads: [for (final basemap in basemaps) ...basemap.nationalRoads],
       provincialRoads: [
         for (final basemap in basemaps) ...basemap.provincialRoads,
       ],
@@ -706,11 +717,10 @@ class _AgronomicReferenceBasemap {
     final labels = rawLabels as List<dynamic>? ?? const <dynamic>[];
     return [
       for (final raw in labels)
-        if (_ReferenceCity.fromJson({
+        ?_ReferenceCity.fromJson({
           ...Map<String, dynamic>.from(raw as Map),
           'isAdministrative': true,
-        }) case final city?)
-          city,
+        }),
     ];
   }
 
@@ -727,15 +737,28 @@ class _ReferenceCity {
     required this.name,
     required this.position,
     required this.isPrimary,
+    required this.importance,
+    this.minZoom = 0,
+    this.fadeInEndZoom,
     this.isAdministrative = false,
   });
 
   final String name;
   final LatLng position;
   final bool isPrimary;
+  final String importance;
+  final double minZoom;
+  final double? fadeInEndZoom;
   final bool isAdministrative;
-  int get priority => isPrimary ? 2 : isAdministrative ? 0 : 1;
-
+  int get priority => isAdministrative
+      ? 0
+      : switch (importance) {
+          'primary' => 4,
+          'secondary' => 3,
+          'tertiary' => 2,
+          'quaternary' => 1,
+          _ => 1,
+        };
   // Fase 8C perf fix: a label's rendered look (its shaped+stroked halo and
   // text) depends only on its name/style and `cityOpacity` (baked into the
   // style's color) — never on screen position. `cityOpacity` itself depends
@@ -754,10 +777,14 @@ class _ReferenceCity {
       (json['lon'] as num).toDouble(),
     );
     if (position == null) return null;
+    final importance = json['importance'] as String? ?? 'secondary';
     return _ReferenceCity(
       name: json['name'] as String,
       position: position,
-      isPrimary: json['importance'] == 'primary',
+      isPrimary: importance == 'primary',
+      importance: importance,
+      minZoom: (json['minZoom'] as num?)?.toDouble() ?? 0,
+      fadeInEndZoom: (json['fadeInEndZoom'] as num?)?.toDouble(),
       isAdministrative: json['isAdministrative'] == true,
     );
   }

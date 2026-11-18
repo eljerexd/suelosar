@@ -31,12 +31,39 @@ void main() {
       expect(features[0]['geometry']['coordinates'], [-68.8, -32.9]);
       expect(features[0]['properties']['name'], 'Villa Nueva');
       expect(features[0]['properties']['isPrimary'], isFalse);
-      expect(features[0]['properties']['sortKey'], 100000);
+      expect(features[0]['properties']['sortKey'], 101000);
+      expect(features[0]['properties']['importanceRank'], 1);
       expect(
         features[0]['properties']['labelImage'],
         MapLibreGeographicAnnotationData.cityLabelImageId('locality-secondary'),
       );
       expect(features[1]['properties']['sortKey'], 1);
+    });
+
+    test('preserves official locality zoom and priority metadata', () {
+      const city = MapLibreReferenceCity(
+        id: 'cordoba:locality-1',
+        name: 'Localidad de prueba',
+        point: LatLng(-31.4, -64.2),
+        isPrimary: false,
+        provinceId: 'cordoba',
+        minZoom: 9.5,
+        fadeInEndZoom: 10.3,
+        importance: 'tertiary',
+        sourceCategory: 'Localidad simple',
+      );
+
+      final properties =
+          _features(MapLibreGeographicAnnotationData.cities([city]))
+                  .single['properties']
+              as Map;
+
+      expect(properties['minZoom'], 9.5);
+      expect(properties['fadeInEndZoom'], 10.3);
+      expect(properties['importance'], 'tertiary');
+      expect(properties['sourceCategory'], 'Localidad simple');
+      expect(properties['importanceRank'], 2);
+      expect(properties['sortKey'], 102000);
     });
 
     test('serializes administrative labels after locality labels', () {
@@ -65,7 +92,7 @@ void main() {
       expect(features[0]['properties']['provinceId'], 'buenos_aires');
       expect(features[0]['properties']['minZoomTier'], 1);
       expect(features[1]['properties']['isAdministrative'], isFalse);
-      expect(features[1]['properties']['sortKey'], 100001);
+      expect(features[1]['properties']['sortKey'], 101001);
     });
 
     test(
