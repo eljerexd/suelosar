@@ -1,12 +1,11 @@
 typedef InstalledVersionReader = Future<String> Function();
 typedef InstallerStarter = Future<void> Function(String path);
-typedef InstallerLifecycleStarter =
-    Future<void> Function(
-      String installerPath,
-      String sha256,
-      String version,
-      String updateDirectory,
-    );
+typedef InstallerLifecycleStarter = Future<void> Function(
+  String installerPath,
+  String sha256,
+  String version,
+  String updateDirectory,
+);
 
 class SemanticVersion implements Comparable<SemanticVersion> {
   const SemanticVersion({
@@ -99,8 +98,106 @@ class SemanticVersion implements Comparable<SemanticVersion> {
       '${buildMetadata == null ? '' : '+$buildMetadata'}';
 }
 
+/// A stable semantic version plus the optional numeric Flutter build number.
+///
+/// SemVer ignores build metadata for precedence. Windows releases use it as a
+/// separately ordered package build, so update comparisons must go through
+/// [compareRemoteToInstalled] instead of [SemanticVersion.compareTo].
+class UpdateVersion {
+  const UpdateVersion({required this.semanticVersion, this.buildNumber});
+
+  final SemanticVersion semanticVersion;
+  final int? buildNumber;
+
+  bool get isStable => semanticVersion.isStable;
+
+  String get assetVersion => toString();
+
+  static final RegExp _numericBuildPattern = RegExp(r'^(0|[1-9]\d*)$');
+  static const int _maxWindowsBuildNumber = 65535;
+
+  static UpdateVersion? tryParse(String value) {
+    final semantic = SemanticVersion.tryParse(value);
+    if (semantic == null) return null;
+    final metadata = semantic.buildMetadata;
+    if (metadata == null) {
+      return UpdateVersion(semanticVersion: semantic);
+    }
+    if (!_numericBuildPattern.hasMatch(metadata)) return null;
+    final build = int.tryParse(metadata);
+    if (build == null || build > _maxWindowsBuildNumber) return null;
+    return UpdateVersion(semanticVersion: semantic, buildNumber: build);
+  }
+
+  /// Composes the two Windows fields returned by package_info_plus.
+  ///
+  /// On Windows, package_info_plus splits the executable ProductVersion at
+  /// `+`: `version=1.8.0`, `buildNumber=25` for `1.8.0+25`.
+  static UpdateVersion? fromPackageInfo({
+    required String version,
+    required String buildNumber,
+  }) {
+    final semantic = SemanticVersion.tryParse(version.trim());
+    if (semantic == null) return null;
+    final fieldBuild = buildNumber.trim();
+    final metadata = semantic.buildMetadata;
+
+    int? parsedBuild;
+    if (fieldBuild.isNotEmpty) {
+      if (!_numericBuildPattern.hasMatch(fieldBuild)) return null;
+      parsedBuild = int.tryParse(fieldBuild);
+      if (parsedBuild == null || parsedBuild > _maxWindowsBuildNumber) {
+        return null;
+      }
+    }
+
+    int? metadataBuild;
+    if (metadata != null) {
+      if (!_numericBuildPattern.hasMatch(metadata)) return null;
+      metadataBuild = int.tryParse(metadata);
+      if (metadataBuild == null || metadataBuild > _maxWindowsBuildNumber) {
+        return null;
+      }
+    }
+    if (parsedBuild != null &&
+        metadataBuild != null &&
+        parsedBuild != metadataBuild) {
+      return null;
+    }
+    return UpdateVersion(
+      semanticVersion: semantic,
+      buildNumber: parsedBuild ?? metadataBuild,
+    );
+  }
+
+  /// Returns remote-versus-installed precedence, or null if it is unsafe to
+  /// compare equal semantic versions because the installed build is unknown.
+  /// Legacy remote tags without `+build` retain their historical
+  /// semantic-version-only behavior and are never treated as a newer build.
+  static int? compareRemoteToInstalled({
+    required UpdateVersion remote,
+    required UpdateVersion installed,
+  }) {
+    final semantic = remote.semanticVersion.compareTo(
+      installed.semanticVersion,
+    );
+    if (semantic != 0) return semantic;
+    if (remote.buildNumber == null) return 0;
+    if (installed.buildNumber == null) return null;
+    return remote.buildNumber!.compareTo(installed.buildNumber!);
+  }
+
+  String toDisplayString() => toString();
+
+  @override
+  String toString() {
+    final core = semanticVersion.toDisplayString();
+    return buildNumber == null ? core : '$core+$buildNumber';
+  }
+}
+
 String formatWindowsUpdateVersion(String value) =>
-    SemanticVersion.tryParse(value)?.toDisplayString() ?? value;
+    UpdateVersion.tryParse(value)?.toDisplayString() ?? value;
 
 enum WindowsUpdateStatus {
   updateAvailable,
@@ -176,6 +273,9 @@ class WindowsReleaseInfo {
   final DateTime publishedAt;
   final List<WindowsReleaseAsset> assets;
   final Uri htmlUrl;
+
+  UpdateVersion get updateVersion =>
+      UpdateVersion.tryParse(version.toString())!;
 }
 
 class WindowsUpdateCheckResult {
@@ -185,6 +285,11 @@ class WindowsUpdateCheckResult {
     this.release,
     this.installer,
     this.sha256,
+    this.differentialPackage,
+    this.differentialPackageSha256,
+    this.differentialManifest,
+    this.differentialManifestJson,
+    this.differentialManifestSha256,
     this.error,
   });
 
@@ -193,17 +298,48 @@ class WindowsUpdateCheckResult {
   final WindowsReleaseInfo? release;
   final WindowsReleaseAsset? installer;
   final String? sha256;
+  final WindowsReleaseAsset? differentialPackage;
+  final String? differentialPackageSha256;
+  final Map<String, dynamic>? differentialManifest;
+  final String? differentialManifestJson;
+  final String? differentialManifestSha256;
   final WindowsUpdateError? error;
 
+  bool get usesDifferentialPackage =>
+      differentialPackage != null &&
+      differentialPackageSha256 != null &&
+      differentialManifest != null &&
+      differentialManifestSha256 != null;
+
+  WindowsReleaseAsset? get downloadAsset =>
+      usesDifferentialPackage ? differentialPackage : installer;
+
+  String? get downloadSha256 =>
+      usesDifferentialPackage ? differentialPackageSha256 : sha256;
+
+  UpdateVersion? get installedUpdateVersion {
+    final installed = installedVersion;
+    if (installed == null) return null;
+    return UpdateVersion.tryParse(installed.toString());
+  }
+
+  int? get remoteVersionComparison {
+    final installed = installedUpdateVersion;
+    final release = this.release;
+    if (installed == null || release == null) return null;
+    return UpdateVersion.compareRemoteToInstalled(
+      remote: release.updateVersion,
+      installed: installed,
+    );
+  }
+
   bool get updateAvailable =>
-      installedVersion != null &&
-      release != null &&
-      release!.version.compareTo(installedVersion!) > 0;
+      remoteVersionComparison != null && remoteVersionComparison! > 0;
   bool get canDownload =>
       status == WindowsUpdateStatus.updateAvailable &&
       updateAvailable &&
-      installer != null &&
-      sha256 != null;
+      downloadAsset != null &&
+      downloadSha256 != null;
 }
 
 class WindowsUpdateProgress {
@@ -230,12 +366,14 @@ class WindowsUpdateOperationResult {
     required this.status,
     this.installerPath,
     this.sha256,
+    this.differential = false,
     this.error,
   });
 
   final WindowsUpdateOperationStatus status;
   final String? installerPath;
   final String? sha256;
+  final bool differential;
   final WindowsUpdateError? error;
 
   bool get succeeded => status == WindowsUpdateOperationStatus.succeeded;

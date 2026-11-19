@@ -317,20 +317,14 @@ void main() {
     expect(controller.lastStableRelease!.description, newDescription);
     expect(controller.releaseNotesAreFromCache, isFalse);
     final preferences = await SharedPreferences.getInstance();
-    final pending =
-        jsonDecode(
-              preferences.getString(
-                WindowsUpdateIndicatorController.pendingReleaseKey,
-              )!,
-            )
-            as Map<String, dynamic>;
-    final last =
-        jsonDecode(
-              preferences.getString(
-                WindowsUpdateIndicatorController.lastReleaseKey,
-              )!,
-            )
-            as Map<String, dynamic>;
+    final pending = jsonDecode(
+      preferences.getString(
+        WindowsUpdateIndicatorController.pendingReleaseKey,
+      )!,
+    ) as Map<String, dynamic>;
+    final last = jsonDecode(
+      preferences.getString(WindowsUpdateIndicatorController.lastReleaseKey)!,
+    ) as Map<String, dynamic>;
     expect(pending['description'], newDescription);
     expect(last['description'], newDescription);
     controller.dispose();
@@ -431,6 +425,33 @@ void main() {
       controller.selectAvailableUpdate();
 
       await selected;
+      controller.dispose();
+    },
+  );
+
+  test(
+    'a newer numeric build stays available at the same semantic version',
+    () async {
+      final controller = _controller(
+        now: now,
+        check: () async =>
+            _updateAvailable('1.8.0+26', installedVersion: '1.8.0+25'),
+      );
+
+      await controller.initialize();
+      await controller.checkCompletion;
+
+      expect(controller.state, WindowsUpdateIndicatorState.updateAvailable);
+      expect(
+        controller.latestAvailableRelease?.updateVersion.toString(),
+        '1.8.0+26',
+      );
+      expect(
+        controller
+            .verifiedCheckFor(controller.latestAvailableRelease!)
+            ?.updateAvailable,
+        isTrue,
+      );
       controller.dispose();
     },
   );
@@ -690,8 +711,7 @@ void main() {
       WindowsUpdateIndicatorController.pendingReleaseKey: jsonEncode(
         _encodeRelease(_release('1.8.0')),
       ),
-      WindowsUpdateIndicatorController.verifiedInstallerPathKey:
-          r'C:\Users\test\AppData\Local\SuelosAR\Updates\bad\SuelosAR-Setup-1.8.0.exe',
+      WindowsUpdateIndicatorController.verifiedInstallerPathKey: r'C:\Users\test\AppData\Local\SuelosAR\Updates\bad\SuelosAR-Setup-1.8.0.exe',
       WindowsUpdateIndicatorController.verifiedInstallerSha256Key: 'b' * 64,
       WindowsUpdateIndicatorController.verifiedInstallerVersionKey: '1.8.0',
     });
@@ -699,9 +719,11 @@ void main() {
       isWindows: true,
       checkForUpdates: () async => _upToDate(),
       installedVersionReader: () async => '1.7.0',
-      installerRestorer:
-          ({required path, required expectedSha256, required version}) async =>
-              false,
+      installerRestorer: ({
+        required path,
+        required expectedSha256,
+        required version,
+      }) async => false,
       clock: () => now,
     );
 

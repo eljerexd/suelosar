@@ -27,6 +27,28 @@ void main() {
     );
   });
 
+  test('accepts numeric build metadata in the helper version argument', () {
+    expect(
+      WindowsUpdateSuccessConfirmation.fromArguments([
+        '--suelosar-update-result=installed',
+        '--suelosar-update-version=1.8.0+26',
+        '--suelosar-update-confirmation=${'a' * 32}',
+      ], localAppDataPath: localAppData.path),
+      isNotNull,
+    );
+    for (final version in ['1.8.0+abc', '1.8.0+-1', '1.8.0+01']) {
+      expect(
+        WindowsUpdateSuccessConfirmation.fromArguments([
+          '--suelosar-update-result=installed',
+          '--suelosar-update-version=$version',
+          '--suelosar-update-confirmation=${'a' * 32}',
+        ], localAppDataPath: localAppData.path),
+        isNull,
+        reason: version,
+      );
+    }
+  });
+
   test('failed and cancelled installations cannot create a success prompt', () {
     for (final outcome in ['cancelled', 'recovered', 'failed']) {
       expect(
@@ -84,6 +106,37 @@ void main() {
     expect(await confirmation.confirmationFile.exists(), isFalse);
   });
 
+  test('confirms the exact build when semantic version is unchanged', () async {
+    final confirmation = _confirmation(
+      localAppData.path,
+      expectedVersion: '1.8.0+26',
+    );
+    await _writeMarker(confirmation, 'version=1.8.0+26');
+
+    final result = await confirmation.consume(
+      installedVersionReader: () async => '1.8.0+26',
+    );
+
+    expect(result, '1.8.0+26');
+  });
+
+  test(
+    'does not confirm a different build of the same semantic version',
+    () async {
+      final confirmation = _confirmation(
+        localAppData.path,
+        expectedVersion: '1.8.0+26',
+      );
+      await _writeMarker(confirmation, 'version=1.8.0+26');
+
+      final result = await confirmation.consume(
+        installedVersionReader: () async => '1.8.0+25',
+      );
+
+      expect(result, isNull);
+    },
+  );
+
   test(
     'rejects a different version actually reported by the restarted app',
     () async {
@@ -100,12 +153,14 @@ void main() {
   );
 }
 
-WindowsUpdateSuccessConfirmation _confirmation(String localAppDataPath) =>
-    WindowsUpdateSuccessConfirmation(
-      token: '0123456789abcdef0123456789abcdef',
-      expectedVersion: '1.7.0',
-      localAppDataPath: localAppDataPath,
-    );
+WindowsUpdateSuccessConfirmation _confirmation(
+  String localAppDataPath, {
+  String expectedVersion = '1.7.0',
+}) => WindowsUpdateSuccessConfirmation(
+  token: '0123456789abcdef0123456789abcdef',
+  expectedVersion: expectedVersion,
+  localAppDataPath: localAppDataPath,
+);
 
 Future<void> _writeMarker(
   WindowsUpdateSuccessConfirmation confirmation,

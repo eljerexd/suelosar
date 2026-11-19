@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:suelosar/services/windows_differential_update.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -16,7 +17,12 @@ void main() {
       ('1.7.0', '1.7.1', -1),
       ('1.7.1', '1.7.2', -1),
       ('1.7.2', '1.8.0', -1),
+      ('1.8.0', 'v1.8.1', -1),
+      ('1.8.0', '1.8.1', -1),
       ('1.8.0', '2.0.0', -1),
+      ('1.8.0', 'v1.8.0', 0),
+      ('1.8.0+25', 'v1.8.0', 0),
+      ('1.8.0', 'v1.7.0', 1),
       ('1.7.0', '1.7.0', 0),
       ('1.7.0', '1.6.9', 1),
       ('v1.7.0+20', '1.7.0', 0),
@@ -36,21 +42,83 @@ void main() {
       expect(SemanticVersion.tryParse('1.7'), isNull);
     });
 
-    test(
-      'display strings hide build metadata without changing parsed versions',
-      () {
-        final cases = <(String, String)>[
-          ('1.7.0+20', '1.7.0'),
-          ('1.7.0+21', '1.7.0'),
-          ('1.8.0+25', '1.8.0'),
-        ];
-        for (final (raw, displayed) in cases) {
-          final version = SemanticVersion.tryParse(raw)!;
-          expect(formatWindowsUpdateVersion(raw), displayed);
-          expect(version.toString(), raw);
-        }
-      },
-    );
+    test('display strings preserve build metadata without changing semantic versions', () {
+      final cases = <(String, String)>[
+        ('1.7.0+20', '1.7.0+20'),
+        ('1.7.0+21', '1.7.0+21'),
+        ('1.8.0+25', '1.8.0+25'),
+      ];
+      for (final (raw, displayed) in cases) {
+        final version = SemanticVersion.tryParse(raw)!;
+        expect(formatWindowsUpdateVersion(raw), displayed);
+        expect(version.toString(), raw);
+      }
+    });
+  });
+
+  group('UpdateVersion precedence', () {
+    final cases = <(String, String, int?)>[
+      ('1.8.0+25', '1.8.0+26', 1),
+      ('1.8.0+25', '1.8.0+25', 0),
+      ('1.8.0+25', '1.8.1+26', 1),
+      ('1.8.1+26', '1.8.0+99', -1),
+      ('1.8.1+26', '1.8.1+25', -1),
+      ('1.8.1+26', '1.9.0+1', 1),
+      ('1.8.0+25', '1.8.0', 0),
+      ('1.8.0', '1.8.0+26', null),
+    ];
+
+    for (final (installedText, remoteText, expected) in cases) {
+      test('$installedText compared with $remoteText', () {
+        final installed = UpdateVersion.tryParse(installedText)!;
+        final remote = UpdateVersion.tryParse(remoteText)!;
+        expect(
+          UpdateVersion.compareRemoteToInstalled(
+            remote: remote,
+            installed: installed,
+          ),
+          expected,
+        );
+      });
+    }
+
+    test('extracts PackageInfo version and numeric build independently', () {
+      final version = UpdateVersion.fromPackageInfo(
+        version: '1.8.0',
+        buildNumber: '25',
+      );
+      expect(version?.semanticVersion.toDisplayString(), '1.8.0');
+      expect(version?.buildNumber, 25);
+      expect(version.toString(), '1.8.0+25');
+    });
+
+    test('supports legacy tags and rejects invalid build identifiers', () {
+      expect(UpdateVersion.tryParse('v1.8.0+26')?.toString(), '1.8.0+26');
+      expect(UpdateVersion.tryParse('v1.7.0')?.toString(), '1.7.0');
+      expect(UpdateVersion.tryParse('v1.8.0')?.buildNumber, isNull);
+      for (final invalid in [
+        'v1.8.0+',
+        'v1.8.0+abc',
+        'v1.8.0+-1',
+        'v1.8.0+1.5',
+        'v1.8.0+01',
+        'v1.8.0+65536',
+      ]) {
+        expect(UpdateVersion.tryParse(invalid), isNull, reason: invalid);
+      }
+      expect(
+        UpdateVersion.fromPackageInfo(version: '1.8.0', buildNumber: '25x'),
+        isNull,
+      );
+      expect(
+        UpdateVersion.fromPackageInfo(version: '1.8.0', buildNumber: '65536'),
+        isNull,
+      );
+      expect(
+        UpdateVersion.fromPackageInfo(version: '1.8.0+25', buildNumber: '26'),
+        isNull,
+      );
+    });
   });
 
   group('WindowsUpdateService', () {
@@ -60,9 +128,18 @@ void main() {
         final cases = <(String, String, bool)>[
           ('1.7.0+20', 'v1.7.0', false),
           ('1.7.0', 'v1.7.0', false),
+          ('1.8.0+25', 'v1.8.0', false),
+          ('1.8.0', 'v1.8.1', true),
           ('1.6.0+10', 'v1.7.0', true),
           ('1.7.0+20', 'v1.7.1', true),
           ('1.8.0+25', 'v1.7.0', false),
+          ('1.8.0+25', 'v1.8.0+26', true),
+          ('1.8.0+25', 'v1.8.0+25', false),
+          ('1.8.0+25', 'v1.8.1+26', true),
+          ('1.8.1+26', 'v1.8.0+99', false),
+          ('1.8.1+26', 'v1.8.1+25', false),
+          ('1.8.1+26', 'v1.9.0+1', true),
+          ('1.8.0+25', 'v1.8.0', false),
         ];
 
         for (final (installed, tag, updateAvailable) in cases) {
@@ -147,16 +224,19 @@ void main() {
       final pubspec = await File('pubspec.yaml').readAsString();
       final setup = await File('SetupSuelosAR.iss').readAsString();
       final version = RegExp(
-        r'^version:\s*(\d+\.\d+\.\d+)\+\d+\s*$',
+        r'^version:\s*((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\+(?:0|[1-9]\d*))\s*$',
         multiLine: true,
       ).firstMatch(pubspec)!.group(1)!;
       final expectedName = 'SuelosAR-Setup-$version.exe';
 
       expect(setup, contains('GetEnv("SUELOSAR_VERSION")'));
+      expect(setup, contains('GetEnv("SUELOSAR_VERSION_INFO")'));
       expect(
         setup,
         contains('OutputBaseFilename=SuelosAR-Setup-{#MyAppVersion}'),
       );
+      expect(setup, contains('VersionInfoVersion={#MyAppVersionInfo}'));
+      expect(setup, contains('VersionInfoProductVersion={#MyAppVersionInfo}'));
       expect(setup, contains('AppId={{C7098677-ADDE-4FE4-A0FA-E24AC63B3CD0}'));
       expect(setup, contains('CloseApplications=yes'));
       expect(
@@ -224,9 +304,8 @@ void main() {
       expect(serviceImplementation, contains('helper.existsSync()'));
       expect(serviceImplementation, contains('bytes[0] == 0x4d'));
 
-      final helper = await File(
-        'windows/runner/update_helper.cpp',
-      ).readAsString();
+      final helper = await File('windows/runner/update_helper.cpp')
+          .readAsString();
       expect(helper, contains('Sha256File(installer_path) != expected_hash'));
       expect(helper, contains('WaitForSingleObject(parent, 30000)'));
       expect(helper, isNot(contains('TerminateProcess(')));
@@ -238,6 +317,12 @@ void main() {
       expect(helper, contains('ResolveInstalledAppPath()'));
       expect(helper, contains('L"InstallLocation"'));
       expect(helper, contains('VersionMatches(installed_app_path'));
+      expect(
+        helper,
+        contains('ParseStableVersion(expected, &expected_version)'),
+      );
+      expect(helper, contains('expected_version.has_build'));
+      expect(helper, contains('expected_version.build'));
       expect(
         helper.replaceAll(RegExp(r'\s+'), ' '),
         contains('version_matches ? installed_app_path : app_path'),
@@ -273,16 +358,14 @@ void main() {
       expect(helper, contains('IsAllowedUpdateDirectory(update_directory'));
       expect(helper, contains('IsWithin(temp_path, helper_directory)'));
       expect(helper, contains('ERROR_UPDATE_PATH'));
-      final runnerCmake = await File(
-        'windows/runner/CMakeLists.txt',
-      ).readAsString();
+      final runnerCmake = await File('windows/runner/CMakeLists.txt')
+          .readAsString();
       expect(runnerCmake, contains('add_executable(suelosar_update_helper'));
       final rootCmake = await File('windows/CMakeLists.txt').readAsString();
       expect(rootCmake, contains('install(TARGETS suelosar_update_helper'));
 
-      final buildScript = await File(
-        'tool/build_windows_installer.ps1',
-      ).readAsString();
+      final buildScript = await File('tool/build_windows_installer.ps1')
+          .readAsString();
       expect(buildScript, contains(r"Join-Path $PSScriptRoot '..'"));
       expect(buildScript, contains(r'[string]$BuildDir'));
       expect(buildScript, contains("'build\\windows\\x64\\runner\\Release'"));
@@ -301,9 +384,10 @@ void main() {
       expect(
         buildScript,
         contains(
-          r"(?<version>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\+\d+",
+          r"(?<version>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\+(?<build>0|[1-9]\d*)",
         ),
       );
+      expect(buildScript, contains('SUELOSAR_VERSION_INFO'));
 
       final digest = List.filled(64, 'c').join();
       final service = _service(
@@ -391,8 +475,7 @@ void main() {
             assets: [
               _installerAsset(
                 digest: 'sha256:$digest',
-                url:
-                    'https://github.com/eljerexd/suelosar/releases/download/v1.8.0/SuelosAR-Setup-1.8.0.exe',
+                url: 'https://github.com/eljerexd/suelosar/releases/download/v1.8.0/SuelosAR-Setup-1.8.0.exe',
               ),
             ],
           ),
@@ -406,18 +489,21 @@ void main() {
       },
     );
 
-    test('detects a newer patch release and ignores build number', () async {
-      final service = _service(
-        release: _releaseJson(tag: 'v1.7.1', assets: const []),
-        installed: '1.7.0+20',
-      );
-      final result = await service.checkForUpdates();
-      expect(result.status, WindowsUpdateStatus.installerAssetMissing);
-      expect(result.updateAvailable, isTrue);
-      expect(result.installedVersion.toString(), '1.7.0+20');
-      expect(result.release!.version.toString(), '1.7.1');
-      service.close();
-    });
+    test(
+      'compares semantic versions before their numeric build numbers',
+      () async {
+        final service = _service(
+          release: _releaseJson(tag: 'v1.7.1', assets: const []),
+          installed: '1.7.0+20',
+        );
+        final result = await service.checkForUpdates();
+        expect(result.status, WindowsUpdateStatus.installerAssetMissing);
+        expect(result.updateAvailable, isTrue);
+        expect(result.installedVersion.toString(), '1.7.0+20');
+        expect(result.release!.version.toString(), '1.7.1');
+        service.close();
+      },
+    );
 
     test(
       'detects newer minor and major releases even without an installer',
@@ -434,6 +520,30 @@ void main() {
         }
       },
     );
+
+    test('rejects malformed remote build identifiers', () async {
+      for (final tag in ['v1.8.0+', 'v1.8.0+beta', 'v1.8.0+-1', 'v1.8.0+1.2']) {
+        final service = _service(
+          release: _releaseJson(tag: tag, assets: const []),
+          installed: '1.8.0+25',
+        );
+        final result = await service.checkForUpdates();
+        expect(result.status, WindowsUpdateStatus.invalidRelease, reason: tag);
+        expect(result.updateAvailable, isFalse, reason: tag);
+        service.close();
+      }
+    });
+
+    test('does not guess when an installed build is missing', () async {
+      final service = _service(
+        installed: '1.8.0',
+        release: _releaseJson(tag: 'v1.8.0+26', assets: const []),
+      );
+      final result = await service.checkForUpdates();
+      expect(result.status, WindowsUpdateStatus.invalidRelease);
+      expect(result.updateAvailable, isFalse);
+      service.close();
+    });
 
     test('does not offer a release equal to or older than installed', () async {
       for (final remote in ['v1.7.0', 'v1.6.9']) {
@@ -498,8 +608,7 @@ void main() {
           'name': 'SuelosAR-Setup-1.8.0.exe.sha256',
           'size': 82,
           'digest': null,
-          'browser_download_url':
-              'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.8.0/SuelosAR-Setup-1.8.0.exe.sha256',
+          'browser_download_url': 'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.8.0/SuelosAR-Setup-1.8.0.exe.sha256',
         };
         final service = WindowsUpdateService(
           isWindows: true,
@@ -520,6 +629,359 @@ void main() {
         final result = await service.checkForUpdates();
         expect(result.status, WindowsUpdateStatus.updateAvailable);
         expect(result.sha256, digest);
+        service.close();
+      },
+    );
+
+    test(
+      'selects the exact build installer and matching checksum sidecar',
+      () async {
+        final digest = List.filled(64, 'd').join();
+        final staleInstaller = _installerAsset(version: '1.8.0+25');
+        final exactInstaller = _installerAsset(version: '1.8.0+26');
+        exactInstaller['digest'] = null;
+        final sidecar = {
+          'id': 3,
+          'name': 'SuelosAR-Setup-1.8.0+26.exe.sha256',
+          'size': 92,
+          'digest': null,
+          'browser_download_url': 'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.8.0+26/SuelosAR-Setup-1.8.0+26.exe.sha256',
+        };
+        final service = WindowsUpdateService(
+          isWindows: true,
+          installedVersionReader: () async => '1.8.0+25',
+          client: MockClient((request) async {
+            if (request.url.toString() ==
+                WindowsUpdateService.latestReleaseUrl) {
+              return http.Response(
+                jsonEncode(
+                  _releaseJson(
+                    tag: 'v1.8.0+26',
+                    assets: [staleInstaller, exactInstaller, sidecar],
+                  ),
+                ),
+                200,
+              );
+            }
+            expect(request.url.toString(), sidecar['browser_download_url']);
+            return http.Response('$digest  ${exactInstaller['name']}', 200);
+          }),
+        );
+
+        final result = await service.checkForUpdates();
+
+        expect(result.status, WindowsUpdateStatus.updateAvailable);
+        expect(result.updateAvailable, isTrue);
+        expect(result.installer?.name, 'SuelosAR-Setup-1.8.0+26.exe');
+        expect(result.sha256, digest);
+        service.close();
+      },
+    );
+
+    test('prefers a verified compatible differential package', () async {
+      final temporary = await Directory.systemTemp.createTemp(
+        'suelosar-differential-discovery-',
+      );
+      addTearDown(() => temporary.delete(recursive: true));
+      final oldBytes = utf8.encode('old executable');
+      final newBytes = utf8.encode('new executable');
+      final oldHelperBytes = utf8.encode('old helper');
+      final newHelperBytes = utf8.encode('new helper');
+      final localFile = File('${temporary.path}/installation-manifest.json');
+      final local = _localUpdateManifest(oldBytes, oldHelperBytes);
+      await localFile.writeAsString(jsonEncode(local));
+      final packageBytes = utf8.encode('controlled package bytes');
+      final packageSha = sha256.convert(packageBytes).toString();
+      final targetEntry = _manifestEntry('suelosar.exe', newBytes);
+      final targetHelperEntry = _manifestEntry(
+        'suelosar_update_helper.exe',
+        newHelperBytes,
+      );
+      final remote = <String, Object?>{
+        'schema_version': 1,
+        'version': '1.8.2+27',
+        'app_version': '1.8.2',
+        'build_number': 27,
+        'required_installation_schema': 1,
+        'minimum_supported_baseline': '1.8.1+26',
+        'platform': 'windows-x64',
+        'architecture': 'x64',
+        'renderer': 'flutter-map-fallback',
+        'compatibility_id': 'suelosar-windows-x64-v1',
+        'package': {
+          'name': WindowsDifferentialManifest.packageAssetName(
+            UpdateVersion.tryParse('1.8.2+27')!,
+            'flutter-map-fallback',
+          ),
+          'size': packageBytes.length,
+          'sha256': packageSha,
+          'files': [
+            {...targetEntry, 'change_type': 'modified'},
+            {...targetHelperEntry, 'change_type': 'modified'},
+          ],
+        },
+        'files': [targetEntry, targetHelperEntry],
+        'added_files': <String>[],
+        'modified_files': ['suelosar.exe', 'suelosar_update_helper.exe'],
+        'removed_files': <String>[],
+      };
+      final manifestBytes = utf8.encode(jsonEncode(remote));
+      final manifestName = WindowsDifferentialManifest.manifestAssetName(
+        UpdateVersion.tryParse('1.8.2+27')!,
+        'flutter-map-fallback',
+      );
+      final manifestAsset = _releaseAsset(
+        name: manifestName,
+        tag: 'v1.8.2+27',
+        bytes: manifestBytes,
+      );
+      final packageAsset = _releaseAsset(
+        name: WindowsDifferentialManifest.packageAssetName(
+          UpdateVersion.tryParse('1.8.2+27')!,
+          'flutter-map-fallback',
+        ),
+        tag: 'v1.8.2+27',
+        bytes: packageBytes,
+        digest: packageSha,
+      );
+      final setup = _installerAsset(
+        version: '1.8.2+27',
+        digest: 'sha256:${List.filled(64, 'c').join()}',
+      );
+      final service = WindowsUpdateService(
+        isWindows: true,
+        installedVersionReader: () async => '1.8.1+26',
+        installationManifestResolver: () => localFile,
+        client: MockClient((request) async {
+          if (request.url.toString() == WindowsUpdateService.latestReleaseUrl) {
+            return http.Response(
+              jsonEncode(
+                _releaseJson(
+                  tag: 'v1.8.2+27',
+                  assets: [setup, manifestAsset, packageAsset],
+                ),
+              ),
+              200,
+            );
+          }
+          if (request.url.toString() == manifestAsset['browser_download_url']) {
+            return http.Response.bytes(manifestBytes, 200);
+          }
+          return http.Response('unexpected request', 404);
+        }),
+      );
+
+      final result = await service.checkForUpdates();
+
+      expect(result.status, WindowsUpdateStatus.updateAvailable);
+      expect(result.usesDifferentialPackage, isTrue);
+      expect(result.downloadAsset?.name, packageAsset['name']);
+      expect(result.downloadSha256, packageSha);
+      expect(result.canDownload, isTrue);
+      service.close();
+    });
+
+    test(
+      'accepts a baseline helper already matching the target inventory',
+      () async {
+        final temporary = await Directory.systemTemp.createTemp(
+          'suelosar-differential-unchanged-helper-',
+        );
+        addTearDown(() => temporary.delete(recursive: true));
+        final oldBytes = utf8.encode('old executable');
+        final newBytes = utf8.encode('new executable');
+        final helperBytes = utf8.encode('unchanged differential helper');
+        final localFile = File('${temporary.path}/installation-manifest.json');
+        await localFile.writeAsString(
+          jsonEncode(_localUpdateManifest(oldBytes, helperBytes)),
+        );
+        final packageBytes = utf8.encode('controlled executable delta');
+        final packageSha = sha256.convert(packageBytes).toString();
+        final targetEntry = _manifestEntry('suelosar.exe', newBytes);
+        final targetHelperEntry = _manifestEntry(
+          'suelosar_update_helper.exe',
+          helperBytes,
+        );
+        final remote = <String, Object?>{
+          'schema_version': 1,
+          'version': '1.8.2+27',
+          'app_version': '1.8.2',
+          'build_number': 27,
+          'required_installation_schema': 1,
+          'minimum_supported_baseline': '1.8.1+26',
+          'platform': 'windows-x64',
+          'architecture': 'x64',
+          'renderer': 'flutter-map-fallback',
+          'compatibility_id': 'suelosar-windows-x64-v1',
+          'package': {
+            'name': WindowsDifferentialManifest.packageAssetName(
+              UpdateVersion.tryParse('1.8.2+27')!,
+              'flutter-map-fallback',
+            ),
+            'size': packageBytes.length,
+            'sha256': packageSha,
+            'files': [
+              {...targetEntry, 'change_type': 'modified'},
+            ],
+          },
+          'files': [targetEntry, targetHelperEntry],
+          'added_files': <String>[],
+          'modified_files': ['suelosar.exe'],
+          'removed_files': <String>[],
+        };
+        final manifestBytes = utf8.encode(jsonEncode(remote));
+        final manifestAsset = _releaseAsset(
+          name: WindowsDifferentialManifest.manifestAssetName(
+            UpdateVersion.tryParse('1.8.2+27')!,
+            'flutter-map-fallback',
+          ),
+          tag: 'v1.8.2+27',
+          bytes: manifestBytes,
+        );
+        final packageAsset = _releaseAsset(
+          name: WindowsDifferentialManifest.packageAssetName(
+            UpdateVersion.tryParse('1.8.2+27')!,
+            'flutter-map-fallback',
+          ),
+          tag: 'v1.8.2+27',
+          bytes: packageBytes,
+          digest: packageSha,
+        );
+        final setup = _installerAsset(
+          version: '1.8.2+27',
+          digest: 'sha256:${List.filled(64, 'c').join()}',
+        );
+        final service = WindowsUpdateService(
+          isWindows: true,
+          installedVersionReader: () async => '1.8.1+26',
+          installationManifestResolver: () => localFile,
+          client: MockClient((request) async {
+            if (request.url.toString() ==
+                WindowsUpdateService.latestReleaseUrl) {
+              return http.Response(
+                jsonEncode(
+                  _releaseJson(
+                    tag: 'v1.8.2+27',
+                    assets: [setup, manifestAsset, packageAsset],
+                  ),
+                ),
+                200,
+              );
+            }
+            if (request.url.toString() ==
+                manifestAsset['browser_download_url']) {
+              return http.Response.bytes(manifestBytes, 200);
+            }
+            return http.Response('unexpected request', 404);
+          }),
+        );
+
+        final result = await service.checkForUpdates();
+
+        expect(result.usesDifferentialPackage, isTrue);
+        expect(result.downloadAsset?.name, packageAsset['name']);
+        service.close();
+      },
+    );
+
+    test(
+      'uses the complete Setup when no local differential baseline exists',
+      () async {
+        final temporary = await Directory.systemTemp.createTemp(
+          'suelosar-differential-fallback-',
+        );
+        addTearDown(() => temporary.delete(recursive: true));
+        final setupDigest = 'e' * 64;
+        final setup = _installerAsset(
+          version: '1.8.2+27',
+          digest: 'sha256:$setupDigest',
+        );
+        final service = WindowsUpdateService(
+          isWindows: true,
+          installedVersionReader: () async => '1.8.1+26',
+          installationManifestResolver: () =>
+              File('${temporary.path}/missing-manifest.json'),
+          client: MockClient((request) async {
+            if (request.url.toString() ==
+                WindowsUpdateService.latestReleaseUrl) {
+              return http.Response(
+                jsonEncode(_releaseJson(tag: 'v1.8.2+27', assets: [setup])),
+                200,
+              );
+            }
+            return http.Response('not found', 404);
+          }),
+        );
+        final result = await service.checkForUpdates();
+        expect(result.status, WindowsUpdateStatus.updateAvailable);
+        expect(result.usesDifferentialPackage, isFalse);
+        expect(result.downloadAsset?.name, setup['name']);
+        expect(result.downloadSha256, setupDigest);
+        expect(result.canDownload, isTrue);
+        service.close();
+      },
+    );
+
+    test(
+      'uses the verified complete Setup when optional delta lookup fails',
+      () async {
+        final setup = _installerAsset(
+          version: '1.8.2+27',
+          digest: 'sha256:${'c' * 64}',
+        );
+        final manifest = _releaseAsset(
+          name: WindowsDifferentialManifest.manifestAssetName(
+            UpdateVersion.tryParse('1.8.2+27')!,
+            'flutter-map-fallback',
+          ),
+          tag: 'v1.8.2+27',
+          bytes: utf8.encode('{}'),
+        );
+        final service = WindowsUpdateService(
+          isWindows: true,
+          installedVersionReader: () async => '1.8.1+26',
+          client: MockClient((request) async {
+            if (request.url.toString() ==
+                WindowsUpdateService.latestReleaseUrl) {
+              return http.Response(
+                jsonEncode(
+                  _releaseJson(tag: 'v1.8.2+27', assets: [setup, manifest]),
+                ),
+                200,
+              );
+            }
+            if (request.url.toString() == manifest['browser_download_url']) {
+              throw http.ClientException('staging metadata unavailable');
+            }
+            return http.Response('unexpected request', 404);
+          }),
+        );
+        addTearDown(service.close);
+
+        final result = await service.checkForUpdates();
+
+        expect(result.status, WindowsUpdateStatus.updateAvailable);
+        expect(result.canDownload, isTrue);
+        expect(result.usesDifferentialPackage, isFalse);
+        expect(result.downloadAsset?.name, setup['name']);
+        expect(result.downloadSha256, 'c' * 64);
+      },
+    );
+
+    test(
+      'does not accept an older build asset for a newer build tag',
+      () async {
+        final service = _service(
+          installed: '1.8.0+25',
+          release: _releaseJson(
+            tag: 'v1.8.0+26',
+            assets: [_installerAsset(version: '1.8.0+25')],
+          ),
+        );
+        final result = await service.checkForUpdates();
+        expect(result.updateAvailable, isTrue);
+        expect(result.status, WindowsUpdateStatus.installerAssetMissing);
+        expect(result.canDownload, isFalse);
         service.close();
       },
     );
@@ -587,8 +1049,7 @@ void main() {
       'rejects an installer URL that does not match its release tag',
       () async {
         final asset = _installerAsset(
-          url:
-              'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.7.9/SuelosAR-Setup.exe',
+          url: 'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.7.9/SuelosAR-Setup.exe',
           digest: 'sha256:${List.filled(64, 'a').join()}',
         );
         final service = _service(
@@ -601,23 +1062,20 @@ void main() {
       },
     );
 
-    test(
-      'rejects installer filenames that do not match the Inno output version',
-      () async {
-        final asset = Map<String, Object?>.from(_installerAsset())
-          ..['name'] = 'SuelosAR-Setup-1.7.9.exe'
-          ..['browser_download_url'] =
-              'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.8.0/SuelosAR-Setup-1.7.9.exe';
-        final service = _service(
-          release: _releaseJson(tag: 'v1.8.0', assets: [asset]),
-        );
-        final result = await service.checkForUpdates();
-        expect(result.updateAvailable, isTrue);
-        expect(result.status, WindowsUpdateStatus.installerAssetMissing);
-        expect(result.canDownload, isFalse);
-        service.close();
-      },
-    );
+    test('rejects installer filenames that do not match the Inno output version', () async {
+      final asset = Map<String, Object?>.from(_installerAsset())
+        ..['name'] = 'SuelosAR-Setup-1.7.9.exe'
+        ..['browser_download_url'] =
+            'https://github.com/eljerexd/Web-SuelosAR/releases/download/v1.8.0/SuelosAR-Setup-1.7.9.exe';
+      final service = _service(
+        release: _releaseJson(tag: 'v1.8.0', assets: [asset]),
+      );
+      final result = await service.checkForUpdates();
+      expect(result.updateAvailable, isTrue);
+      expect(result.status, WindowsUpdateStatus.installerAssetMissing);
+      expect(result.canDownload, isFalse);
+      service.close();
+    });
 
     test(
       'streams progress and verifies SHA-256 before returning installer',
@@ -629,13 +1087,25 @@ void main() {
           _installerAsset(digest: 'sha256:$digest'),
         )..['size'] = bytes.length;
         final release = _releaseJson(tag: 'v1.8.0', assets: [asset]);
+        final requests = <Uri>[];
         final service = WindowsUpdateService(
           client: MockClient((request) async {
+            requests.add(request.url);
             if (request.url.toString() ==
                 WindowsUpdateService.latestReleaseUrl) {
               return http.Response(jsonEncode(release), 200);
             }
-            expect(request.url.host, 'github.com');
+            if (request.url.host == 'github.com') {
+              return http.Response(
+                '',
+                302,
+                headers: {
+                  'location':
+                      'https://release-assets.githubusercontent.com/test-asset',
+                },
+              );
+            }
+            expect(request.url.host, 'release-assets.githubusercontent.com');
             return http.Response.bytes(
               bytes,
               200,
@@ -660,12 +1130,62 @@ void main() {
         );
         expect(await File(result.installerPath!).readAsBytes(), bytes);
         expect(progress, isNotEmpty);
+        expect(requests.map((request) => request.host), [
+          'api.github.com',
+          'github.com',
+          'release-assets.githubusercontent.com',
+        ]);
         expect(progress.last.downloadedBytes, bytes.length);
         expect(result.sha256, digest);
         await root.delete(recursive: true);
         service.close();
       },
     );
+
+    test('rejects GitHub asset redirects to unapproved HTTPS hosts', () async {
+      final bytes = utf8.encode('test installer bytes');
+      final digest = sha256.convert(bytes).toString();
+      final temporary = await Directory.systemTemp.createTemp(
+        'update-redirect-test-',
+      );
+      addTearDown(() => temporary.delete(recursive: true));
+      final asset = Map<String, Object?>.from(
+        _installerAsset(digest: 'sha256:$digest'),
+      )..['size'] = bytes.length;
+      final release = _releaseJson(tag: 'v1.8.0', assets: [asset]);
+      final requests = <Uri>[];
+      final service = WindowsUpdateService(
+        client: MockClient((request) async {
+          requests.add(request.url);
+          if (request.url.toString() == WindowsUpdateService.latestReleaseUrl) {
+            return http.Response(jsonEncode(release), 200);
+          }
+          if (request.url.host == 'github.com') {
+            return http.Response(
+              '',
+              302,
+              headers: {'location': 'https://downloads.example.test/file'},
+            );
+          }
+          return http.Response.bytes(bytes, 200);
+        }),
+        isWindows: true,
+        installedVersionReader: () async => '1.7.0',
+        temporaryDirectory: temporary,
+      );
+      addTearDown(service.close);
+
+      final check = await service.checkForUpdates();
+      final result = await service.downloadUpdate(check);
+
+      expect(check.canDownload, isTrue);
+      expect(result.status, WindowsUpdateOperationStatus.failed);
+      expect(result.error?.code, WindowsUpdateErrorCode.httpError);
+      expect(
+        requests,
+        isNot(contains(Uri.parse('https://downloads.example.test/file'))),
+      );
+    });
 
     test('cancellation removes the partial download', () async {
       final root = await Directory.systemTemp.createTemp('update-cancel-');
@@ -887,9 +1407,9 @@ void main() {
           installerLifecycleStarter: (_, _, _, _) async => fail('must not run'),
         );
         expect(
-          (await otherService.launchInstaller(
-            downloaded.installerPath!,
-          )).error?.code,
+          (await otherService.launchInstaller(downloaded.installerPath!))
+              .error
+              ?.code,
           WindowsUpdateErrorCode.installerNotVerified,
         );
 
@@ -1085,6 +1605,46 @@ Map<String, Object?> _installerAsset({
   'browser_download_url':
       url ??
       'https://github.com/eljerexd/Web-SuelosAR/releases/download/v$version/SuelosAR-Setup-$version.exe',
+};
+
+Map<String, Object?> _manifestEntry(String path, List<int> bytes) => {
+  'path': path,
+  'size': bytes.length,
+  'sha256': sha256.convert(bytes).toString(),
+  'classification': 'executable',
+  'managed_by_updater': true,
+};
+
+Map<String, Object?> _localUpdateManifest(
+  List<int> executableBytes,
+  List<int> helperBytes,
+) => {
+  'schema_version': 1,
+  'app_version': '1.8.1',
+  'build_number': 26,
+  'platform': 'windows-x64',
+  'renderer': 'flutter-map-fallback',
+  'compatibility_id': 'suelosar-windows-x64-v1',
+  'installation_id': '00000000-0000-4000-8000-000000000001',
+  'generated_at_utc': '2026-11-15T00:00:00.000Z',
+  'files': [
+    _manifestEntry('suelosar.exe', executableBytes),
+    _manifestEntry('suelosar_update_helper.exe', helperBytes),
+  ],
+};
+
+Map<String, Object?> _releaseAsset({
+  required String name,
+  required String tag,
+  required List<int> bytes,
+  String? digest,
+}) => {
+  'id': 100,
+  'name': name,
+  'size': bytes.length,
+  'digest': 'sha256:${digest ?? sha256.convert(bytes)}',
+  'browser_download_url':
+      'https://github.com/eljerexd/Web-SuelosAR/releases/download/$tag/$name',
 };
 
 WindowsReleaseInfo _releaseInfo() => WindowsReleaseInfo(

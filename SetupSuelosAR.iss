@@ -5,11 +5,11 @@
 
 #define MyAppName "SuelosAR"
 #define MyAppVersion GetEnv("SUELOSAR_VERSION")
+#define MyAppVersionInfo GetEnv("SUELOSAR_VERSION_INFO")
 #define VCRuntimeRequiredVersion "14.51.36231.0"
-#if MyAppVersion == ""
-  #error "Compile using tool/build_windows_installer.ps1 so the version comes from pubspec.yaml."
+#if MyAppVersion == "" || MyAppVersionInfo == ""
+  #error "Compile using tool/build_windows_installer.ps1 so version and build come from pubspec.yaml."
 #endif
-#define MyAppVersionInfo MyAppVersion + ".0"
 
 #define MyAppPublisher "SuelosAR"
 #define MyAppURL "https://web-suelos-ar.vercel.app/"

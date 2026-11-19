@@ -21,12 +21,11 @@ typedef WindowsUpdateDownloadRunner =
 typedef WindowsUpdateDownloadCanceller = void Function();
 typedef WindowsUpdateInstallRunner =
     Future<WindowsUpdateOperationResult> Function(String installerPath);
-typedef WindowsUpdateInstallerRestorer =
-    Future<bool> Function({
-      required String path,
-      required String expectedSha256,
-      required String version,
-    });
+typedef WindowsUpdateInstallerRestorer = Future<bool> Function({
+  required String path,
+  required String expectedSha256,
+  required String version,
+});
 
 enum WindowsUpdateIndicatorState { checking, upToDate, updateAvailable, error }
 
@@ -177,7 +176,8 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   WindowsUpdateCheckResult? verifiedCheckFor(WindowsReleaseInfo release) {
     final result = _latestCheckResult;
     if (result?.release?.tag != release.tag ||
-        result?.release?.version.compareTo(release.version) != 0) {
+        result?.release?.updateVersion.toString() !=
+            release.updateVersion.toString()) {
       return null;
     }
     return result;
@@ -250,11 +250,16 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
       final pendingRelease = _latestAvailableRelease;
       if (pendingRelease != null) {
         try {
-          final installed = SemanticVersion.tryParse(
+          final installed = UpdateVersion.tryParse(
             await _installedVersionReader(),
           );
-          if (installed != null &&
-              pendingRelease.version.compareTo(installed) <= 0) {
+          final comparison = installed == null
+              ? null
+              : UpdateVersion.compareRemoteToInstalled(
+                  remote: pendingRelease.updateVersion,
+                  installed: installed,
+                );
+          if (comparison != null && comparison <= 0) {
             installedPendingIsCurrent = true;
             _latestAvailableRelease = null;
             _dismissedVersion = null;
@@ -265,6 +270,9 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
             } catch (_) {
               // The in-memory state is still authoritative for this session.
             }
+          } else if (comparison == null) {
+            _latestAvailableRelease = null;
+            _startupPromptRelease = null;
           }
         } catch (_) {
           // Keep the cached update if local package metadata is unavailable.
@@ -277,6 +285,8 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
         _state = WindowsUpdateIndicatorState.updateAvailable;
       } else if (installedPendingIsCurrent) {
         _state = WindowsUpdateIndicatorState.upToDate;
+      } else if (pendingRelease != null) {
+        _state = WindowsUpdateIndicatorState.error;
       } else {
         _state = _stateFromStorage(preferences.getString(lastStatusKey));
       }
@@ -326,7 +336,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     _downloadState = WindowsUpdateDownloadState.downloading;
     _downloadProgress = WindowsUpdateProgress(
       downloadedBytes: 0,
-      totalBytes: check.installer?.size,
+      totalBytes: check.downloadAsset?.size,
     );
     _downloadSpeedBytesPerSecond = null;
     _downloadErrorMessage = null;
@@ -341,10 +351,10 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
         case WindowsUpdateOperationStatus.succeeded:
           _downloadState = WindowsUpdateDownloadState.completed;
           _verifiedInstallerPath = result.installerPath;
-          _verifiedInstallerVersion = check.release?.version.toString();
+          _verifiedInstallerVersion = check.release?.updateVersion.toString();
           await _persistVerifiedInstaller(
             result.installerPath,
-            check.sha256,
+            check.downloadSha256,
             _verifiedInstallerVersion,
           );
         case WindowsUpdateOperationStatus.cancelled:
@@ -574,7 +584,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
 
     if (result.updateAvailable && release != null) {
       if (_verifiedInstallerVersion != null &&
-          _verifiedInstallerVersion != release.version.toString()) {
+          _verifiedInstallerVersion != release.updateVersion.toString()) {
         _downloadState = WindowsUpdateDownloadState.idle;
         _downloadProgress = null;
         _verifiedInstallerPath = null;
@@ -596,10 +606,9 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     }
 
     final releaseIsObsolete =
-        release != null &&
-        result.installedVersion != null &&
-        release.version.compareTo(result.installedVersion!) <= 0;
-    if (result.status == WindowsUpdateStatus.upToDate || releaseIsObsolete) {
+        result.remoteVersionComparison != null &&
+        result.remoteVersionComparison! <= 0;
+    if (releaseIsObsolete) {
       _state = WindowsUpdateIndicatorState.upToDate;
       _latestAvailableRelease = null;
       _startupPromptRelease = null;
@@ -655,14 +664,23 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     if (release == null) return null;
     _notify();
     try {
-      final installed = SemanticVersion.tryParse(
-        await _installedVersionReader(),
-      );
-      if (installed != null && release.version.compareTo(installed) <= 0) {
+      final installed = UpdateVersion.tryParse(await _installedVersionReader());
+      final comparison = installed == null
+          ? null
+          : UpdateVersion.compareRemoteToInstalled(
+              remote: release.updateVersion,
+              installed: installed,
+            );
+      if (comparison != null && comparison <= 0) {
         await _clearPendingRelease();
         _latestAvailableRelease = null;
         _startupPromptRelease = null;
         _state = WindowsUpdateIndicatorState.upToDate;
+        _notify();
+        return null;
+      }
+      if (comparison == null) {
+        _state = WindowsUpdateIndicatorState.error;
         _notify();
         return null;
       }
@@ -777,7 +795,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     final version = preferences.getString(verifiedInstallerVersionKey);
     final release = _latestAvailableRelease;
     if (path == null || sha256 == null || version == null) return;
-    if (release == null || release.version.toString() != version) {
+    if (release == null || release.updateVersion.toString() != version) {
       await _clearPersistedInstaller();
       return;
     }
@@ -799,9 +817,8 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
       return;
     }
 
-    final installer = release.assets.where(
-      (asset) => asset.name == 'SuelosAR-Setup-$version.exe',
-    );
+    final assetName = path.replaceAll('\\', '/').split('/').last;
+    final installer = release.assets.where((asset) => asset.name == assetName);
     _verifiedInstallerPath = path;
     _verifiedInstallerVersion = version;
     _downloadState = WindowsUpdateDownloadState.completed;
@@ -861,7 +878,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
     try {
       final decoded = jsonDecode(value);
       if (decoded is! Map<String, dynamic>) return null;
-      final version = SemanticVersion.tryParse(
+      final version = UpdateVersion.tryParse(
         decoded['version'] as String? ?? '',
       );
       final publishedAt = DateTime.tryParse(
@@ -901,7 +918,7 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
       }
       return WindowsReleaseInfo(
         tag: tag,
-        version: version,
+        version: version.semanticVersion,
         name: decoded['name'] as String? ?? '',
         description: decoded['description'] as String? ?? '',
         publishedAt: publishedAt.toUtc(),
@@ -951,8 +968,14 @@ class WindowsUpdateIndicatorController extends ChangeNotifier {
   }
 }
 
-Future<String> _readInstalledVersion() async =>
-    (await PackageInfo.fromPlatform()).version;
+Future<String> _readInstalledVersion() async {
+  final packageInfo = await PackageInfo.fromPlatform();
+  final version = UpdateVersion.fromPackageInfo(
+    version: packageInfo.version,
+    buildNumber: packageInfo.buildNumber,
+  );
+  return version?.toString() ?? '';
+}
 
 Future<WindowsUpdateCheckResult> _previewCheckMustNotRun() async =>
     throw StateError('The preview must never invoke an update check.');

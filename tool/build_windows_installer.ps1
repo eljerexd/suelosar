@@ -49,12 +49,18 @@ if (-not (Get-ChildItem -LiteralPath $buildDir -File -Recurse | Select-Object -F
 $pubspec = Get-Content -Raw -LiteralPath $pubspecPath
 $versionMatch = [regex]::Match(
     $pubspec,
-    '(?m)^version:\s*(?<version>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\+\d+\s*$'
+    '(?m)^version:\s*(?<version>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))\+(?<build>0|[1-9]\d*)\s*$'
 )
 
 if (-not $versionMatch.Success) {
     throw 'pubspec.yaml must define a stable major.minor.patch+build version.'
 }
+$buildNumber = [uint64]::Parse($versionMatch.Groups['build'].Value)
+if ($buildNumber -gt 65535) {
+    throw 'Windows file version build numbers must be between 0 and 65535.'
+}
+$completeVersion = "$($versionMatch.Groups['version'].Value)+$buildNumber"
+$numericVersionInfo = "$($versionMatch.Groups['version'].Value).$buildNumber"
 
 $setup = Get-Content -Raw -LiteralPath $setupPath
 $runtimeRequirementMatch = [regex]::Match(
@@ -90,14 +96,21 @@ if (-not $IsccPath -or -not (Test-Path -LiteralPath $IsccPath -PathType Leaf)) {
 
 $null = New-Item -ItemType Directory -Path $OutputDir -Force
 $versionVariable = 'SUELOSAR_VERSION'
+$versionInfoVariable = 'SUELOSAR_VERSION_INFO'
 $buildDirVariable = 'SUELOSAR_BUILD_DIR'
 $previousVersion = [Environment]::GetEnvironmentVariable($versionVariable, 'Process')
+$previousVersionInfo = [Environment]::GetEnvironmentVariable($versionInfoVariable, 'Process')
 $previousBuildDir = [Environment]::GetEnvironmentVariable($buildDirVariable, 'Process')
 Push-Location $projectRoot
 try {
     [Environment]::SetEnvironmentVariable(
         $versionVariable,
-        $versionMatch.Groups['version'].Value,
+        $completeVersion,
+        'Process'
+    )
+    [Environment]::SetEnvironmentVariable(
+        $versionInfoVariable,
+        $numericVersionInfo,
         'Process'
     )
     [Environment]::SetEnvironmentVariable($buildDirVariable, $BuildDir, 'Process')
@@ -109,5 +122,6 @@ try {
 finally {
     Pop-Location
     [Environment]::SetEnvironmentVariable($versionVariable, $previousVersion, 'Process')
+    [Environment]::SetEnvironmentVariable($versionInfoVariable, $previousVersionInfo, 'Process')
     [Environment]::SetEnvironmentVariable($buildDirVariable, $previousBuildDir, 'Process')
 }

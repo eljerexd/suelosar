@@ -11,9 +11,6 @@ class WindowsUpdateSuccessConfirmation {
   });
 
   static final RegExp _tokenPattern = RegExp(r'^[a-fA-F0-9]{32}$');
-  static final RegExp _versionPattern = RegExp(
-    r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$',
-  );
 
   final String token;
   final String expectedVersion;
@@ -33,19 +30,22 @@ class WindowsUpdateSuccessConfirmation {
     final outcome = argument('--suelosar-update-result=');
     final token = argument('--suelosar-update-confirmation=');
     final expectedVersion = argument('--suelosar-update-version=');
+    final parsedExpected = expectedVersion == null
+        ? null
+        : UpdateVersion.tryParse(expectedVersion);
     final root = localAppDataPath ?? Platform.environment['LOCALAPPDATA'];
     if (outcome != 'installed' ||
         token == null ||
         !_tokenPattern.hasMatch(token) ||
-        expectedVersion == null ||
-        !_versionPattern.hasMatch(expectedVersion) ||
+        parsedExpected == null ||
+        !parsedExpected.isStable ||
         root == null ||
         root.trim().isEmpty) {
       return null;
     }
     return WindowsUpdateSuccessConfirmation(
       token: token,
-      expectedVersion: expectedVersion,
+      expectedVersion: parsedExpected.toString(),
       localAppDataPath: root,
     );
   }
@@ -61,7 +61,7 @@ class WindowsUpdateSuccessConfirmation {
     Duration timeout = const Duration(seconds: 35),
     Duration pollInterval = const Duration(milliseconds: 200),
   }) async {
-    final expected = SemanticVersion.tryParse(expectedVersion);
+    final expected = UpdateVersion.tryParse(expectedVersion);
     if (expected == null || !expected.isStable) return null;
 
     final marker = confirmationFile;
@@ -90,10 +90,14 @@ class WindowsUpdateSuccessConfirmation {
     } catch (_) {
       return null;
     }
-    final installed = SemanticVersion.tryParse(installedText);
-    if (installed == null ||
-        !installed.isStable ||
-        installed.compareTo(expected) != 0) {
+    final installed = UpdateVersion.tryParse(installedText);
+    final comparison = installed == null
+        ? null
+        : UpdateVersion.compareRemoteToInstalled(
+            remote: expected,
+            installed: installed,
+          );
+    if (installed == null || !installed.isStable || comparison != 0) {
       return null;
     }
     return installedText;
