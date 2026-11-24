@@ -60,6 +60,30 @@ void main() {
     service.dispose();
   });
 
+  test('pairing service retries after Supabase becomes available', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    var supabaseReady = false;
+    final backend = _PairingBackendFake();
+    final service = DevicePairingService(
+      registrationLoader: () async => _registration,
+      backendLoader: () =>
+          supabaseReady ? backend : const UnavailableDevicePairingBackend(),
+    );
+
+    await service.start();
+    expect(service.isConfigured, isFalse);
+    expect(backend.registrationCalls, 0);
+
+    supabaseReady = true;
+    await service.start();
+
+    expect(service.isConfigured, isTrue);
+    expect(backend.registrationCalls, 1);
+    expect(service.status, DevicePairingStatus.idle);
+
+    service.dispose();
+  });
+
   test('manual and QR pairing share the same service workflow', () async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     final backend = _PairingBackendFake();

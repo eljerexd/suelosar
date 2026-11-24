@@ -58,14 +58,16 @@ class DevicePairingService extends ChangeNotifier {
 
   Future<void> start() async {
     if (_started) return;
-    _started = true;
     try {
       _registration = await _registrationLoader();
-      _backend ??= _backendLoader();
+      if (_backend == null || !_backend!.isConfigured) {
+        _backend = _backendLoader();
+      }
       if (!isConfigured) {
         _notify();
         return;
       }
+      _started = true;
       await _run(DevicePairingStatus.loading, () async {
         final result = await _backend!.registerCurrentDevice(_registration!);
         await _applyBootstrap(result);

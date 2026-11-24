@@ -1,7 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../pairing/device_pairing_models.dart';
+import '../pairing/supabase_device_pairing_backend.dart';
 import '../services/device_identity_service.dart';
 import 'sync_coordinator.dart';
 import 'sync_engine.dart';
@@ -14,6 +17,8 @@ class SyncBootstrap {
   SyncBootstrap._();
 
   static SyncCoordinator? _coordinator;
+  static SupabaseClient? _client;
+  static Future<void>? _starting;
   static bool _configured = false;
   static String? _startupError;
 
@@ -27,7 +32,12 @@ class SyncBootstrap {
       _coordinator?.initialHistorySync.progress.value ??
       const InitialHistorySyncProgress();
 
-  static Future<void> start() async {
+  static Future<void> start() {
+    if (_coordinator != null) return Future<void>.value();
+    return _starting ??= _start().whenComplete(() => _starting = null);
+  }
+
+  static Future<void> _start() async {
     await SyncEngine.instance.start();
     final config = SupabaseSyncConfig.fromEnvironment();
     _configured = config.isConfigured;
@@ -47,16 +57,32 @@ class SyncBootstrap {
       return;
     }
     try {
-      await Supabase.initialize(
-        url: config.url,
-        publishableKey: config.publishableKey,
-      );
-      final client = Supabase.instance.client;
+      var client = _client;
+      if (client == null) {
+        try {
+          client = Supabase.instance.client;
+        } catch (_) {
+          await Supabase.initialize(
+            url: config.url,
+            publishableKey: config.publishableKey,
+          );
+          client = Supabase.instance.client;
+        }
+        _client = client;
+      }
       if (client.auth.currentSession == null) {
         await client.auth.signInAnonymously(
           data: {'device_uuid': DeviceIdentityService.instance.deviceUuid},
         );
       }
+      final platform = _platformName();
+      await SupabaseDevicePairingBackend(client).registerCurrentDevice(
+        PairingDeviceRegistration(
+          deviceUuid: DeviceIdentityService.instance.deviceUuid,
+          deviceName: 'SuelosAR $platform',
+          platform: platform,
+        ),
+      );
       final coordinator = SyncCoordinator(
         engine: SyncEngine.instance,
         backend: SupabaseSyncBackendAdapter(
@@ -84,7 +110,11 @@ class SyncBootstrap {
   }
 
   static Future<bool> synchronizeNow() async {
-    final coordinator = _coordinator;
+    var coordinator = _coordinator;
+    if (coordinator == null) {
+      await start();
+      coordinator = _coordinator;
+    }
     if (coordinator == null) return false;
     await coordinator.synchronizeNow();
     return true;
@@ -96,4 +126,13 @@ class SyncBootstrap {
     await coordinator.reuploadLocalData();
     return true;
   }
+
+  static String _platformName() => switch (defaultTargetPlatform) {
+    TargetPlatform.android => 'Android',
+    TargetPlatform.iOS => 'iOS',
+    TargetPlatform.windows => 'Windows',
+    TargetPlatform.macOS => 'macOS',
+    TargetPlatform.linux => 'Linux',
+    TargetPlatform.fuchsia => 'Fuchsia',
+  };
 }
